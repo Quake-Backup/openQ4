@@ -175,6 +175,13 @@ idRenderModel *	idRenderModelSprite::InstantiateDynamicModel( const struct rende
 
 	R_BoundTriSurf( tri );
 
+	// The reused snapshot keeps its persistent static ambientCache, and
+	// R_CreateAmbientCache short-circuits on a non-NULL cache, so without this
+	// the first frame's quad (size/vertex color) would render forever. Freeing
+	// the vertex caches after the rewrite forces a re-upload; it is a no-op on a
+	// freshly allocated tri.
+	R_FreeStaticTriSurfVertexCaches( tri );
+
 	staticModel->bounds = tri->bounds;
 
 	return staticModel;

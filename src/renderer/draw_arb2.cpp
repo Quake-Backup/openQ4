@@ -9171,7 +9171,10 @@ static void RB_GLSLPointShadowMap_DrawInteraction( const drawInteraction_t *din 
 	RB_GLSLInteractionUniform4fv( g_pointShadowMapProgram.modelMatrixRow1, GLSL_INTERACTION_CACHE_MODEL_MATRIX_ROW_1, row1 );
 	RB_GLSLInteractionUniform4fv( g_pointShadowMapProgram.modelMatrixRow2, GLSL_INTERACTION_CACHE_MODEL_MATRIX_ROW_2, row2 );
 	RB_GLSLInteractionUniform4fv( g_pointShadowMapProgram.globalLightOrigin, GLSL_INTERACTION_CACHE_GLOBAL_LIGHT_ORIGIN, globalLightOrigin );
-	glUniform1fARB( g_pointShadowMapProgram.pointShadowFar, R_ShadowMapPointFarDistance( backEnd.vLight ) );
+	// pointShadowFar is uploaded once at program-bind time in
+	// RB_GLSLPointShadowMap_CreateDrawInteractions and is constant across the
+	// whole receiver chain (backEnd.vLight does not change), so the per-draw
+	// re-upload here (and its sqrt in R_ShadowMapPointFarDistance) was redundant.
 	RB_GLSLInteractionUniform4fv( g_pointShadowMapProgram.diffuseColor, GLSL_INTERACTION_CACHE_DIFFUSE_COLOR, din->diffuseColor.ToFloatPtr() );
 	RB_GLSLInteractionUniform4fv( g_pointShadowMapProgram.specularColor, GLSL_INTERACTION_CACHE_SPECULAR_COLOR, din->specularColor.ToFloatPtr() );
 	if ( g_pointShadowMapProgram.flatDiffuseParams >= 0 ) {
@@ -16906,8 +16909,10 @@ int R_FindARBProgram( GLenum target, const char *program ) {
 
 	stripped.StripFileExtension();
 
-	// see if it is already loaded
-	for ( i = 0 ; progs[i].name[0] ; i++ ) {
+	// see if it is already loaded. Bound the scan by MAX_GLPROGS as the sibling
+	// RB_FindARBProgramRecord does: without it, a full table reads progs[MAX_GLPROGS]
+	// out of bounds before the cap check below can fire.
+	for ( i = 0 ; i < MAX_GLPROGS && progs[i].name[0] ; i++ ) {
 		if ( progs[i].target != target ) {
 			continue;
 		}

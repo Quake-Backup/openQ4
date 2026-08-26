@@ -85,7 +85,14 @@ srfTriangles_t *R_PolytopeSurface( int numPlanes, const idPlane *planes, idWindi
 	for ( i = 0; i < numPlanes; i++ ) {
 		idFixedWinding &w = planeWindings[i];
 		const int windingPointCount = w.GetNumPoints();
-		if ( !windingPointCount ) {
+		// Match the counting pass's filter exactly: it budgeted verts only for
+		// windings with >2 points, so a winding that clipped down to 1-2 points
+		// must be skipped here too or its verts would be written past the
+		// exact-size allocation. A 1-2 point winding produces no triangles anyway.
+		if ( windingPointCount <= 2 ) {
+			if ( windings ) {
+				windings[i] = NULL;
+			}
 			continue;
 		}
 		for ( j = 0 ; j < windingPointCount ; j++ ) {

@@ -337,8 +337,10 @@ static void R_RemoteRender( drawSurf_t *surf, textureStage_t *stage ) {
 		return;
 	}
 
-	// if the entity doesn't have a remoteRenderView, do nothing
-	if ( !surf->space->entityDef->parms.remoteRenderView ) {
+	// if the entity doesn't have a remoteRenderView, do nothing. BSE effect
+	// surfaces and in-world GUI emits carry a NULL entityDef, so guard it: an
+	// entity-less surface can never supply a remoteRenderView.
+	if ( surf->space->entityDef == NULL || !surf->space->entityDef->parms.remoteRenderView ) {
 		return;
 	}
 

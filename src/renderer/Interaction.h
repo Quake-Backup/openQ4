@@ -73,6 +73,13 @@ typedef struct {
 	bool					shadowStencilEligible;
 	bool					shadowStencilUsesPrelight;
 
+	// Lifetime cache of the point-light emitter-panel caster verdict. Its inputs
+	// (shadow shader, ambientTris, the interaction's local light origin/radius)
+	// are all fixed for the surface interaction's lifetime; any change frees and
+	// rebuilds these surfaces, clearing the flag, so it never goes stale.
+	bool					pointEmitterCasterVerdictValid;
+	bool					pointEmitterCasterSkip;
+
 	int						expCulled;			// only for the experimental shadow buffer renderer
 
 	srfCullInfo_t			cullInfo;

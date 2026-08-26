@@ -878,8 +878,15 @@ void idMD5Mesh::ParseMesh( idLexer &parser, int numJoints, const idJointMat *joi
 
 		firstWeightForVertex[i] = parser.ParseInt();
 		numWeightsForVertex[i] = parser.ParseInt();
-		if ( !numWeightsForVertex[i] ) {
+		if ( numWeightsForVertex[i] <= 0 ) {
+			// A negative count would skip the fill loop below, leaving count at
+			// 0 and driving the weightIndex[count*2-1] write out of bounds.
 			parser.Error( "Vertex without any joint weights." );
+		}
+		if ( firstWeightForVertex[i] < 0 ) {
+			// A negative base index reads tempWeights below its buffer and can
+			// also mask the maxweight range check.
+			parser.Error( "Vertex with negative first weight index." );
 		}
 
 		numWeights += numWeightsForVertex[i];
@@ -910,7 +917,11 @@ void idMD5Mesh::ParseMesh( idLexer &parser, int numJoints, const idJointMat *joi
 		parser.Error( "Invalid size: %d", count );
 	}
 	if ( maxweight > count ) {
-		parser.Warning( "Vertices reference out of range weights in model (%d of %d weights).", maxweight, count );
+		// This was a warning, but the insertion-sort and fill loops below index
+		// tempWeights[firstWeight + j] directly (idList::operator[] is unchecked
+		// in release), so an out-of-range reference is an OOB read/write, not a
+		// cosmetic issue. Stock models never trip this.
+		parser.Error( "Vertices reference out of range weights in model (%d of %d weights).", maxweight, count );
 	}
 
 	tempWeights.SetNum( count );

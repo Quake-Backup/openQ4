@@ -372,6 +372,7 @@ typedef struct vkClassicInteractionPreparedView_s {
 	int			submittedLogicalVolumeDraws;
 	int			submittedPreloadVolumeDraws;
 	int			uniformCheckpoint;
+	VkPipeline		boundPipeline;	// last pipeline bound in the owned-view walk; skips redundant same-pipeline binds
 	bool			ready;
 	bool			committed;
 	vkClassicInteractionDrawPlan_t draws[ CLASSIC_INTERACTION_DOMAIN_MAX_PRIMITIVES ];
@@ -1564,8 +1565,11 @@ static void VK_ClassicInteraction_DrawReceiverRange(
 			pipeline = prepared.pointInteractionPipeline;
 			layout = prepared.mappedInteractionLayout;
 		}
-		vkCmdBindPipeline( prepared.cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
-			pipeline );
+		if ( pipeline != prepared.boundPipeline ) {
+			vkCmdBindPipeline( prepared.cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+				pipeline );
+			prepared.boundPipeline = pipeline;
+		}
 		VK_Exec_BindPreparedTriGeometry( prepared.cmd, prepared.frameSlot,
 			plan.vertexOffset, plan.indexOffset );
 		vkCmdSetScissor( prepared.cmd, 0, 1, &plan.scissor );
@@ -1604,8 +1608,11 @@ static void VK_ClassicInteraction_DrawShadowRange(
 	}
 
 	VkCommandBuffer cmd = prepared.cmd;
-	vkCmdBindPipeline( cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
-		prepared.shadowPipeline );
+	if ( prepared.shadowPipeline != prepared.boundPipeline ) {
+		vkCmdBindPipeline( cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+			prepared.shadowPipeline );
+		prepared.boundPipeline = prepared.shadowPipeline;
+	}
 	vkCmdSetDepthTestEnable( cmd, VK_TRUE );
 	vkCmdSetDepthWriteEnable( cmd, VK_FALSE );
 	vkCmdSetDepthCompareOp( cmd, VK_COMPARE_OP_LESS_OR_EQUAL );
@@ -1702,6 +1709,7 @@ void VK_ClassicInteraction_DrawOwnedView( const viewDef_t *viewDef ) {
 
 	VK_ShadowMap_CommitClassicInteractionView( prepared.view );
 	prepared.committed = true;
+	prepared.boundPipeline = VK_NULL_HANDLE;
 	vkCmdSetViewport( prepared.cmd, 0, 1, &prepared.viewport );
 	vkCmdSetDepthTestEnable( prepared.cmd, VK_TRUE );
 	vkCmdSetDepthWriteEnable( prepared.cmd, VK_FALSE );

@@ -1189,9 +1189,12 @@ static void RB_ClearSceneScaleState( rbSceneScaleState_t &state ) {
 	state.nativeProjectionOffsetY = 0.0f;
 	state.nativeViewport.Clear();
 	state.nativeScissor.Clear();
-	state.rectRestores.Clear();
+	// Capacity-preserving reset: SetNum(0,false) keeps the list storage and the
+	// no-arg Clear() memsets the hash in place, so a per-view state that is now
+	// retained (see RB_STD_DrawView) no longer frees and reallocates every view.
+	state.rectRestores.SetNum( 0, false );
 	state.rectRestores.SetGranularity( 256 );
-	state.rectRestoreHash.Clear( 4096, 4096 );
+	state.rectRestoreHash.Clear();
 }
 
 static int RB_RequestedScreenFraction( void ) {
@@ -6968,6 +6971,23 @@ static float RB_SoftParticleVertexColorModeValue( stageVertexColor_t vertexColor
 	}
 }
 
+// The current-depth image is only ever sampled with depth comparison disabled,
+// and texture parameters persist on the texture object across respecification,
+// so set them once per storage generation instead of on every draw that samples
+// it. Nothing sets GL_TEXTURE_COMPARE_MODE to anything but GL_NONE on this image.
+static void RB_EnsureCurrentDepthSampledPlain( idImage *depthImage ) {
+	static const idImage *lastImage = NULL;
+	static uint64_t lastGeneration = 0;
+	const uint64_t generation = depthImage->GetStorageGeneration();
+	if ( depthImage == lastImage && generation == lastGeneration ) {
+		return;
+	}
+	glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_COMPARE_MODE, GL_NONE );
+	glTexParameteri( GL_TEXTURE_2D, GL_DEPTH_TEXTURE_MODE, GL_LUMINANCE );
+	lastImage = depthImage;
+	lastGeneration = generation;
+}
+
 static bool RB_TryDrawSoftParticleStage( const drawSurf_t *surf, const shaderStage_t *pStage, const float *regs, const srfTriangles_t *tri, idDrawVert *ac, int stage, const float color[4] ) {
 	if ( !RB_SoftParticleStageEligible( surf, pStage ) ) {
 		return false;
@@ -7021,8 +7041,7 @@ static bool RB_TryDrawSoftParticleStage( const drawSurf_t *surf, const shaderSta
 
 	GL_SelectTexture( 1 );
 	depthImage->Bind();
-	glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_COMPARE_MODE, GL_NONE );
-	glTexParameteri( GL_TEXTURE_2D, GL_DEPTH_TEXTURE_MODE, GL_LUMINANCE );
+	RB_EnsureCurrentDepthSampledPlain( depthImage );
 	GL_SelectTexture( 0 );
 
 	if ( glConfig.ARBVertexProgramAvailable ) {
@@ -10831,6 +10850,10 @@ void RB_STD_T_RenderShaderPasses( const drawSurf_t *surf ) {
 		const bool hasBakedDecalStageColor =
 			( surf->decalColorCache != NULL && stage >= 0 && stage < surf->decalColorStageCount && surf->decalColorStride > 0 );
 
+		// tracks whether the unit-1 constant-color combiner block below actually
+		// ran, so the teardown only touches unit 1 when it was set up
+		bool unit1Used = false;
+
 		// select the vertex color source
 		if ( pStage->vertexColor == SVC_IGNORE ) {
 			glColor4fv( color );
@@ -10852,6 +10875,7 @@ void RB_STD_T_RenderShaderPasses( const drawSurf_t *surf ) {
 			// texture stage. Skip this when decal stages already baked stage
 			// color into per-vertex data; applying both paths darkens decals.
 			if ( !hasBakedDecalStageColor && ( color[0] != 1 || color[1] != 1 || color[2] != 1 || color[3] != 1 ) ) {
+				unit1Used = true;
 				GL_SelectTexture( 1 );
 
 				globalImages->whiteImage->Bind();
@@ -10888,11 +10912,18 @@ void RB_STD_T_RenderShaderPasses( const drawSurf_t *surf ) {
 			if ( pStage->vertexColor != SVC_IGNORE ) {
 				glDisableClientState( GL_COLOR_ARRAY );
 
-				GL_SelectTexture( 1 );
-				GL_TexEnv( GL_MODULATE );
-				globalImages->BindNull();
-				GL_SelectTexture( 0 );
-				GL_TexEnv( GL_MODULATE );
+				// only tear down unit 1 if the constant-color block set it up
+				if ( unit1Used ) {
+					GL_SelectTexture( 1 );
+					GL_TexEnv( GL_MODULATE );
+					globalImages->BindNull();
+					GL_SelectTexture( 0 );
+				}
+				// unit 0's combiner was only changed by SVC_INVERSE_MODULATE
+				if ( pStage->vertexColor == SVC_INVERSE_MODULATE ) {
+					GL_SelectTexture( 0 );
+					GL_TexEnv( GL_MODULATE );
+				}
 			}
 			continue;
 		}
@@ -10905,11 +10936,18 @@ void RB_STD_T_RenderShaderPasses( const drawSurf_t *surf ) {
 		if ( pStage->vertexColor != SVC_IGNORE ) {
 			glDisableClientState( GL_COLOR_ARRAY );
 
-			GL_SelectTexture( 1 );
-			GL_TexEnv( GL_MODULATE );
-			globalImages->BindNull();
-			GL_SelectTexture( 0 );
-			GL_TexEnv( GL_MODULATE );
+			// only tear down unit 1 if the constant-color block set it up
+			if ( unit1Used ) {
+				GL_SelectTexture( 1 );
+				GL_TexEnv( GL_MODULATE );
+				globalImages->BindNull();
+				GL_SelectTexture( 0 );
+			}
+			// unit 0's combiner was only changed by SVC_INVERSE_MODULATE
+			if ( pStage->vertexColor == SVC_INVERSE_MODULATE ) {
+				GL_SelectTexture( 0 );
+				GL_TexEnv( GL_MODULATE );
+			}
 		}
 	}
 
@@ -15265,7 +15303,12 @@ void	RB_STD_DrawView( void ) {
 
 	RB_MarkPortalSkyBackdropForSceneTarget( backEnd.viewDef );
 
-	rbSceneScaleState_t sceneScaleState;
+	// Retained across views (RB_STD_DrawView is the single, non-recursive
+	// RC_DRAW_VIEW handler) so its rect-restore list and hash keep their storage
+	// instead of churning the heap every 3D view; RB_ClearSceneScaleState resets
+	// the contents each view. Aliased so the name stays the same for all uses.
+	static rbSceneScaleState_t g_sceneScaleState;
+	rbSceneScaleState_t &sceneScaleState = g_sceneScaleState;
 	RB_ClearSceneScaleState( sceneScaleState );
 	const bool rootSceneRenderTargetRequested = RB_SceneRenderTargetRequested();
 	const bool inlineSubviewSceneRenderTargetRequested = RB_InlineSubviewSceneRenderTargetRequested();

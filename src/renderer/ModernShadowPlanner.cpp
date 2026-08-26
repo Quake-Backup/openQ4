@@ -69,6 +69,14 @@ static renderBackendCaps_t rg_modernShadowPlannerCaps;
 static renderFeatureSet_t rg_modernShadowPlannerFeatures;
 static modernShadowPlannerStats_t rg_modernShadowPlannerStats;
 static idList<modernShadowLightDescriptor_t> rg_modernShadowPlannerDescriptors;
+// Index of descriptor slots by viewLight pointer, rebuilt in lockstep with the
+// list each PrepareFrame so per-light lookups from the hot draw paths are O(1)
+// instead of a linear scan.
+static idHashIndex rg_modernShadowPlannerDescriptorHash;
+
+static ID_INLINE int R_ModernShadowPlanner_DescriptorKey( const viewLight_t *viewLight ) {
+	return ( int )( ( ( uintptr_t )viewLight ) >> 4 );
+}
 static modernShadowPlannerFairnessHistory_t rg_modernShadowPlannerFairnessHistory[MODERN_SHADOW_FAIRNESS_HISTORY_SLOTS];
 static int rg_modernShadowPlannerFairnessEpoch = 0;
 static int rg_modernShadowPlannerFairnessHighWater = 0;	// count of ever-allocated (valid) fairness slots; valid slots always form the prefix [0, highWater)
@@ -1251,21 +1259,20 @@ static bool R_ModernShadowPlanner_CandidateBetter( const modernShadowLightDescri
 	return candidate.lightDefIndex < best.lightDefIndex;
 }
 
-static int R_ModernShadowPlanner_FindBestCandidate( const bool *selected ) {
-	int best = -1;
-	for ( int i = 0; i < rg_modernShadowPlannerDescriptors.Num(); ++i ) {
-		if ( selected[i] ) {
-			continue;
-		}
-		const modernShadowLightDescriptor_t &candidate = rg_modernShadowPlannerDescriptors[i];
-		if ( candidate.fallbackReason != MODERN_SHADOW_FALLBACK_NONE ) {
-			continue;
-		}
-		if ( best < 0 || R_ModernShadowPlanner_CandidateBetter( candidate, rg_modernShadowPlannerDescriptors[best] ) ) {
-			best = i;
-		}
+// Total order over descriptor indices matching the repeated best-candidate
+// rescan: strictly-better wins, and a full tie keeps the lower descriptor index
+// (what the linear scan's "only replace on strictly better" produces). The
+// explicit index tie-break makes the result independent of the unstable sort.
+static int R_ModernShadowPlanner_CompareCandidateIndices( const int *a, const int *b ) {
+	const modernShadowLightDescriptor_t &A = rg_modernShadowPlannerDescriptors[*a];
+	const modernShadowLightDescriptor_t &B = rg_modernShadowPlannerDescriptors[*b];
+	if ( R_ModernShadowPlanner_CandidateBetter( A, B ) ) {
+		return -1;
 	}
-	return best;
+	if ( R_ModernShadowPlanner_CandidateBetter( B, A ) ) {
+		return 1;
+	}
+	return *a - *b;
 }
 
 static void R_ModernShadowPlanner_AssignAtlasTiles( modernShadowLightDescriptor_t &descriptor, int firstTile, int tilesPerRow ) {
@@ -1311,8 +1318,6 @@ static void R_ModernShadowPlanner_SetBudgetMissPolicy( modernShadowLightDescript
 }
 
 static void R_ModernShadowPlanner_SelectMappedLights( modernShadowPlannerStats_t &stats ) {
-	bool selected[MODERN_SHADOW_PLAN_MAX_LIGHTS];
-	memset( selected, 0, sizeof( selected ) );
 	modernShadowPlannerBudgetUse_t budgetUse;
 	memset( &budgetUse, 0, sizeof( budgetUse ) );
 	int mappedLights = 0;
@@ -1320,12 +1325,22 @@ static void R_ModernShadowPlanner_SelectMappedLights( modernShadowPlannerStats_t
 	int usedPixels = 0;
 	const int tilePixels = Max( 1, stats.shadowMapSize ) * Max( 1, stats.shadowMapSize );
 	const int atlasSlotsPerRow = Max( 1, static_cast<int>( idMath::Ceil( idMath::Sqrt( static_cast<float>( stats.maxAtlasTiles ) ) ) ) );
-	for ( ;; ) {
-		const int candidateIndex = R_ModernShadowPlanner_FindBestCandidate( selected );
-		if ( candidateIndex < 0 ) {
-			break;
+
+	// Collect the selectable candidates once and order them exactly as the
+	// repeated best-candidate rescan would, then process in that fixed order.
+	// Processing a candidate only mutates that candidate's own keys, so a
+	// pre-sorted order is identical to the O(selectable * total) rescan.
+	static idList<int> selectionOrder;
+	selectionOrder.SetNum( 0, false );
+	for ( int i = 0; i < rg_modernShadowPlannerDescriptors.Num(); ++i ) {
+		if ( rg_modernShadowPlannerDescriptors[i].fallbackReason == MODERN_SHADOW_FALLBACK_NONE ) {
+			selectionOrder.Append( i );
 		}
-		selected[candidateIndex] = true;
+	}
+	selectionOrder.Sort( R_ModernShadowPlanner_CompareCandidateIndices );
+
+	for ( int orderIndex = 0; orderIndex < selectionOrder.Num(); ++orderIndex ) {
+		const int candidateIndex = selectionOrder[orderIndex];
 		modernShadowLightDescriptor_t &candidate = rg_modernShadowPlannerDescriptors[candidateIndex];
 		const modernShadowBudgetClass_t budgetClass = R_ModernShadowPlanner_BudgetClassForDescriptor( candidate );
 		candidate.budgetClass = budgetClass;
@@ -1770,6 +1785,7 @@ void R_ModernShadowPlanner_PrepareFrame( const idScenePacketFrame &packetFrame, 
 	const bool initialized = rg_modernShadowPlannerInitialized;
 	const bool available = initialized && rg_modernShadowPlannerFeatures.scenePackets;
 	rg_modernShadowPlannerDescriptors.SetNum( 0, false );
+	rg_modernShadowPlannerDescriptorHash.Clear();
 	memset( &rg_modernShadowPlannerStats, 0, sizeof( rg_modernShadowPlannerStats ) );
 	rg_modernShadowPlannerStats.initialized = initialized;
 	rg_modernShadowPlannerStats.available = available;
@@ -1822,20 +1838,32 @@ void R_ModernShadowPlanner_PrepareFrame( const idScenePacketFrame &packetFrame, 
 				rg_modernShadowPlannerStats.overflow = true;
 				break;
 			}
-			modernShadowLightDescriptor_t descriptor;
+			// Build the descriptor in place. idList::Alloc grows by granularity
+			// and returns a reference to the new slot, avoiding the ~1.4KB stack
+			// temporary and the whole-struct Append copy (InitDescriptor memsets
+			// the slot first, so a recycled slot cannot leak stale bytes).
+			const int descriptorIndex = rg_modernShadowPlannerDescriptors.Num();
+			modernShadowLightDescriptor_t &descriptor = rg_modernShadowPlannerDescriptors.Alloc();
 			R_ModernShadowPlanner_InitDescriptor(
 				descriptor,
 				vLight,
 				scene.viewDef,
 				sceneIndex,
-				rg_modernShadowPlannerDescriptors.Num(),
+				descriptorIndex,
 				rg_modernShadowPlannerStats.shadowMapSize,
 				rg_modernShadowPlannerStats.translucentEnabled );
-			rg_modernShadowPlannerDescriptors.Append( descriptor );
 		}
 		if ( rg_modernShadowPlannerStats.overflow ) {
 			break;
 		}
+	}
+
+	// Index the finalized descriptor list by viewLight pointer for the O(1)
+	// DescriptorForLight lookups the hot draw paths make; the slots are appended
+	// once above and never reordered afterward.
+	for ( int i = 0; i < rg_modernShadowPlannerDescriptors.Num(); ++i ) {
+		rg_modernShadowPlannerDescriptorHash.Add(
+			R_ModernShadowPlanner_DescriptorKey( rg_modernShadowPlannerDescriptors[i].viewLight ), i );
 	}
 
 	R_ModernShadowPlanner_SelectMappedLights( rg_modernShadowPlannerStats );
@@ -1961,8 +1989,13 @@ const modernShadowLightDescriptor_t *R_ModernShadowPlanner_DescriptorForLight( c
 	if ( viewLight == NULL ) {
 		return NULL;
 	}
-	for ( int i = 0; i < rg_modernShadowPlannerDescriptors.Num(); ++i ) {
-		if ( rg_modernShadowPlannerDescriptors[i].viewLight == viewLight ) {
+	// The hash is rebuilt in lockstep with the descriptor list each PrepareFrame,
+	// so a lookup here is exact; the index guard is defensive only.
+	const int key = R_ModernShadowPlanner_DescriptorKey( viewLight );
+	for ( int i = rg_modernShadowPlannerDescriptorHash.First( key ); i != -1;
+			i = rg_modernShadowPlannerDescriptorHash.Next( i ) ) {
+		if ( i < rg_modernShadowPlannerDescriptors.Num()
+				&& rg_modernShadowPlannerDescriptors[i].viewLight == viewLight ) {
 			return &rg_modernShadowPlannerDescriptors[i];
 		}
 	}

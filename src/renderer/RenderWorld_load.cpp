@@ -1710,6 +1710,22 @@ idRenderModel *idRenderWorldLocal::ParseShadowModel( Lexer *src ) {
 	tri->numIndexes = src->ParseInt();
 	tri->shadowCapPlaneBits = src->ParseInt();
 
+	// FinishSurfaces is intentionally skipped for shadow models, so nothing
+	// downstream range-checks these file-provided counts before the stencil draw
+	// fetches indexes. Validate them here with the same predicates the binary
+	// shadow-cache reader applies. Zero counts are allowed (an empty shadow model
+	// parses harmlessly); only malformed data is rejected.
+	if ( tri->numVerts < 0 || tri->numVerts > RENDER_WORLD_CACHE_MAX_SHADOW_VERTS
+			|| tri->numIndexes < 0 || tri->numIndexes > RENDER_WORLD_CACHE_MAX_SHADOW_INDEXES
+			|| ( tri->numIndexes % 3 ) != 0
+			|| tri->numShadowIndexesNoCaps < 0 || tri->numShadowIndexesNoFrontCaps < 0
+			|| ( tri->numShadowIndexesNoCaps % 3 ) != 0 || ( tri->numShadowIndexesNoFrontCaps % 3 ) != 0
+			|| tri->numShadowIndexesNoCaps > tri->numShadowIndexesNoFrontCaps
+			|| tri->numShadowIndexesNoFrontCaps > tri->numIndexes ) {
+		src->Error( "R_ParseShadowModel: bad shadow model counts" );
+		return NULL;
+	}
+
 	R_AllocStaticTriSurfShadowVerts( tri, tri->numVerts );
 	tri->bounds.Clear();
 	for ( j = 0 ; j < tri->numVerts ; j++ ) {
@@ -1805,6 +1821,19 @@ void idRenderWorldLocal::ParseInterAreaPortals( Lexer *src ) {
 		a1 = src->ParseInt();
 		a2 = src->ParseInt();
 
+		// a1/a2 index portalAreas directly below; reject file-provided area
+		// numbers out of range rather than corrupting adjacent memory. numPoints
+		// must be at least a triangle (GetPlane reads three points) and is capped
+		// to the same bound the binary cache reader enforces.
+		if ( a1 < 0 || a1 >= numPortalAreas || a2 < 0 || a2 >= numPortalAreas ) {
+			src->Error( "R_ParseInterAreaPortals: portal %i references area out of range (%i, %i of %i)", i, a1, a2, numPortalAreas );
+			return;
+		}
+		if ( numPoints < 3 || numPoints > RENDER_WORLD_CACHE_MAX_WINDING_POINTS ) {
+			src->Error( "R_ParseInterAreaPortals: portal %i has bad point count %i", i, numPoints );
+			return;
+		}
+
 		w = new idWinding( numPoints );
 		w->SetNumPoints( numPoints );
 		for ( j = 0 ; j < numPoints ; j++ ) {
@@ -1887,6 +1916,16 @@ void idRenderWorldLocal::ParseNodes( Lexer *src ) {
 	}
 
 	src->ExpectTokenString( "}" );
+
+	// CommonChildrenArea_r (run at finalize) recurses this graph over file-
+	// provided child indices with no bounds or cycle guard, so validate it here
+	// with the same bounds/area-range/cycle/depth checks the binary cache path
+	// enforces. Nodes are written after portals, so numPortalAreas is already
+	// set for any multi-area map that carries nodes.
+	if ( numAreaNodes > 0
+			&& !R_RenderWorldCacheValidateNodeGraph( areaNodes, numAreaNodes, numPortalAreas ) ) {
+		src->Error( "R_ParseNodes: invalid area node graph" );
+	}
 }
 
 /*
@@ -2053,6 +2092,12 @@ void idRenderWorldLocal::FreeDefs() {
 	int		i;
 
 	generateAllInteractionsCalled = false;
+
+	// Every def is about to be freed one by one; clearing the draw-surf area memo
+	// up front keeps each FreeEntityDef's per-entity invalidation trivial instead
+	// of scanning a still-populated memo thousands of times (e.g. same-map restart
+	// via InitFromMap's retain path, which frees defs without FreeWorld's clear).
+	R_ClearDrawSurfAreaMemo();
 
 	if ( interactionTable ) {
 		R_StaticFree( interactionTable );

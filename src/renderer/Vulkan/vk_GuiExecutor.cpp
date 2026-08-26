@@ -141,6 +141,7 @@ typedef struct vkRing_s {
 	unsigned char *	mapped;
 	int				capacity;
 	int				cursor;
+	bool			overflowWarned;	// latched per frame so one oversized scene cannot emit a warning per failed surface allocation
 } vkRing_t;
 
 typedef struct vkPipelineTarget_s {
@@ -577,7 +578,10 @@ static int VK_Ring_Alloc( vkRing_t &ring, const void *data, size_t bytes, int al
 	if ( data == NULL || ring.mapped == NULL || bytes == 0 || ring.capacity <= 0 ||
 			ring.cursor < 0 || ring.cursor > ring.capacity || alignment <= 0 ||
 			( alignment & ( alignment - 1 ) ) != 0 ) {
-		common->Warning( "Vulkan: invalid frame geometry ring allocation" );
+		if ( !ring.overflowWarned ) {
+			common->Warning( "Vulkan: invalid frame geometry ring allocation" );
+			ring.overflowWarned = true;
+		}
 		return -1;
 	}
 
@@ -585,18 +589,15 @@ static int VK_Ring_Alloc( vkRing_t &ring, const void *data, size_t bytes, int al
 	const size_t alignmentMask = static_cast<size_t>( alignment - 1 );
 	const size_t offset = ( static_cast<size_t>( ring.cursor ) + alignmentMask ) & ~alignmentMask;
 	if ( offset > capacity || bytes > capacity - offset ) {
-		common->Warning( "Vulkan: frame geometry ring overflow (%zu + %zu > %zu)", offset, bytes, capacity );
+		if ( !ring.overflowWarned ) {
+			common->Warning( "Vulkan: frame geometry ring overflow (%zu + %zu > %zu)", offset, bytes, capacity );
+			ring.overflowWarned = true;
+		}
 		return -1;
 	}
 	memcpy( ring.mapped + offset, data, bytes );
-	const VkResult flushResult = vmaFlushAllocation(
-			vkCtx.allocator, ring.allocation, (VkDeviceSize)offset,
-			(VkDeviceSize)bytes );
-	if ( flushResult != VK_SUCCESS ) {
-		common->Warning( "Vulkan: frame geometry ring flush failed (%d)",
-				(int)flushResult );
-		return -1;
-	}
+	// Host writes are flushed once per ring in VK_GuiExecutor_SubmitFrame, before
+	// the queue submit that consumes them, rather than once per allocation.
 	ring.cursor = static_cast<int>( offset + bytes );
 	return static_cast<int>( offset );
 }
@@ -608,7 +609,10 @@ static int VK_Ring_Reserve( vkRing_t &ring, size_t bytes, int alignment ) {
 	if ( ring.mapped == NULL || bytes == 0 || ring.capacity <= 0
 			|| ring.cursor < 0 || ring.cursor > ring.capacity || alignment <= 0
 			|| ( alignment & ( alignment - 1 ) ) != 0 ) {
-		common->Warning( "Vulkan: invalid frame geometry ring reservation" );
+		if ( !ring.overflowWarned ) {
+			common->Warning( "Vulkan: invalid frame geometry ring reservation" );
+			ring.overflowWarned = true;
+		}
 		return -1;
 	}
 
@@ -616,8 +620,11 @@ static int VK_Ring_Reserve( vkRing_t &ring, size_t bytes, int alignment ) {
 	const size_t alignmentMask = static_cast<size_t>( alignment - 1 );
 	const size_t offset = ( static_cast<size_t>( ring.cursor ) + alignmentMask ) & ~alignmentMask;
 	if ( offset > capacity || bytes > capacity - offset ) {
-		common->Warning( "Vulkan: frame geometry ring reservation overflow (%zu + %zu > %zu)",
-			offset, bytes, capacity );
+		if ( !ring.overflowWarned ) {
+			common->Warning( "Vulkan: frame geometry ring reservation overflow (%zu + %zu > %zu)",
+				offset, bytes, capacity );
+			ring.overflowWarned = true;
+		}
 		return -1;
 	}
 	ring.cursor = static_cast<int>( offset + bytes );
@@ -3107,15 +3114,27 @@ static bool VK_GuiExecutor_BeginFrame( void ) {
 		return false;
 	}
 
-	vkResetFences( vkCtx.device, 1, &vkCtx.frameFences[ slot ] );
-
 	VkCommandBuffer cmd = vkCtx.commandBuffers[ slot ];
-	vkResetCommandBuffer( cmd, 0 );
 	VkCommandBufferBeginInfo cbbi;
 	memset( &cbbi, 0, sizeof( cbbi ) );
 	cbbi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
 	cbbi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-	vkBeginCommandBuffer( cmd, &cbbi );
+	// Reset/begin the command buffer BEFORE resetting the slot fence, and bail
+	// on failure (device-lost between the fence wait and here): recording the
+	// barriers below into a command buffer that was never begun is undefined
+	// behavior, and leaving the fence signaled on the failure path keeps the
+	// slot's "fence signaled == slot idle" invariant so the next frame does not
+	// deadlock. The acquired swapchain image is abandoned only on this already
+	// terminal device-lost path.
+	if ( vkResetCommandBuffer( cmd, 0 ) != VK_SUCCESS
+			|| vkBeginCommandBuffer( cmd, &cbbi ) != VK_SUCCESS ) {
+		common->Warning( "Vulkan: frame-slot %d command buffer begin failed", slot );
+		return false;
+	}
+	if ( vkResetFences( vkCtx.device, 1, &vkCtx.frameFences[ slot ] ) != VK_SUCCESS ) {
+		common->Warning( "Vulkan: frame-slot %d fence reset failed", slot );
+		return false;
+	}
 	// The slot fence above is the sole retirement wait. Timestamp results are
 	// polled here without VK_QUERY_RESULT_WAIT_BIT before this slot is reset.
 	VK_GpuFrameTiming_BeginFrame( cmd, slot, tr.frameCount );
@@ -3165,6 +3184,9 @@ static bool VK_GuiExecutor_BeginFrame( void ) {
 	vkExec.vertexRings[ slot ].cursor = 0;
 	vkExec.indexRings[ slot ].cursor = 0;
 	vkExec.uniformRings[ slot ].cursor = 0;
+	vkExec.vertexRings[ slot ].overflowWarned = false;
+	vkExec.indexRings[ slot ].overflowWarned = false;
+	vkExec.uniformRings[ slot ].overflowWarned = false;
 	memset( vkExec.vertMemo, 0, sizeof( vkExec.vertMemo ) );
 	memset( vkExec.idxMemo, 0, sizeof( vkExec.idxMemo ) );
 	memset( vkExec.gpuSkinningMemo, 0, sizeof( vkExec.gpuSkinningMemo ) );
@@ -4060,6 +4082,17 @@ static bool VK_TemporalPresentation_BlitSupported( VkFormat sourceFormat,
 	return true;
 }
 
+// Depth formats have no mandatory blit support, so probe before using a single
+// flipped vkCmdBlitImage in place of the per-row depth copy. Source and
+// destination share the depth format (the copyDepth path requires it).
+static bool VK_Exec_DepthBlitSupported( VkFormat depthFormat ) {
+	VkFormatProperties properties;
+	memset( &properties, 0, sizeof( properties ) );
+	vkGetPhysicalDeviceFormatProperties( vkCtx.physicalDevice, depthFormat, &properties );
+	return ( properties.optimalTilingFeatures & VK_FORMAT_FEATURE_BLIT_SRC_BIT ) != 0
+		&& ( properties.optimalTilingFeatures & VK_FORMAT_FEATURE_BLIT_DST_BIT ) != 0;
+}
+
 static bool VK_TemporalPresentation_EnsureSceneTarget( int width, int height ) {
 	const int maxDimension = Min( 32767,
 		static_cast<int>( vkCtx.deviceProperties.limits.maxImageDimension2D ) );
@@ -4650,40 +4683,64 @@ bool VK_Exec_CopyRender( idImage *image, int x, int y, int width, int height,
 	VK_Exec_TransitionImage( destination, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL );
 
 	if ( copyDepth ) {
-		// vkCmdBlitImage is not universally supported for depth formats and a
-		// copy cannot use reversed coordinates. Emit one exact-format copy per
-		// row to preserve the GL bottom-left capture orientation.
-		VkImageCopy *rows = (VkImageCopy *)Mem_Alloc( height * sizeof( VkImageCopy ) );
-		if ( rows == NULL ) {
-			VK_Exec_TransitionImage( destination, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL );
-			if ( sourceEntry != NULL ) {
-				VK_Exec_TransitionImage( sourceEntry, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL );
-			} else {
-				VK_Exec_TransitionSwapchainDepth( VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-						VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL );
+		if ( VK_Exec_DepthBlitSupported( sourceFormat ) ) {
+			// One flipped NEAREST blit reproduces the per-row copy's GL
+			// bottom-left orientation texel-exactly (identical format + NEAREST),
+			// without allocating a per-row region array. Same offset convention
+			// as the colour blit path below.
+			VkImageBlit depthBlit;
+			memset( &depthBlit, 0, sizeof( depthBlit ) );
+			depthBlit.srcSubresource.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+			depthBlit.srcSubresource.layerCount = 1;
+			depthBlit.srcOffsets[ 0 ].x = x;
+			depthBlit.srcOffsets[ 0 ].y = sourceHeight - y;
+			depthBlit.srcOffsets[ 1 ].x = x + width;
+			depthBlit.srcOffsets[ 1 ].y = sourceHeight - y - height;
+			depthBlit.srcOffsets[ 1 ].z = 1;
+			depthBlit.dstSubresource.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+			depthBlit.dstSubresource.baseArrayLayer = targetIsCube ? (uint32_t)cubeFace : 0;
+			depthBlit.dstSubresource.layerCount = 1;
+			depthBlit.dstOffsets[ 1 ].x = width;
+			depthBlit.dstOffsets[ 1 ].y = height;
+			depthBlit.dstOffsets[ 1 ].z = 1;
+			vkCmdBlitImage( vkExec.cmd, sourceImage, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+					destination->image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+					1, &depthBlit, VK_FILTER_NEAREST );
+		} else {
+			// Depth blit unsupported on this device: emit one exact-format copy
+			// per row to preserve the GL bottom-left capture orientation.
+			VkImageCopy *rows = (VkImageCopy *)Mem_Alloc( height * sizeof( VkImageCopy ) );
+			if ( rows == NULL ) {
+				VK_Exec_TransitionImage( destination, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL );
+				if ( sourceEntry != NULL ) {
+					VK_Exec_TransitionImage( sourceEntry, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL );
+				} else {
+					VK_Exec_TransitionSwapchainDepth( VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+							VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL );
+				}
+				VK_Exec_BeginMainRendering( false );
+				return false;
 			}
-			VK_Exec_BeginMainRendering( false );
-			return false;
+			memset( rows, 0, height * sizeof( VkImageCopy ) );
+			for ( int row = 0; row < height; row++ ) {
+				rows[ row ].srcSubresource.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+				rows[ row ].srcSubresource.layerCount = 1;
+				rows[ row ].srcOffset.x = x;
+				rows[ row ].srcOffset.y = sourceHeight - 1 - ( y + row );
+				rows[ row ].dstSubresource.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+				rows[ row ].dstSubresource.baseArrayLayer = targetIsCube
+					? (uint32_t)cubeFace : 0;
+				rows[ row ].dstSubresource.layerCount = 1;
+				rows[ row ].dstOffset.y = row;
+				rows[ row ].extent.width = (uint32_t)width;
+				rows[ row ].extent.height = 1;
+				rows[ row ].extent.depth = 1;
+			}
+			vkCmdCopyImage( vkExec.cmd, sourceImage, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+					destination->image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+					(uint32_t)height, rows );
+			Mem_Free( rows );
 		}
-		memset( rows, 0, height * sizeof( VkImageCopy ) );
-		for ( int row = 0; row < height; row++ ) {
-			rows[ row ].srcSubresource.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
-			rows[ row ].srcSubresource.layerCount = 1;
-			rows[ row ].srcOffset.x = x;
-			rows[ row ].srcOffset.y = sourceHeight - 1 - ( y + row );
-			rows[ row ].dstSubresource.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
-			rows[ row ].dstSubresource.baseArrayLayer = targetIsCube
-				? (uint32_t)cubeFace : 0;
-			rows[ row ].dstSubresource.layerCount = 1;
-			rows[ row ].dstOffset.y = row;
-			rows[ row ].extent.width = (uint32_t)width;
-			rows[ row ].extent.height = 1;
-			rows[ row ].extent.depth = 1;
-		}
-		vkCmdCopyImage( vkExec.cmd, sourceImage, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-				destination->image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-				(uint32_t)height, rows );
-		Mem_Free( rows );
 
 		destination->everUploaded = true;
 		VK_Exec_TransitionImage( destination, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL );
@@ -5283,9 +5340,13 @@ bool VK_GuiExecutor_ReadPixels( int x, int y, int width, int height, void *pixel
 		memset( &cbbi, 0, sizeof( cbbi ) );
 		cbbi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
 		cbbi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-		if ( vkResetFences( vkCtx.device, 1, &vkCtx.frameFences[ submittedSlot ] ) != VK_SUCCESS
-				|| vkResetCommandBuffer( vkExec.cmd, 0 ) != VK_SUCCESS
-				|| vkBeginCommandBuffer( vkExec.cmd, &cbbi ) != VK_SUCCESS ) {
+		// Reset the command buffer and begin recording BEFORE resetting the slot
+		// fence: if the command-buffer reset/begin fails, the fence stays
+		// signaled so the next BeginFrame's fence wait on this slot cannot
+		// deadlock on a fence that will never be submitted.
+		if ( vkResetCommandBuffer( vkExec.cmd, 0 ) != VK_SUCCESS
+				|| vkBeginCommandBuffer( vkExec.cmd, &cbbi ) != VK_SUCCESS
+				|| vkResetFences( vkCtx.device, 1, &vkCtx.frameFences[ submittedSlot ] ) != VK_SUCCESS ) {
 			common->Warning( "Vulkan: failed to resume rendering after screenshot readback" );
 			return false;
 		}
@@ -5339,6 +5400,24 @@ static bool VK_GuiExecutor_SubmitFrame( bool present ) {
 	VK_GpuFrameTiming_EndFrame( cmd, slot );
 	vkEndCommandBuffer( cmd );
 
+	// Flush each ring's host-written prefix once, before the queue submit that
+	// consumes it, instead of once per allocation. vmaFlushAllocation rounds to
+	// nonCoherentAtomSize and clamps to the allocation, and is a no-op on the
+	// HOST_COHERENT memory VMA hands us on desktop.
+	{
+		vkRing_t *frameRings[ 3 ] = {
+			&vkExec.vertexRings[ slot ], &vkExec.indexRings[ slot ], &vkExec.uniformRings[ slot ] };
+		for ( int r = 0; r < 3; r++ ) {
+			if ( frameRings[ r ]->mapped != NULL && frameRings[ r ]->cursor > 0 ) {
+				const VkResult flushResult = vmaFlushAllocation( vkCtx.allocator,
+						frameRings[ r ]->allocation, 0, (VkDeviceSize)frameRings[ r ]->cursor );
+				if ( flushResult != VK_SUCCESS ) {
+					common->Warning( "Vulkan: frame ring flush failed (%d)", (int)flushResult );
+				}
+			}
+		}
+	}
+
 	VkSemaphoreSubmitInfo waitInfo;
 	memset( &waitInfo, 0, sizeof( waitInfo ) );
 	waitInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO;
@@ -5364,6 +5443,26 @@ static bool VK_GuiExecutor_SubmitFrame( bool present ) {
 	si.pSignalSemaphoreInfos = present ? &signalInfo : NULL;
 	if ( vkQueueSubmit2( vkCtx.graphicsQueue, 1, &si, vkCtx.frameFences[ slot ] ) != VK_SUCCESS ) {
 		VK_GpuFrameTiming_SubmitFailed( slot );
+		// The slot fence was reset in BeginFrame; a failed submit never signals
+		// it, so a later vkWaitForFences on this slot (next BeginFrame, or a
+		// screenshot readback) would block forever. The failed submit enqueued
+		// nothing, so the reset fence is idle and can be replaced with a fresh
+		// signaled one. Swap through a temporary so a create failure leaves the
+		// old handle intact rather than a NULL handle. Also clear the frame-open
+		// state: the command buffer is already ended, so the next BeginFrame must
+		// start fresh rather than resume recording into it.
+		vkExec.acquireWaitPending = false;
+		vkExec.frameOpen = false;
+		VkFenceCreateInfo fci;
+		memset( &fci, 0, sizeof( fci ) );
+		fci.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+		fci.flags = VK_FENCE_CREATE_SIGNALED_BIT;
+		VkFence recoveredFence = VK_NULL_HANDLE;
+		if ( vkCreateFence( vkCtx.device, &fci, NULL, &recoveredFence ) == VK_SUCCESS ) {
+			vkDestroyFence( vkCtx.device, vkCtx.frameFences[ slot ], NULL );
+			vkCtx.frameFences[ slot ] = recoveredFence;
+		}
+		common->Warning( "Vulkan: frame submit failed on slot %d; recovered frame state", slot );
 		return false;
 	}
 	vkExec.acquireWaitPending = false;

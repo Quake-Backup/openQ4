@@ -596,11 +596,26 @@ static bool VK_Device_CreateSwapchain( void ) {
 	vkCtx.swapchainTransferSrc = transferSrcSupported;
 
 	uint32_t count = 0;
-	vkGetSwapchainImagesKHR( vkCtx.device, vkCtx.swapchain, &count, NULL );
-	if ( count > 8 ) {
-		count = 8;
+	if ( vkGetSwapchainImagesKHR( vkCtx.device, vkCtx.swapchain, &count, NULL ) != VK_SUCCESS || count == 0 ) {
+		common->Warning( "Vulkan: swapchain image count query failed" );
+		VK_Device_DestroySwapchainObjects();
+		return false;
 	}
-	vkGetSwapchainImagesKHR( vkCtx.device, vkCtx.swapchain, &count, vkCtx.swapchainImages );
+	if ( count > 8 ) {
+		// swapchainImages/Views/renderFinishedSemaphores are fixed at 8 and are
+		// indexed by the image index vkAcquireNextImageKHR returns, which can be
+		// any value below the actual image count. An implementation that creates
+		// more than requested would index them out of bounds, so fail closed
+		// rather than clamp the count while the driver still owns more images.
+		common->Warning( "Vulkan: swapchain created %u images, exceeding the supported maximum of 8", count );
+		VK_Device_DestroySwapchainObjects();
+		return false;
+	}
+	if ( vkGetSwapchainImagesKHR( vkCtx.device, vkCtx.swapchain, &count, vkCtx.swapchainImages ) != VK_SUCCESS ) {
+		common->Warning( "Vulkan: swapchain image retrieval failed" );
+		VK_Device_DestroySwapchainObjects();
+		return false;
+	}
 	vkCtx.swapchainImageCount = count;
 
 	for ( uint32_t i = 0; i < count; i++ ) {

@@ -44,6 +44,8 @@ typedef struct modernLightAtlasEntry_s {
 	unsigned int	sourceTexnum;	// re-upload when the source is reloaded
 	int				cell;
 	int				lastUsedFrame;
+	int				uploadWidth;	// re-upload when a reload changes dims under a recycled GL name
+	int				uploadHeight;
 	bool			resident;
 	bool			pendingUpload;	// reserved this frame, not yet copied in
 	float			rect[4];
@@ -249,6 +251,8 @@ static int R_ModernLightImageAtlas_ClaimEntry( void ) {
 		rg_modernLightAtlasEntries[oldest].resident = false;
 		rg_modernLightAtlasEntries[oldest].image = NULL;
 		rg_modernLightAtlasEntries[oldest].sourceTexnum = 0;
+		rg_modernLightAtlasEntries[oldest].uploadWidth = 0;
+		rg_modernLightAtlasEntries[oldest].uploadHeight = 0;
 		rg_modernLightAtlasEntries[oldest].cell = oldest;
 	}
 	return oldest;
@@ -312,6 +316,10 @@ void R_ModernLightImageAtlas_FlushUploads( void ) {
 	}
 
 	R_GLStateCache().ActiveTextureUnit( 0 );
+	// Diagnostic resident/live counts are refreshed once here (after all Acquires
+	// for the frame) instead of on every Acquire; the values read by gfxInfo are
+	// identical since no Acquire runs between the last Acquire and this flush.
+	R_ModernLightImageAtlas_RefreshCounts();
 }
 
 modernLightAtlasReject_t R_ModernLightImageAtlas_Acquire( const idImage *image, float rect[4] ) {
@@ -346,14 +354,19 @@ modernLightAtlasReject_t R_ModernLightImageAtlas_Acquire( const idImage *image, 
 	}
 
 	int entryIndex = R_ModernLightImageAtlas_FindEntry( image );
-	const bool stale = entryIndex >= 0 && rg_modernLightAtlasEntries[entryIndex].sourceTexnum != R_ModernLightImageAtlas_SourceHandle( image );
+	// A reload can recycle the same GL name with different dimensions, which
+	// would pass a texnum-only staleness check while the resident texels and the
+	// rect (scaled for the old dims) are wrong, so compare dimensions too.
+	const bool stale = entryIndex >= 0
+		&& ( rg_modernLightAtlasEntries[entryIndex].sourceTexnum != R_ModernLightImageAtlas_SourceHandle( image )
+			|| rg_modernLightAtlasEntries[entryIndex].uploadWidth != sourceWidth
+			|| rg_modernLightAtlasEntries[entryIndex].uploadHeight != sourceHeight );
 	if ( entryIndex >= 0 && !stale ) {
 		rg_modernLightAtlasEntries[entryIndex].lastUsedFrame = rg_modernLightAtlasFrame;
 		if ( rect != NULL ) {
 			memcpy( rect, rg_modernLightAtlasEntries[entryIndex].rect, sizeof( float ) * 4 );
 		}
 		rg_modernLightAtlasStats.cacheHits++;
-		R_ModernLightImageAtlas_RefreshCounts();
 		return MODERN_LIGHT_ATLAS_REJECT_NONE;
 	}
 
@@ -368,6 +381,8 @@ modernLightAtlasReject_t R_ModernLightImageAtlas_Acquire( const idImage *image, 
 	modernLightAtlasEntry_t &entry = rg_modernLightAtlasEntries[entryIndex];
 	entry.image = image;
 	entry.sourceTexnum = R_ModernLightImageAtlas_SourceHandle( image );
+	entry.uploadWidth = sourceWidth;
+	entry.uploadHeight = sourceHeight;
 	entry.cell = entryIndex;
 	entry.resident = true;
 	entry.lastUsedFrame = rg_modernLightAtlasFrame;
@@ -382,7 +397,6 @@ modernLightAtlasReject_t R_ModernLightImageAtlas_Acquire( const idImage *image, 
 	if ( rect != NULL ) {
 		memcpy( rect, entry.rect, sizeof( float ) * 4 );
 	}
-	R_ModernLightImageAtlas_RefreshCounts();
 	return MODERN_LIGHT_ATLAS_REJECT_NONE;
 }
 

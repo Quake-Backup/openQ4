@@ -755,6 +755,27 @@ static bool R_ShouldSkipPointLightEmitterCaster( const idMaterial *shadowShader,
 	return ambientTris->bounds.Expand( emitterBoundsPad ).ContainsPoint( localLightOrigin );
 }
 
+// Lifetime-cached wrapper: the emitter-panel test walks the surface geometry
+// building a plane and bounds, and its inputs are invariant for the surface
+// interaction's lifetime, so evaluate it at most once per interaction instead
+// of per visible frame. Only point (non-parallel) lights can skip.
+static bool R_CachedShouldSkipPointLightEmitterCaster( surfaceInteraction_t *sint, const viewLight_t *vLight,
+		const idMaterial *shadowShader, const idVec3 &localLightOrigin, const idVec3 &localLightRadius ) {
+	if ( sint == NULL ) {
+		return vLight->pointLight && !vLight->parallel &&
+			R_ShouldSkipPointLightEmitterCaster( shadowShader, NULL, localLightOrigin, localLightRadius );
+	}
+	if ( !( vLight->pointLight && !vLight->parallel ) ) {
+		return false;
+	}
+	if ( !sint->pointEmitterCasterVerdictValid ) {
+		sint->pointEmitterCasterSkip = R_ShouldSkipPointLightEmitterCaster(
+			shadowShader, sint->ambientTris, localLightOrigin, localLightRadius );
+		sint->pointEmitterCasterVerdictValid = true;
+	}
+	return sint->pointEmitterCasterSkip;
+}
+
 static void R_BoundInteractionSurface( const srfTriangles_t *tri, const glIndex_t *indexes, int numIndexes, idBounds &bounds ) {
 	if ( numIndexes <= 0 ) {
 		bounds.Clear();
@@ -2136,8 +2157,7 @@ void idInteraction::AddActiveInteraction( void ) {
 		if ( shadowMapCasterPolicyActive ) {
 			const bool shadowMapNoSelfShadow = materialNoSelfShadow;
 			const bool skipPointLightEmitterCaster =
-				vLight->pointLight && !vLight->parallel &&
-				R_ShouldSkipPointLightEmitterCaster( shadowShader, sint->ambientTris, localLightOrigin, lightDef->parms.lightRadius );
+				R_CachedShouldSkipPointLightEmitterCaster( sint, vLight, shadowShader, localLightOrigin, lightDef->parms.lightRadius );
 			const bool sameSpectrumShadowMapCaster =
 				R_ShadowMapShaderSpectrumMatchesLight( shadowShader, lightDef );
 			const bool allowShadowMapCaster =

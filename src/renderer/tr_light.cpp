@@ -1244,20 +1244,30 @@ typedef struct drawSurfAreaMemo_s {
 static const int DRAWSURF_AREA_MEMO_MAX = 65536;
 static idList<drawSurfAreaMemo_t>	s_drawSurfAreaMemo;
 static idHashIndex					s_drawSurfAreaMemoHash;
+static idHashIndex					s_drawSurfAreaMemoEntityHash;
 
 static ID_INLINE int R_DrawSurfAreaMemoKey( const idRenderEntityLocal *entityDef, const srfTriangles_t *tri ) {
 	return ( int )( ( ( ( uintptr_t )entityDef ) >> 4 ) ^ ( ( ( uintptr_t )tri ) >> 4 ) );
 }
 
+static ID_INLINE int R_DrawSurfAreaMemoEntityKey( const idRenderEntityLocal *entityDef ) {
+	return ( int )( ( ( uintptr_t )entityDef ) >> 4 );
+}
+
 void R_ClearDrawSurfAreaMemo( void ) {
 	s_drawSurfAreaMemo.Clear();
 	s_drawSurfAreaMemoHash.Free();
+	s_drawSurfAreaMemoEntityHash.Free();
 }
 
 void R_InvalidateDrawSurfAreaMemoForEntity( const idRenderEntityLocal *entityDef ) {
-	// tombstone instead of removing so hash indexes stay stable; the size cap
-	// below reclaims tombstones by clearing everything
-	for ( int i = 0; i < s_drawSurfAreaMemo.Num(); i++ ) {
+	// Tombstone instead of removing so hash indexes stay stable; the size cap in
+	// R_ResolveDrawSurfArea reclaims tombstones by clearing everything. A second
+	// hash keyed on the entity alone lets invalidation walk only this entity's
+	// entries rather than scanning the whole memo on every FreeEntityDef.
+	const int entityKey = R_DrawSurfAreaMemoEntityKey( entityDef );
+	for ( int i = s_drawSurfAreaMemoEntityHash.First( entityKey ); i != -1;
+			i = s_drawSurfAreaMemoEntityHash.Next( i ) ) {
 		if ( s_drawSurfAreaMemo[i].entityDef == entityDef ) {
 			s_drawSurfAreaMemo[i].entityDef = NULL;
 		}
@@ -1306,6 +1316,7 @@ static const portalArea_t *R_ResolveDrawSurfArea( const srfTriangles_t *tri, con
 		newEntry.tri = tri;
 		newEntry.entityDef = entityDef;
 		s_drawSurfAreaMemoHash.Add( key, entryIndex );
+		s_drawSurfAreaMemoEntityHash.Add( R_DrawSurfAreaMemoEntityKey( entityDef ), entryIndex );
 	}
 	drawSurfAreaMemo_t &entry = s_drawSurfAreaMemo[entryIndex];
 	entry.area = area;
@@ -2093,7 +2104,11 @@ const float *R_SetupDrawSurfShaderRegisters( const viewEntity_t *space, const re
 		soundEmitter = R_GetShaderSoundEmitter( space->entityDef->parms.referenceSoundHandle );
 	}
 
-	if ( renderEntity != NULL && renderEntity->referenceShader != NULL ) {
+	// GetStage(0) below returns &stages[0], which is NULL-based when the material
+	// has no stages (idMaterial only allocates the stage array when numStages>0),
+	// so require at least one stage before reading pStage->color.registers.
+	if ( renderEntity != NULL && renderEntity->referenceShader != NULL
+			&& renderEntity->referenceShader->GetNumStages() > 0 ) {
 		const shaderStage_t *pStage;
 
 		renderEntity->referenceShader->EvaluateRegisters( refRegs, renderEntity->shaderParms, tr.viewDef, soundEmitter );

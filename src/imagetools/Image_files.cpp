@@ -502,8 +502,20 @@ static void LoadJPG( const char *filename, unsigned char **pic, int *width, int 
 			fileSystem->CloseFile( f );
 			return;	// just getting timestamp
 		}
-		fbuffer = (byte *)Mem_ClearedAlloc( len + 4096 );
-		f->Read( fbuffer, len );
+		// Only the 4096-byte tail needs zeroing (fill_input_buffer over-reads
+		// past the payload); the body is fully overwritten by the read. Zeroing
+		// just the pad avoids a full-buffer clear on multi-MB JPEGs. The
+		// short-read check is load-bearing, not cosmetic: with an uncleared
+		// body a truncated file would otherwise leave uninitialized heap for
+		// libjpeg to parse.
+		fbuffer = (byte *)Mem_Alloc( len + 4096 );
+		memset( fbuffer + len, 0, 4096 );
+		if ( f->Read( fbuffer, len ) != len ) {
+			Mem_Free( fbuffer );
+			fileSystem->CloseFile( f );
+			common->Warning( "LoadJPG( %s ): truncated file\n", filename );
+			return;
+		}
 		fileSystem->CloseFile( f );
   }
 
@@ -556,8 +568,18 @@ static void LoadJPG( const char *filename, unsigned char **pic, int *width, int 
   row_stride = cinfo.output_width * cinfo.output_components;
 
   if (cinfo.output_components!=4) {
-		common->DWarning( "JPG %s is unsupported color depth (%d)", 
+		common->DWarning( "JPG %s is unsupported color depth (%d)",
 			filename, cinfo.output_components);
+  }
+  // output_width/height are JDIMENSION (unsigned); the product * 4 wraps a
+  // 32-bit computation before widening to the allocation size, so the scanline
+  // loop below would then write far past a tiny buffer. Reject oversize
+  // dimensions up front, mirroring the TGA loader (libjpeg permits dimensions
+  // well beyond 2^31/4 pixels, so this is reachable on crafted files).
+  if ( (int64)cinfo.output_width * cinfo.output_height * 4 > 0x7FFFFFFF ) {
+		jpeg_destroy_decompress( &cinfo );
+		Mem_Free( fbuffer );
+		common->Error( "LoadJPG( %s ): dimensions too large (%i x %i)\n", filename, cinfo.output_width, cinfo.output_height );
   }
   out = (byte *)R_StaticAlloc(cinfo.output_width*cinfo.output_height*4);
 

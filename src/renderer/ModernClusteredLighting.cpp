@@ -99,6 +99,15 @@ typedef struct modernClusterLightRecord_s {
 	idPlane				viewLightProject[4];
 	idScreenRect		scissor;
 	bool				fullDepthRange;
+	// Cluster bin bounds computed in the counting pass and reused in the fill
+	// pass (CPU-CSR path); not uploaded to the GPU. Zero-initialized, which the
+	// compute-binning path leaves untouched.
+	int					binTileMinX;
+	int					binTileMaxX;
+	int					binTileMinY;
+	int					binTileMaxY;
+	int					binSliceMinZ;
+	int					binSliceMaxZ;
 } modernClusterLightRecord_t;
 
 typedef struct modernSpecularProbeRecord_s {
@@ -1799,13 +1808,31 @@ static void R_ModernClusteredLighting_FillClusterReference( modernClusterRecord_
 	cluster.writeLightCount++;
 }
 
-static void R_ModernClusteredLighting_BinLight( const modernClusterGridRecord_t &grid, int lightIndex, const modernClusterLightRecord_t &light, rendererClusteredLightingStats_t &stats, bool fillReferences ) {
-	const int tileMinX = idMath::ClampInt( 0, grid.tileCountX - 1, ( light.scissor.x1 * grid.tileCountX ) / Max( 1, grid.width ) );
-	const int tileMaxX = idMath::ClampInt( 0, grid.tileCountX - 1, ( light.scissor.x2 * grid.tileCountX ) / Max( 1, grid.width ) );
-	const int tileMinY = idMath::ClampInt( 0, grid.tileCountY - 1, ( light.scissor.y1 * grid.tileCountY ) / Max( 1, grid.height ) );
-	const int tileMaxY = idMath::ClampInt( 0, grid.tileCountY - 1, ( light.scissor.y2 * grid.tileCountY ) / Max( 1, grid.height ) );
-	const int sliceMinZ = light.fullDepthRange ? 0 : R_ModernClusteredLighting_DepthSliceForZ( grid, light.depthMin );
-	const int sliceMaxZ = light.fullDepthRange ? grid.sliceCountZ - 1 : R_ModernClusteredLighting_DepthSliceForZ( grid, light.depthMax );
+static void R_ModernClusteredLighting_BinLight( const modernClusterGridRecord_t &grid, int lightIndex, modernClusterLightRecord_t &light, rendererClusteredLightingStats_t &stats, bool fillReferences ) {
+	int tileMinX, tileMaxX, tileMinY, tileMaxY, sliceMinZ, sliceMaxZ;
+	if ( fillReferences ) {
+		// The counting pass (which always runs first on this CPU path) already
+		// derived these bounds from the same immutable grid/light inputs.
+		tileMinX = light.binTileMinX;
+		tileMaxX = light.binTileMaxX;
+		tileMinY = light.binTileMinY;
+		tileMaxY = light.binTileMaxY;
+		sliceMinZ = light.binSliceMinZ;
+		sliceMaxZ = light.binSliceMaxZ;
+	} else {
+		tileMinX = idMath::ClampInt( 0, grid.tileCountX - 1, ( light.scissor.x1 * grid.tileCountX ) / Max( 1, grid.width ) );
+		tileMaxX = idMath::ClampInt( 0, grid.tileCountX - 1, ( light.scissor.x2 * grid.tileCountX ) / Max( 1, grid.width ) );
+		tileMinY = idMath::ClampInt( 0, grid.tileCountY - 1, ( light.scissor.y1 * grid.tileCountY ) / Max( 1, grid.height ) );
+		tileMaxY = idMath::ClampInt( 0, grid.tileCountY - 1, ( light.scissor.y2 * grid.tileCountY ) / Max( 1, grid.height ) );
+		sliceMinZ = light.fullDepthRange ? 0 : R_ModernClusteredLighting_DepthSliceForZ( grid, light.depthMin );
+		sliceMaxZ = light.fullDepthRange ? grid.sliceCountZ - 1 : R_ModernClusteredLighting_DepthSliceForZ( grid, light.depthMax );
+		light.binTileMinX = tileMinX;
+		light.binTileMaxX = tileMaxX;
+		light.binTileMinY = tileMinY;
+		light.binTileMaxY = tileMaxY;
+		light.binSliceMinZ = sliceMinZ;
+		light.binSliceMaxZ = sliceMaxZ;
+	}
 
 	for ( int z = sliceMinZ; z <= sliceMaxZ; ++z ) {
 		for ( int y = tileMinY; y <= tileMaxY; ++y ) {
@@ -2065,12 +2092,19 @@ static bool R_ModernClusteredLighting_AppendLightRecord( modernClusterGridRecord
 		} else if ( !R_ModernClusteredLighting_FormatDebugString( record.debugName, sizeof( record.debugName ), "%s:%d:%s", R_ModernClusteredLighting_TypeName( record.type ), record.lightDefIndex, shaderName != NULL ? shaderName : "<null>" ) ) {
 			R_ModernClusteredLighting_RecordDebugStringTruncation( stats, "cluster light debugName" );
 		}
-	} else if ( stageIndex >= 0 ) {
-		if ( !R_ModernClusteredLighting_FormatDebugString( record.debugName, sizeof( record.debugName ), "%s:%d:s%d", R_ModernClusteredLighting_TypeName( record.type ), record.lightDefIndex, stageIndex ) ) {
-			R_ModernClusteredLighting_RecordDebugStringTruncation( stats, "cluster stage light shortName" );
+	} else if ( r_shadowMapReport.GetInteger() >= 2 ) {
+		// The only consumer of debugName outside the metrics/clusterDebug overlays
+		// is the shadow-map join report (also gated on r_shadowMapReport >= 2), and
+		// it substitutes "<unnamed>" for an empty name. When no diagnostic wants
+		// names, skip the per-record vsnPrintf entirely; debugName stays empty from
+		// the record memset.
+		if ( stageIndex >= 0 ) {
+			if ( !R_ModernClusteredLighting_FormatDebugString( record.debugName, sizeof( record.debugName ), "%s:%d:s%d", R_ModernClusteredLighting_TypeName( record.type ), record.lightDefIndex, stageIndex ) ) {
+				R_ModernClusteredLighting_RecordDebugStringTruncation( stats, "cluster stage light shortName" );
+			}
+		} else if ( !R_ModernClusteredLighting_FormatDebugString( record.debugName, sizeof( record.debugName ), "%s:%d", R_ModernClusteredLighting_TypeName( record.type ), record.lightDefIndex ) ) {
+			R_ModernClusteredLighting_RecordDebugStringTruncation( stats, "cluster light shortName" );
 		}
-	} else if ( !R_ModernClusteredLighting_FormatDebugString( record.debugName, sizeof( record.debugName ), "%s:%d", R_ModernClusteredLighting_TypeName( record.type ), record.lightDefIndex ) ) {
-		R_ModernClusteredLighting_RecordDebugStringTruncation( stats, "cluster light shortName" );
 	}
 	R_ModernClusteredLighting_FillDescriptor( record, grid, vLight, lightStage );
 
@@ -3135,7 +3169,12 @@ static bool R_ModernClusteredLighting_UploadBuffers( rendererClusteredLightingSt
 	idList<modernClusterShadowDescriptorGpuRecord_t> &shadowRecords = rg_clusteredLightingFrame.shadowGpuRecords;
 	const int shadowUploadRecords = Max( uploadedShadowDescriptors, 1 );
 	shadowRecords.SetNum( shadowUploadRecords, false );
-	memset( shadowRecords.Ptr(), 0, sizeof( modernClusterShadowDescriptorGpuRecord_t ) * shadowUploadRecords );
+	// FillShadowDescriptorGpuRecord memsets each record it fills, so only clear
+	// the padding tail (present only when no shadow descriptors were uploaded).
+	if ( shadowUploadRecords > uploadedShadowDescriptors ) {
+		memset( shadowRecords.Ptr() + uploadedShadowDescriptors, 0,
+			sizeof( modernClusterShadowDescriptorGpuRecord_t ) * ( shadowUploadRecords - uploadedShadowDescriptors ) );
+	}
 	for ( int i = 0; i < uploadedShadowDescriptors; ++i ) {
 		R_ModernClusteredLighting_FillShadowDescriptorGpuRecord( shadowRecords[i], rg_clusteredLightingFrame.shadowDescriptors[i] );
 	}
@@ -3143,12 +3182,9 @@ static bool R_ModernClusteredLighting_UploadBuffers( rendererClusteredLightingSt
 	idList<modernClusterIndexGpuRecord_t> &indexRecords = rg_clusteredLightingFrame.indexGpuRecords;
 	const int indexUploadRecords = Max( stats.uploadedGridIndexRecords, 1 );
 	indexRecords.SetNum( indexUploadRecords, false );
-	for ( int i = 0; i < indexUploadRecords; ++i ) {
-		indexRecords[i].indices[0] = 0xffffffffu;
-		indexRecords[i].indices[1] = 0xffffffffu;
-		indexRecords[i].indices[2] = 0xffffffffu;
-		indexRecords[i].indices[3] = 0xffffffffu;
-	}
+	// The record is exactly four GLuint lanes; 0xff in every byte is the
+	// all-lanes-invalid (0xffffffff) sentinel, so one memset seeds them all.
+	memset( indexRecords.Ptr(), 0xff, sizeof( modernClusterIndexGpuRecord_t ) * indexUploadRecords );
 	stats.uploadedReferences = 0;
 	const bool seedComputeBinning = R_ModernClusteredLighting_UseComputeBinningPath();
 	for ( int gridIndex = 0; gridIndex < rg_clusteredLightingFrame.gridCount; ++gridIndex ) {

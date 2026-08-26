@@ -454,7 +454,15 @@ void *R_FrameAlloc( int bytes ) {
 	frameData_t		*frame;
 	frameMemoryBlock_t	*block;
 	void			*buf;
-    
+
+	// A negative size (an overflowed count*sizeof in a caller) would round to a
+	// still-negative value, pass the first-fit test below, rewind block->used,
+	// and silently hand back overlapping live memory. Reject it, and fold the
+	// oversize fatal up here so a huge positive request that wraps to negative
+	// after the +16 rounding is also caught before the block math runs.
+	if ( bytes < 0 || bytes > MEMORY_BLOCK_SIZE ) {
+		common->FatalError( "R_FrameAlloc: invalid size %i", bytes );
+	}
 	bytes = (bytes+16)&~15;
 	// see if it can be satisfied in the current block
 	frame = frameData;
