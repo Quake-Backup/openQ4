@@ -895,8 +895,8 @@ def validate_gamelibs_save_payload_contract() -> None:
         "generate_savegame_compat_header.py",
         "openq4_savegame_compat_generated.h",
         "savegame_compat_header = custom_target",
-        "game_sp_sources += [savegame_compat_header]",
-        "game_mp_sources += [savegame_compat_header]",
+        "game_sp_sources += [savegame_compat_header, generated_version_header]",
+        "game_mp_sources += [savegame_compat_header, generated_version_header]",
         "openq4_engine_sources += [savegame_compat_header]",
         "depend_files: files(engine_source_paths) + game_sources",
     ):

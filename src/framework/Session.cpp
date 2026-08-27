@@ -2515,6 +2515,28 @@ void idSessionLocal::SetMainMenuBackgroundMontageGuiVars( void ) {
 	guiMainMenu->SetStateInt( "menu_bg_count", numMenuBackgrounds );
 }
 
+void idSessionLocal::PrimeMainMenuGuiResources( void ) {
+	static const char *fallbackLevelshot = "gfx/guis/loadscreens/generic";
+
+	if ( guiMainMenu == NULL ) {
+		return;
+	}
+
+	SetMainMenuBackgroundMontageGuiVars();
+	guiMainMenu->SetStateString( "browser_levelshot", fallbackLevelshot );
+
+	idMaterial *fallbackMaterial = const_cast<idMaterial *>( declManager->FindMaterial( fallbackLevelshot ) );
+	if ( fallbackMaterial != NULL ) {
+		fallbackMaterial->EnsureNotPurged();
+		fallbackMaterial->SetSort( SS_GUI );
+	}
+	renderSystem->PreloadImage( fallbackLevelshot );
+
+	// The GUI buffers this command when it activates. Resolve the shader during
+	// startup/level load so the first in-game menu never parses it on demand.
+	declManager->FindSound( "main_menu_gameplay" );
+}
+
 static void Session_DrawFallbackLoadingScreen() {
 	static const idVec4 loadingTextColor( 0.94f, 0.62f, 0.05f, 1.0f );
 
@@ -3580,6 +3602,30 @@ static void Session_openQ4AssertMPGameplayView_f( const idCmdArgs &args ) {
 	}
 
 	common->Printf( "OPENQ4_STOCK_BASELINE_MP_CLIENT_VIEW gui=0\n" );
+}
+
+/*
+==================
+Session_openQ4AssertMenuActivation_f
+==================
+*/
+static void Session_openQ4AssertMenuActivation_f( const idCmdArgs &args ) {
+	const int maxMsec = args.Argc() > 1 ? atoi( args.Argv( 1 ) ) : 50;
+	if ( maxMsec < 1 || !sessLocal.IsMapSpawned() || sessLocal.GetActiveGUI() != NULL ) {
+		common->Error( "openq4_assertMenuActivation requires active gameplay with no GUI and a positive millisecond limit" );
+		return;
+	}
+
+	const int startMsec = Sys_Milliseconds();
+	sessLocal.StartMenu( false );
+	const int elapsedMsec = Max( 0, Sys_Milliseconds() - startMsec );
+	if ( sessLocal.GetActiveMenu() == NULL || elapsedMsec > maxMsec ) {
+		common->Error( "openq4_assertMenuActivation failed: active=%d elapsed=%dms limit=%dms",
+			sessLocal.GetActiveMenu() != NULL ? 1 : 0, elapsedMsec, maxMsec );
+		return;
+	}
+
+	common->Printf( "OPENQ4_MENU_ACTIVATION PASS elapsed=%dms limit=%dms\n", elapsedMsec, maxMsec );
 }
 #endif
 
@@ -5632,6 +5678,12 @@ void idSessionLocal::ExecuteMapChange( bool noFadeWipe ) {
 
 	uiManager->BeginLevelLoad();
 	uiManager->Reload( true );
+#ifndef ID_DEDICATED
+	// Level-load purging clears media-use marks established at session startup.
+	// Re-reference every in-game menu resource while the normal precache window
+	// is active, keeping the first Escape press free of filesystem work.
+	PrimeMainMenuGuiResources();
+#endif
 
 	// set the loading gui that we will wipe to
 	LoadLoadingGui( mapString );
@@ -7858,6 +7910,7 @@ void idSessionLocal::Init() {
 	cmdSystem->AddCommand( "openq4_startSingleplayer", Session_openQ4StartSingleplayer_f, CMD_FL_SYSTEM, "internal helper to start singleplayer after game-module switches" );
 	cmdSystem->AddCommand( "openq4_assertMapState", Session_openQ4AssertMapState_f, CMD_FL_SYSTEM|CMD_FL_CHEAT, "asserts the active map and entity filter for validation harnesses" );
 	cmdSystem->AddCommand( "openq4_assertMPGameplayView", Session_openQ4AssertMPGameplayView_f, CMD_FL_SYSTEM|CMD_FL_CHEAT, "asserts that multiplayer rendering is not covered by an active session GUI" );
+	cmdSystem->AddCommand( "openq4_assertMenuActivation", Session_openQ4AssertMenuActivation_f, CMD_FL_SYSTEM|CMD_FL_CHEAT, "opens the in-game menu and asserts a bounded activation time for validation harnesses" );
 	cmdSystem->AddCommand( "openq4_resumeBakeLightGrids", Session_openQ4ResumeBakeLightGrids_f, CMD_FL_SYSTEM|CMD_FL_CHEAT, "internal helper to continue light-grid baking after game-module switches" );
 	cmdSystem->AddCommand( "iamtheduke", Session_IAmTheDuke_f, CMD_FL_SYSTEM|CMD_FL_CHEAT, "toggles the SP-only iamtheduke cheat text overlay" );
 	cmdSystem->AddCommand( "bakeLightGrids", Session_BakeLightGrids_f, CMD_FL_SYSTEM|CMD_FL_CHEAT, "bakes openQ4-compatible lightgrid metadata and irradiance atlases for the current map or a batch of maps" );
@@ -7925,6 +7978,10 @@ void idSessionLocal::Init() {
 #else
 	guiMainMenu = uiManager->FindGui( "guis/demo_mainmenu.gui", true, false, true );
 #endif
+	// Resolve and retain menu media while the session is initialized. Doing
+	// this synchronously from StartMenu made the first ESC press wait on image,
+	// material, and sound lookup before the GUI could be activated.
+	PrimeMainMenuGuiResources();
 	guiMainMenu_MapList = uiManager->AllocListGUI();
 	guiMainMenu_MapList->Config( guiMainMenu, "mapList" );
 	idAsyncNetwork::client.serverList.GUIConfig( guiMainMenu, "serverList" );

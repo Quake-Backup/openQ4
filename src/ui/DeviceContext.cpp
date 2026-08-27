@@ -778,6 +778,31 @@ static bool openQ4_GetCurrentViewportSize( float &windowWidth, float &windowHeig
 	return windowWidth > 0.0f && windowHeight > 0.0f;
 }
 
+static float openQ4_FontSelectionScaleForViewport( float authoredScale, float canvasWidth, float canvasHeight,
+		float viewportWidth, float viewportHeight, bool aspectCorrect ) {
+	if ( authoredScale <= 0.0f || canvasWidth <= 0.0f || canvasHeight <= 0.0f ||
+			viewportWidth <= 0.0f || viewportHeight <= 0.0f ) {
+		return authoredScale;
+	}
+
+	const float physicalScaleX = viewportWidth / canvasWidth;
+	const float physicalScaleY = viewportHeight / canvasHeight;
+	const float physicalScale = aspectCorrect
+		? Min( physicalScaleX, physicalScaleY )
+		: Max( physicalScaleX, physicalScaleY );
+	return authoredScale * Max( 1.0f, physicalScale );
+}
+
+static float openQ4_FontSelectionScale( float authoredScale, float canvasWidth, float canvasHeight, bool aspectCorrect ) {
+	float viewportWidth = 0.0f;
+	float viewportHeight = 0.0f;
+	if ( !openQ4_GetCurrentViewportSize( viewportWidth, viewportHeight ) ) {
+		return authoredScale;
+	}
+	return openQ4_FontSelectionScaleForViewport( authoredScale, canvasWidth, canvasHeight,
+		viewportWidth, viewportHeight, aspectCorrect );
+}
+
 static void openQ4_CalcVirtualScreenTransform( float width, float height, float windowWidth, float windowHeight, bool aspectCorrect, q4VirtualScreenTransform_t &transform ) {
 	openQ4_ClearVirtualScreenTransform( transform );
 
@@ -2200,11 +2225,17 @@ void idDeviceContext::SetFontByScale(float scale) {
 		useFont = NULL;
 		return;
 	}
-	if (scale <= gui_smallFontLimit.GetFloat()) {
+	// The GUI scale is authored for a 640x480-era canvas, while the selected
+	// bitmap atlas is sampled at the final viewport resolution. Account for
+	// that physical enlargement so high-resolution displays use the 24/48-point
+	// source instead of magnifying a small atlas. Rendering still uses the
+	// authored scale below, so text layout and dimensions do not change.
+	const float selectionScale = openQ4_FontSelectionScale( scale, vidWidth, vidHeight, aspectCorrect );
+	if (selectionScale <= gui_smallFontLimit.GetFloat()) {
 		useFont = &activeFont->fontInfoSmall;
 		activeFont->maxHeight = activeFont->maxHeightSmall;
 		activeFont->maxWidth = activeFont->maxWidthSmall;
-	} else if (scale <= gui_mediumFontLimit.GetFloat()) {
+	} else if (selectionScale <= gui_mediumFontLimit.GetFloat()) {
 		useFont = &activeFont->fontInfoMedium;
 		activeFont->maxHeight = activeFont->maxHeightMedium;
 		activeFont->maxWidth = activeFont->maxWidthMedium;
@@ -3048,6 +3079,12 @@ bool UI_FontParity_RunSelfTest( void ) {
 	ok &= openQ4_CheckNear( "24 point font scale", openQ4_FontRenderScale( &font, 0.5f ), 1.0f );
 	font.pointSize = Q4_GUI_FONT_BASE_POINT_SIZE;
 	ok &= openQ4_CheckNear( "48 point font scale", openQ4_FontRenderScale( &font, 1.0f ), 1.0f );
+	ok &= openQ4_CheckNear( "retail viewport font selection scale",
+		openQ4_FontSelectionScaleForViewport( 0.25f, 640.0f, 480.0f, 640.0f, 480.0f, true ), 0.25f );
+	ok &= openQ4_CheckNear( "1080p font selection scale",
+		openQ4_FontSelectionScaleForViewport( 0.25f, 640.0f, 480.0f, 1920.0f, 1080.0f, true ), 0.5625f );
+	ok &= openQ4_CheckNear( "1440p font selection scale",
+		openQ4_FontSelectionScaleForViewport( 0.25f, 640.0f, 480.0f, 2560.0f, 1440.0f, true ), 0.75f );
 
 	glyphInfo_t glyph = {};
 	glyph.horiAdvance = 7.2f;

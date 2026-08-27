@@ -730,6 +730,88 @@ def validate_scripted_pseudo_setting_adapters(game_gui: str, session_menu: str) 
         require(session_menu, token, "Corpse Time typed adapter")
 
 
+def validate_ingame_menu_activation_contract(
+    mainmenu: str,
+    session_menu: str,
+    session_cpp: str,
+) -> None:
+    set_gui = session_menu[
+        session_menu.index("void idSessionLocal::SetGUI") :
+        session_menu.index("idSessionLocal::ExitMenu")
+    ]
+    for token in (
+        "const bool refreshCatalogs = !mapSpawned;",
+        "if ( refreshCatalogs )",
+        "SetMainMenuGuiVars( refreshCatalogs );",
+    ):
+        require(set_gui, token, "bounded in-game main-menu activation")
+
+    set_main_menu_vars = session_menu[
+        session_menu.index("void idSessionLocal::SetMainMenuGuiVars") :
+        session_menu.index("idSessionLocal::HandleSaveGameMenuCommand")
+    ]
+    for token in (
+        "SetKeyBindingNames()",
+        "PopulateMainMenuAudioDeviceChoices( guiMainMenu )",
+        "PopulateMainMenuDisplayChoices( guiMainMenu )",
+        "SetModsMenuGuiVars()",
+        "SetMainMenuMPModelVars( guiMainMenu )",
+    ):
+        require(set_main_menu_vars, token, "lazy main-menu catalogs")
+    reject(set_main_menu_vars, "SetMainMenuBackgroundMontageGuiVars()", "synchronous menu activation")
+
+    montage_init = session_cpp[
+        session_cpp.index('guiMainMenu = uiManager->FindGui( "guis/mainmenu.gui"') :
+        session_cpp.index("guiMainMenu_MapList = uiManager->AllocListGUI()")
+    ]
+    require(montage_init, "PrimeMainMenuGuiResources();", "session-time menu resource warmup")
+
+    map_load_prime = session_cpp[
+        session_cpp.index("uiManager->BeginLevelLoad();") :
+        session_cpp.index("// set the loading gui that we will wipe to")
+    ]
+    require(map_load_prime, "PrimeMainMenuGuiResources();", "level-load menu resource precache")
+    prime_resources = session_cpp[
+        session_cpp.index("void idSessionLocal::PrimeMainMenuGuiResources") :
+        session_cpp.index("static void Session_DrawFallbackLoadingScreen")
+    ]
+    for token in (
+        "SetMainMenuBackgroundMontageGuiVars();",
+        'declManager->FindMaterial( fallbackLevelshot )',
+        "renderSystem->PreloadImage( fallbackLevelshot );",
+        'declManager->FindSound( "main_menu_gameplay" );',
+    ):
+        require(prime_resources, token, "complete in-game menu resource precache")
+
+    load_in = gui_block(mainmenu, "anim_loadIn")
+    save_in = gui_block(mainmenu, "anim_saveIn")
+    settings_in = gui_block(mainmenu, "anim_settingsIn")
+    mods_in = gui_block(mainmenu, "anim_pop_modsIn")
+    require(load_in, 'set "cmd" "refreshSaveGameList" ;', "lazy Load Game catalog")
+    reject(load_in, 'set "cmd" "MAPScan" ;', "Load Game map-declaration scan")
+    require(save_in, 'set "cmd" "refreshSaveGameList" ;', "lazy Save Game catalog")
+    require(mods_in, 'set "cmd" "refreshMods" ;', "lazy Mods catalog")
+    for command in ("refreshKeyBindings", "refreshSystemSettings", "refreshAudioSettings"):
+        require(settings_in, f'set "cmd" "{command}" ;', "lazy Settings catalog")
+        require(session_menu, f'!idStr::Icmp( cmd, "{command}" )', "lazy Settings command handler")
+
+    for widget, command in (
+        ("set_b_controls", "refreshKeyBindings"),
+        ("set_b_system", "refreshSystemSettings"),
+        ("set_b_audio", "refreshAudioSettings"),
+    ):
+        require(gui_block(mainmenu, widget), f'set "cmd" "{command}" ;', f"{widget} lazy refresh")
+    for command in ("refreshSaveGameList", "refreshMods"):
+        require(session_menu, f'!idStr::Icmp( cmd, "{command}" )', f"{command} handler")
+
+    for token in (
+        "Session_openQ4AssertMenuActivation_f",
+        "OPENQ4_MENU_ACTIVATION PASS elapsed=%dms limit=%dms",
+        'AddCommand( "openq4_assertMenuActivation"',
+    ):
+        require(session_cpp, token, "runtime in-game menu activation assertion")
+
+
 def main() -> None:
     validate_settings_registry()
 
@@ -741,6 +823,7 @@ def main() -> None:
     game_gui = read(ROOT / "content/baseoq4/pak0/guis/menu/settings/game.gui")
     game_hovers = read(ROOT / "content/baseoq4/pak0/guis/menu/settings/game_hovers.gui")
     session_menu = read(ROOT / "src/framework/Session_menu.cpp")
+    session_cpp = read(ROOT / "src/framework/Session.cpp")
     common_cpp = read(ROOT / "src/framework/Common.cpp")
     slider_window = read(ROOT / "src/ui/SliderWindow.cpp")
     registry_text = read(ROOT / "docs/dev/settings-menu-registry.json")
@@ -752,6 +835,7 @@ def main() -> None:
     validate_controls_pane_extraction(mainmenu, controls_gui)
     validate_scripted_pseudo_setting_adapters(game_gui, session_menu)
     validate_performance_preset_wiring(common_cpp, system_gui, session_menu, registry_text, display_docs, locales)
+    validate_ingame_menu_activation_contract(mainmenu, session_menu, session_cpp)
 
     require(mainmenu, '#include "guis/menu/settings/system.gui"', "System settings include")
     reject(mainmenu, "windowDef p_settings_sys", "mainmenu System pane extraction")

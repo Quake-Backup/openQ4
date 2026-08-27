@@ -108,7 +108,7 @@ version_track = get_option('version_track').strip()
 version_iteration = get_option('version_iteration').strip()
 version_base_override = get_option('version_base_override').strip()
 openal_root_override = get_option('openal_root_override').strip()
-generated_version_header = meson.current_build_dir() / 'openq4_version_generated.h'
+generated_version_header_path = meson.current_build_dir() / 'openq4_version_generated.h'
 version_metadata_command = [
   py,
   meson.project_source_root() / 'tools' / 'build' / 'openq4_version.py',
@@ -116,8 +116,6 @@ version_metadata_command = [
   meson.project_source_root(),
   '--track',
   version_track,
-  '--header-out',
-  generated_version_header,
 ]
 # Release builds pin the exact version. Everything else lets the helper resolve
 # it: project(version:) above is only a floor, raised to the newest published v*
@@ -129,7 +127,25 @@ endif
 if version_iteration != ''
   version_metadata_command += ['--iteration', version_iteration]
 endif
-version_metadata_result = run_command(version_metadata_command, check: true)
+version_metadata_result = run_command(
+  version_metadata_command + ['--header-out', generated_version_header_path],
+  check: true,
+)
+
+# Git metadata changes whenever HEAD or the worktree changes, without changing
+# meson.build. Re-run the lightweight generator for every build invocation;
+# write_if_changed keeps downstream recompilation limited to real version
+# changes. The configure-time invocation above ensures the header also exists
+# before a backend performs its first dependency scan.
+generated_version_header = custom_target(
+  'openq4_version_generated',
+  output: 'openq4_version_generated.h',
+  command: version_metadata_command + ['--header-out', '@OUTPUT@'],
+  depend_files: files('tools/build/openq4_version.py'),
+  build_always_stale: true,
+  build_by_default: true,
+  install: false,
+)
 
 openq4_version_base = meson.project_version()
 openq4_version_short = meson.project_version()
@@ -688,7 +704,7 @@ openq4_renderer_gl_sources = files(renderer_gl_source_paths)
 
 openq4_engine_sources = files(engine_source_paths)
 if build_engine
-  openq4_engine_sources += openq4_paks_generated_header
+  openq4_engine_sources += [openq4_paks_generated_header, generated_version_header]
 endif
 
 game_sp_sources = []
@@ -756,8 +772,8 @@ if build_games
     ),
     install: false,
   )
-  game_sp_sources += [savegame_compat_header]
-  game_mp_sources += [savegame_compat_header]
+  game_sp_sources += [savegame_compat_header, generated_version_header]
+  game_mp_sources += [savegame_compat_header, generated_version_header]
   if build_engine
     # Session preflights the exact GameLibs source stamp before tearing down
     # the active map, so the engine target must see the same generated header.
@@ -1306,7 +1322,7 @@ if build_engine
   if windows_gl_free_ded
     # ded keeps the static renderer while the client sheds it
     openq4_dedicated_sources = files(dedicated_engine_source_paths)
-    openq4_dedicated_sources += openq4_paks_generated_header
+    openq4_dedicated_sources += [openq4_paks_generated_header, generated_version_header]
     if build_games
       openq4_dedicated_sources += [savegame_compat_header]
     endif
@@ -1314,7 +1330,7 @@ if build_engine
   endif
   if host_system == 'linux'
     openq4_dedicated_sources = files(dedicated_engine_source_paths)
-    openq4_dedicated_sources += openq4_paks_generated_header
+    openq4_dedicated_sources += [openq4_paks_generated_header, generated_version_header]
     if build_games
       openq4_dedicated_sources += [savegame_compat_header]
     endif

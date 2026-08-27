@@ -518,8 +518,9 @@ public:
 	void				UpdateMPLevelShot( void );
 
 	void				SetSaveGameGuiVars( void );
-	void				SetMainMenuGuiVars( void );
+	void				SetMainMenuGuiVars( bool refreshCatalogs );
 	void				SetMainMenuBackgroundMontageGuiVars( void );
+	void				PrimeMainMenuGuiResources( void );
 	void				SetModsMenuGuiVars( void );
 	void				UpdateModsMenuGuiVars( void );
 	void				SetMainMenuSkin( void );
