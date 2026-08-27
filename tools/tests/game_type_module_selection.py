@@ -664,7 +664,7 @@ def validate_two_phase_game_api_contract() -> None:
         return
 
     game_api = read(game_api_path)
-    require(game_api, "const int GAME_API_VERSION\t\t= 45;", "current game API version")
+    require(game_api, "const int GAME_API_VERSION\t\t= 46;", "current game API version")
     require(
         game_api,
         "virtual void\t\t\t\tShutdownAfterDecls( void ) = 0;",
@@ -831,7 +831,9 @@ def validate_swap_guard() -> None:
 def validate_async_module_state() -> None:
     common = read(ROOT / "src" / "framework" / "Common.cpp")
     validate_shutdown_lifecycle_contract(common)
-    helper_start = common.index("static bool openQ4_ShouldUseSmoothSingleplayerSlowTime( void ) {")
+    helper_start = common.index(
+        "static bool openQ4_ShouldUseSmoothSingleplayerSlowTime( float effectiveTimeScale ) {"
+    )
     helper_end = common.index("\n}\n", helper_start)
     helper = common[helper_start:helper_end]
 
@@ -849,6 +851,11 @@ def validate_async_module_state() -> None:
         helper,
         "openQ4_singleplayerGameModuleReady.load( std::memory_order_acquire )",
         "async-safe game module state",
+    )
+    require(
+        helper,
+        "return effectiveTimeScale < 0.999f;",
+        "composed single-player slow-time detection",
     )
 
     load_start = common.index("void idCommonLocal::LoadGameDLL( void ) {")
