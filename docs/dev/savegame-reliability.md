@@ -62,6 +62,25 @@ compatibility gate: same-version payloads may load across build/source changes
 when the exact wire-ABI stamp still matches. This makes schema-version discipline
 mandatory.
 
+### Released v0.10 Compatibility Repair
+
+The released Windows x64 v0.10 snapshot identified by build `1`, source SHA-256
+`19351be39d2d4077a74294c0442707ef9565fc7a2fa9af9b81e05fc9aca8b220`, 404
+source files, and `windows-msvcabi-x64-le-raw1` predates two fields that were
+later added without a version bump. Its reader initializes `swimSpeed` and
+`nextLiquidSurfaceSoundTime` to safe defaults instead of consuming bytes that
+belong to the following fields. The complete tuple is required; other v3 source
+snapshots are not guessed to have the older player layout.
+
+That release could also serialize a different class-frame sequence depending on
+link optimization. The old dispatcher compared member-function addresses, and
+MSVC identical-code folding made the empty `idPhysics` and `idClass` methods
+appear identical in optimized builds. Current restore code recognizes the
+missing empty physics frame from the next sync-marker sequence. Current writers
+record whether each class declares its own `Save` and `Restore` methods, making
+the emitted frame sequence deterministic across debug and optimized link
+profiles.
+
 ## Save Transaction and Crash Recovery
 
 The old slot is not replaced while a new payload is still being constructed.
@@ -283,6 +302,22 @@ An affected old save may already contain indeterminate data. CRC cannot repair
 that data, and the restore path intentionally rejects it rather than inventing an
 AI path.
 
+## Issue #123
+
+The attached v0.10 save in issue #123 exposed both historical v3 differences
+above. Reconstructing its source snapshot reproduced the embedded SHA-256
+exactly. With the targeted decoder, the original file passes the omitted physics
+frame and both four-byte player-field boundaries, including the reported
+`ReadTrace` offset, before reaching later state owned by the reporter's
+unprovided HiDef mod GUI/assets.
+
+An independent current-source Windows x64 run created a fresh save on
+`game/airdefense2`, reloaded it through `Game Map Init SaveGame`, captured an
+engine-render-target screenshot in active gameplay, and exited normally. This
+proves the deterministic current writer/reader round trip; completing the
+third-party-mod fixture still requires reporter-side validation with the exact
+mod installation.
+
 ## Validation Evidence and Limits
 
 The focused regression set is:
@@ -294,11 +329,12 @@ python tools/tests/savegame_corruption_contract.py
 ```
 
 All three savegame contracts pass for the current tree. They cover the v3
-integrity/transaction model, total-file boundary arithmetic, pointer-width
-safety, bounded and typed restore rules, raw-write inventory, and source parity;
-static contracts are not runtime proof. Windows x64 client UI translation units
-and both SP/MP GameLibs compile/link, while companion checks cover the ARM64 ABI
-source contract and typed restored-object references.
+integrity/transaction model, the exact v0.10 compatibility tuple and decoder,
+source-declared class-frame ownership, total-file boundary arithmetic,
+pointer-width safety, bounded and typed restore rules, raw-write inventory, and
+source parity; static contracts are not runtime proof. Windows x64 client UI
+translation units and both SP/MP GameLibs compile/link, while companion checks
+cover the ARM64 ABI source contract and typed restored-object references.
 
 Current Windows x64 candidate runs on `game/airdefense1` record a fresh v3 save
 and `Game Map Init SaveGame`, rejection of a CRC-modified copy before map

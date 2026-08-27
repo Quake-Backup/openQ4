@@ -9,6 +9,7 @@ load. Reliability mechanisms and implementation detail are documented in
 | Save payload | Current decision |
 | --- | --- |
 | Version 3, exact wire-ABI stamp and valid integrity/footer | Supported format path; build/source drift is diagnostic only |
+| Version 3, released v0.10 build/source tuple on Windows/MSVC x64 `raw1` | Supported by an exact decoder for its two absent player liquid-state fields and optimized empty physics frame |
 | Version 3, different wire-ABI stamp | Rejected before map teardown |
 | Version 2, exact tuple in the allowlist below | Supported only on Windows/MSVC x64 little-endian `raw1` |
 | Version 2, any other tuple | Rejected before map teardown |
@@ -43,6 +44,26 @@ honored the v3 schema.
 Eligibility is not runtime certification. For example, a Linux arm64 v3 save may
 be format-eligible on another Linux arm64 `raw1` build, but it is supported for a
 release only when that platform has matching candidate runtime evidence.
+
+One released v0.10 snapshot used version 3 before two player liquid-state fields
+were added:
+
+```text
+build 1
+source 19351be39d2d4077a74294c0442707ef9565fc7a2fa9af9b81e05fc9aca8b220
+404 files
+windows-msvcabi-x64-le-raw1
+```
+
+The SP and MP readers recognize only that complete tuple when deciding that
+`idPhysics_Player::swimSpeed` and `idPlayer::nextLiquidSurfaceSoundTime` are
+absent. Both fields receive safe defaults, and every unrelated v3 source snapshot
+continues to use the current layout. A second v0.10 release-build defect came
+from MSVC identical-code folding: the former pointer-address comparison could
+omit the empty `idPhysics` class frame. Current readers use the surrounding sync
+sequence to accept that known omission, while current writers derive class-frame
+ownership from source declarations so optimization can no longer alter the wire
+format.
 
 ## Exact Version 2 Allowlist
 
@@ -86,6 +107,8 @@ Backward compatibility means a newer runtime reading an older save. It is
 supported only through an explicit decoder or allowlist:
 
 - current v3 on the exact ABI path;
+- the exact released v0.10 v3 snapshot through its bounded player-field decoder
+  and legacy empty-physics-frame recognition;
 - the six exact v2 snapshots above on Windows x64 `raw1`; and
 - the narrow same-build unstamped Windows x64 legacy path.
 
@@ -164,7 +187,9 @@ Every versioned change must update, in one change set:
 6. this policy, reliability documentation, and player-facing upgrade notes.
 
 The generated source hash is evidence and diagnosis for v3, not a substitute for
-this versioning decision.
+this versioning decision. The v0.10 decoder above is a narrowly reviewed repair
+for a format that had already shipped without a required version bump; it is not
+precedent for adding fields within v3.
 
 ## Failure and User-Message Policy
 
