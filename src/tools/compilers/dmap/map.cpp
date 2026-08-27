@@ -492,6 +492,11 @@ bool LoadDMapFile( const char *filename ) {
 		return false;
 	}
 
+	// Quake 4 maps preserve func_group entities in the editable source.  Resolve
+	// them before compiling so their primitives become world geometry, matching
+	// the retail compiler and the runtime map-loading path.
+	dmapGlobals.dmapFile->Resolve();
+
 	dmapGlobals.mapPlanes.Clear();
 	dmapGlobals.mapPlanes.SetGranularity( 1024 );
 

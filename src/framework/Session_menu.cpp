@@ -876,6 +876,33 @@ static void SyncMainMenuAspectVisibility( idUserInterface *gui ) {
 	gui->HandleNamedEvent( "forceAspect0" );
 }
 
+static void PopulateMainMenuAudioDeviceChoices( idUserInterface *gui ) {
+	if ( gui == NULL ) {
+		return;
+	}
+
+	idStr choiceNames;
+	idStr choiceValues;
+	BuildMainMenuAudioDeviceChoices( choiceNames, choiceValues );
+	gui->SetStateString( "device_name", choiceNames.c_str() );
+	gui->SetStateString( "device_value", choiceValues.c_str() );
+}
+
+static void PopulateMainMenuDisplayChoices( idUserInterface *gui ) {
+	if ( gui == NULL ) {
+		return;
+	}
+
+	idStr choiceNames;
+	idStr choiceValues;
+	int displayCount = 0;
+	BuildMainMenuDisplayChoices( choiceNames, choiceValues, displayCount );
+	gui->SetStateString( "display_names", choiceNames.c_str() );
+	gui->SetStateString( "display_values", choiceValues.c_str() );
+	gui->SetStateInt( "display_count", displayCount );
+	SetMainMenuVideoGuiVars( gui );
+}
+
 static void RefreshMainMenuDisplayChoices( idUserInterface *gui ) {
 	if ( gui == NULL ) {
 		return;
@@ -1444,8 +1471,14 @@ void idSessionLocal::SetGUI( idUserInterface *gui, HandleGuiCommand_t handle ) {
 	}
 
 	if ( guiActive == guiMainMenu ) {
-		SetSaveGameGuiVars();
-		SetMainMenuGuiVars();
+		// Opening ESC must never wait for unbounded filesystem, device, display,
+		// or declaration enumeration. Those catalogs are refreshed when their
+		// page is opened; the title-screen path still primes them for stock GUIs.
+		const bool refreshCatalogs = !mapSpawned;
+		if ( refreshCatalogs ) {
+			SetSaveGameGuiVars();
+		}
+		SetMainMenuGuiVars( refreshCatalogs );
 	} else if ( guiActive == guiRestartMenu ) {
 		SetSaveGameGuiVars();
 	}
@@ -2026,7 +2059,7 @@ void idSessionLocal::SetMainMenuSkin( void ) {
 idSessionLocal::SetMainMenuGuiVars
 ===============
 */
-void idSessionLocal::SetMainMenuGuiVars( void ) {
+void idSessionLocal::SetMainMenuGuiVars( bool refreshCatalogs ) {
 
 	guiMainMenu->SetStateString( "serverlist_sel_0", "-1" );
 	guiMainMenu->SetStateString( "serverlist_selid_0", "-1" ); 
@@ -2036,8 +2069,13 @@ void idSessionLocal::SetMainMenuGuiVars( void ) {
 	// "inetGame" will hold a hand-typed inet address, which is not archived to a cvar
 	guiMainMenu->SetStateString( "inetGame", "" );
 
-	// key bind names
-	guiMainMenu->SetKeyBindingNames();
+	if ( refreshCatalogs ) {
+		// These operations may consult drivers, the filesystem, or large decl
+		// catalogs. Keep them off the synchronous in-game activation path.
+		guiMainMenu->SetKeyBindingNames();
+		PopulateMainMenuAudioDeviceChoices( guiMainMenu );
+		PopulateMainMenuDisplayChoices( guiMainMenu );
+	}
 
 	// flag for in-game menu
 	const char *inGameState = mapSpawned ? ( IsMultiplayer() ? "2" : "1" ) : "0";
@@ -2050,22 +2088,6 @@ void idSessionLocal::SetMainMenuGuiVars( void ) {
 	guiMainMenu->SetStateString( "nightmare", cvarSystem->GetCVarBool( "g_nightmare" ) ? "1" : "0" );
 #endif
 	guiMainMenu->SetStateString( "browser_levelshot", "gfx/guis/loadscreens/generic" );
-	SetMainMenuBackgroundMontageGuiVars();
-
-	idStr audioDeviceNames;
-	idStr audioDeviceValues;
-	BuildMainMenuAudioDeviceChoices( audioDeviceNames, audioDeviceValues );
-	guiMainMenu->SetStateString( "device_name", audioDeviceNames.c_str() );
-	guiMainMenu->SetStateString( "device_value", audioDeviceValues.c_str() );
-
-	idStr displayNames;
-	idStr displayValues;
-	int displayCount = 0;
-	BuildMainMenuDisplayChoices( displayNames, displayValues, displayCount );
-	guiMainMenu->SetStateString( "display_names", displayNames.c_str() );
-	guiMainMenu->SetStateString( "display_values", displayValues.c_str() );
-	guiMainMenu->SetStateInt( "display_count", displayCount );
-	SetMainMenuVideoGuiVars( guiMainMenu );
 	SetMainMenuQualityGuiVars( guiMainMenu );
 	SyncMainMenuAspectVisibility( guiMainMenu );
 	guiMainMenu->SetStateInt( "gui_set_sys_scroll", 0 );
@@ -2076,8 +2098,9 @@ void idSessionLocal::SetMainMenuGuiVars( void ) {
 	gui_set_game_scroll.SetInteger( 0 );
 
 	SetMainMenuSkin();
-	// Mods Menu
-	SetModsMenuGuiVars();
+	if ( refreshCatalogs ) {
+		SetModsMenuGuiVars();
+	}
 
 	guiMsg->SetStateString( "visible_hasxp", fileSystem->HasD3XP() ? "1" : "0" );
 
@@ -2087,7 +2110,9 @@ void idSessionLocal::SetMainMenuGuiVars( void ) {
 	guiMainMenu->SetStateString( "driver_prompt", "0" );
 #endif
 
-	SetMainMenuMPModelVars( guiMainMenu );
+	if ( refreshCatalogs ) {
+		SetMainMenuMPModelVars( guiMainMenu );
+	}
 	arenaCampaign.UpdateMainMenuGui( guiMainMenu );
 }
 
@@ -2099,6 +2124,14 @@ idSessionLocal::HandleSaveGameMenuCommands
 bool idSessionLocal::HandleSaveGameMenuCommand( idCmdArgs &args, int &icmd ) {
 
 	const char *cmd = args.Argv(icmd-1);
+
+	if ( !idStr::Icmp( cmd, "refreshSaveGameList" ) ) {
+		SetSaveGameGuiVars();
+		if ( guiActive != NULL ) {
+			guiActive->StateChanged( common->GetPresentationTime() );
+		}
+		return true;
+	}
 
 	if ( !idStr::Icmp( cmd, "loadGame" ) ) {
 		int choice = guiActive->State().GetInt("loadgame_sel_0");
@@ -2890,6 +2923,43 @@ void idSessionLocal::HandleMainMenuCommands( const char *menuCommand ) {
 
 		if ( !idStr::Icmp( cmd, "applyForceModelChoice" ) ) {
 			ApplyMainMenuForceModelChoice( guiActive ? guiActive : guiMainMenu );
+			continue;
+		}
+
+		if ( !idStr::Icmp( cmd, "refreshKeyBindings" ) ) {
+			idUserInterface *targetGui = guiActive ? guiActive : guiMainMenu;
+			if ( targetGui != NULL ) {
+				targetGui->SetKeyBindingNames();
+				targetGui->StateChanged( common->GetPresentationTime() );
+			}
+			continue;
+		}
+
+		if ( !idStr::Icmp( cmd, "refreshSystemSettings" ) ) {
+			idUserInterface *targetGui = guiActive ? guiActive : guiMainMenu;
+			PopulateMainMenuDisplayChoices( targetGui );
+			SetMainMenuQualityGuiVars( targetGui );
+			SyncMainMenuAspectVisibility( targetGui );
+			if ( targetGui != NULL ) {
+				targetGui->StateChanged( common->GetPresentationTime() );
+			}
+			continue;
+		}
+
+		if ( !idStr::Icmp( cmd, "refreshAudioSettings" ) ) {
+			idUserInterface *targetGui = guiActive ? guiActive : guiMainMenu;
+			PopulateMainMenuAudioDeviceChoices( targetGui );
+			if ( targetGui != NULL ) {
+				targetGui->StateChanged( common->GetPresentationTime() );
+			}
+			continue;
+		}
+
+		if ( !idStr::Icmp( cmd, "refreshMods" ) ) {
+			SetModsMenuGuiVars();
+			if ( guiActive != NULL ) {
+				guiActive->StateChanged( common->GetPresentationTime() );
+			}
 			continue;
 		}
 

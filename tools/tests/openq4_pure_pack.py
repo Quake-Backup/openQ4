@@ -1101,9 +1101,10 @@ def validate_build_pak0_contract() -> None:
     require(meson, "install: true", "Meson pack install")
     require(meson, "install: false", "Meson does not install generated header")
     require(meson, "install_dir: install_game_dir", "Meson installs generated packs")
-    require(meson, "openq4_engine_sources += openq4_paks_generated_header", "engine depends on pack checksum header")
+    engine_generated_headers = "openq4_engine_sources += [openq4_paks_generated_header, generated_version_header]"
+    require(meson, engine_generated_headers, "engine depends on pack checksum and version headers")
     require_order(meson, "'openq4_pak0'", "'openq4_paks_generated_header'", "packs before checksum header")
-    require_order(meson, "'openq4_paks_generated_header'", "openq4_engine_sources += openq4_paks_generated_header", "checksum header before engine sources")
+    require_order(meson, "'openq4_paks_generated_header'", engine_generated_headers, "checksum header before engine sources")
 
     require(baseoq4_meson, "baseoq4_manifest", "loose mod.json install")
     reject(baseoq4_meson, "install_subdir(", "baseoq4 content should be inside openQ4 PK4s")

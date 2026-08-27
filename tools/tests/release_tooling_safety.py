@@ -309,6 +309,25 @@ def validate_openq4_version_iteration() -> None:
         raise AssertionError(f"auto iteration should follow the highest suffix, got {iteration!r}")
 
 
+def validate_version_header_build_refresh_contract() -> None:
+    meson_text = (ROOT / "meson.build").read_text(encoding="utf-8")
+    for token in (
+        "generated_version_header = custom_target(",
+        "version_metadata_command + ['--header-out', '@OUTPUT@']",
+        "build_always_stale: true",
+        "build_by_default: true",
+        "openq4_engine_sources += [openq4_paks_generated_header, generated_version_header]",
+        "game_sp_sources += [savegame_compat_header, generated_version_header]",
+        "game_mp_sources += [savegame_compat_header, generated_version_header]",
+        "openq4_dedicated_sources += [openq4_paks_generated_header, generated_version_header]",
+    ):
+        if token not in meson_text:
+            raise AssertionError(f"version header build-refresh contract is missing {token!r}")
+
+    if "version_metadata_command + ['--header-out', generated_version_header_path]" not in meson_text:
+        raise AssertionError("configure-time version header bootstrap is missing")
+
+
 def validate_release_version_floor_and_docs_classification() -> None:
     current = RELEASE_VERSION.parse_version("0.1.011")
     lower = RELEASE_VERSION.parse_version("0.1.010")
@@ -1551,6 +1570,7 @@ def main() -> None:
         validate_changelog_input_and_markdown_safety()
         validate_changelog_output_and_override_guards()
         validate_openq4_version_iteration()
+        validate_version_header_build_refresh_contract()
         validate_release_version_floor_and_docs_classification()
         validate_release_docs_output_guard()
         validate_release_docs_layout()

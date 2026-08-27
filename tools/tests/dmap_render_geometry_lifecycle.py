@@ -127,6 +127,23 @@ def validate_engine_tool_lifetime() -> None:
         raise AssertionError("renderer shutdown must release its TriSurf copy exactly once")
 
 
+def validate_map_resolution_contract() -> None:
+    source = read("src/tools/compilers/dmap/map.cpp")
+    load = braced_body(source, "bool LoadDMapFile( const char *filename )", "dmap map loading")
+    require_order(
+        load,
+        (
+            "dmapGlobals.dmapFile->Parse(filename)",
+            "dmapGlobals.dmapFile->Resolve();",
+            "dmapGlobals.dmapFile->GetNumEntities()",
+            "ProcessMapEntity( dmapGlobals.dmapFile->GetEntity(i) );",
+        ),
+        "dmap func_group resolution",
+    )
+    if load.count("dmapGlobals.dmapFile->Resolve();") != 1:
+        raise AssertionError("dmap must resolve editable func_group entities exactly once before compiling geometry")
+
+
 def validate_build_and_ci_wiring() -> None:
     meson = read("meson.build")
     require(meson, "client_link_with = [bse_library, imagetools_library, render_geo_library]", "client render-geometry link")
@@ -149,6 +166,7 @@ def validate_build_and_ci_wiring() -> None:
 def main() -> None:
     validate_allocator_lifecycle()
     validate_engine_tool_lifetime()
+    validate_map_resolution_contract()
     validate_build_and_ci_wiring()
     print("dmap_render_geometry_lifecycle: ok")
 

@@ -13649,7 +13649,7 @@ windowDef Desktop
 			notime	1
 
 			onTime 0 {
-				set "cmd" "MAPScan" ;
+				set "cmd" "refreshSaveGameList" ;
 				
 				transition "p_loadgame::rect" "$d_main_l::rect" "$d_main::rect" "0" ;
 				set "p_loadgame::visible" "1" ;
@@ -13712,6 +13712,7 @@ windowDef Desktop
 			notime	1
 
 			onTime 0 {
+				set "cmd" "refreshSaveGameList" ;
 				transition "p_savegame::rect" "$d_main_l::rect" "$d_main::rect" "0" ;
 				set "p_savegame::visible" "1" ;
 				transition "t_save_title::forecolor_w" "0" "0.5" "150" ;
@@ -14119,6 +14120,13 @@ windowDef Desktop
 				if ( "gui::ingame" == 2 ) {
 					set "cmd" "GetCVarValue g_corpseRemoveDelayMP cvar_g_corpseRemoveDelayMP" ;
 				}
+				if ( "desktop::dest" == 4 ) {
+					set "cmd" "refreshKeyBindings" ;
+				} else if ( "desktop::dest" == 22 ) {
+					set "cmd" "refreshSystemSettings" ;
+				} else if ( "desktop::dest" == 36 ) {
+					set "cmd" "refreshAudioSettings" ;
+				}
 				
 				transition "p_settings::rect" "$d_main_l::rect" "$d_main::rect" "0" ;
 				
@@ -14445,6 +14453,7 @@ windowDef Desktop
 			notime	1
 
 			onTime 0 {
+				set "cmd" "refreshMods" ;
 				set "pop_p_mods::visible" "1" ;
 				namedevent "p_btns::hideMain" ;
 				transition "pop_mods_black::backcolor_w" "0" "0.94" "200" ;
@@ -18494,6 +18503,7 @@ windowDef Desktop
 			}
 
 			onAction {
+				set "cmd" "refreshKeyBindings" ;
 				set "p_settings_ctrls::visible" "1" ;
 				set "p_settings_game::visible" "0" ;
 				set "p_settings_sys::visible" "0" ;
@@ -18693,6 +18703,7 @@ windowDef Desktop
 			}
 
 			onAction {
+				set "cmd" "refreshSystemSettings" ;
 				set "p_settings_ctrls::visible" "0" ;
 				set "p_settings_game::visible" "0" ;
 				set "p_settings_sys::visible" "1" ;
@@ -18794,6 +18805,7 @@ windowDef Desktop
 			}
 
 			onAction {
+				set "cmd" "refreshAudioSettings" ;
 				set "p_settings_ctrls::visible" "0" ;
 				set "p_settings_game::visible" "0" ;
 				set "p_settings_sys::visible" "0" ;
