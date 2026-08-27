@@ -1075,7 +1075,8 @@ def validate_engine_hooks() -> None:
     )
 
     smooth_slow_time = function_body(
-        common, "static bool openQ4_ShouldUseSmoothSingleplayerSlowTime( void )"
+        common,
+        "static bool openQ4_ShouldUseSmoothSingleplayerSlowTime( float effectiveTimeScale )",
     )
     require(
         common,
@@ -1086,6 +1087,11 @@ def validate_engine_hooks() -> None:
         smooth_slow_time,
         "openQ4_singleplayerGameModuleReady.load( std::memory_order_acquire )",
         "Arena-safe async module transition",
+    )
+    require(
+        smooth_slow_time,
+        "return effectiveTimeScale < 0.999f;",
+        "Composed single-player slow-time detection",
     )
     if (
         "cvarSystem->" in smooth_slow_time
