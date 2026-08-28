@@ -354,12 +354,9 @@ void idUserInterfaceLocal::SetInteractive(bool interactive) {
 bool idUserInterfaceLocal::InitFromFile( const char *qpath, bool rebuild, bool cache ) { 
 
 	if ( !( qpath && *qpath ) ) { 
-		// FIXME: Memory leak!!
 		return false;
 	}
 
-	int sz = sizeof( idWindow );
-	sz = sizeof( idSimpleWindow );
 	loading = true;
 
 	if ( rebuild ) {
@@ -434,36 +431,8 @@ const char *idUserInterfaceLocal::HandleEvent( const sysEvent_t *event, int _tim
 	}
 
 	if ( event->evType == SE_MOUSE ) {
-		cursorX += event->evValue;
-		cursorY += event->evValue2;
-
-		// Retail clamps the cursor to the virtual screen, and the game's
-		// in-world gui interaction depends on it: idPlayer::UpdateFocus parks
-		// the cursor with a large negative move (expecting it to stop at the
-		// corner) before every absolute reposition, so an unclamped cursor
-		// drifts thousands of units off-canvas and clicks never hit a window.
-		// Menu guis may extend past the 4:3 canvas when aspect correction is
-		// active, so honor the expanded bounds there instead of trapping the
-		// cursor at the canvas edge.
-		float minX = 0.0f;
-		float minY = 0.0f;
-		float maxX = static_cast<float>( VIRTUAL_WIDTH );
-		float maxY = static_cast<float>( VIRTUAL_HEIGHT );
-		if ( desktop != NULL ) {
-			maxX = desktop->forceAspectWidth;
-			maxY = desktop->forceAspectHeight;
-			if ( ( desktop->GetFlags() & WIN_MENUGUI ) && ui_aspectCorrection.GetBool() ) {
-				float xExpand = 0.0f;
-				float yExpand = 0.0f;
-				uiManagerLocal.dc.GetVirtualScreenExpansion( maxX, maxY, xExpand, yExpand );
-				minX -= xExpand;
-				maxX += xExpand;
-				minY -= yExpand;
-				maxY += yExpand;
-			}
-		}
-		cursorX = idMath::ClampFloat( minX, maxX, cursorX );
-		cursorY = idMath::ClampFloat( minY, maxY, cursorY );
+		SetCursor( cursorX + static_cast<float>( event->evValue ),
+			cursorY + static_cast<float>( event->evValue2 ) );
 	}
 
 	if ( desktop ) {
@@ -669,8 +638,11 @@ void idUserInterfaceLocal::ReadFromDemoFile( class idDemoFile *f ) {
 		desktop->ReadFromDemoFile(f, false);
 	}
 
-	f->ReadFloat( cursorX );
-	f->ReadFloat( cursorY );
+	float restoredCursorX = 0.0f;
+	float restoredCursorY = 0.0f;
+	f->ReadFloat( restoredCursorX );
+	f->ReadFloat( restoredCursorY );
+	SetCursor( restoredCursorX, restoredCursorY );
 
 	bool add = true;
 	int c = uiManagerLocal.demoGuis.Num();
@@ -730,6 +702,11 @@ static bool UI_WriteSaveGameBool( idFile *savefile, bool value, const char *deta
 }
 
 static bool UI_WriteSaveGameFloat( idFile *savefile, float value, const char *detail ) {
+	if ( !std::isfinite( value ) ) {
+		common->Warning( "idUserInterfaceLocal::WriteToSaveGame: refusing non-finite %s",
+			detail ? detail : "float" );
+		return false;
+	}
 	const int offset = savefile->Tell();
 	return UI_WriteSaveGameChecked( savefile, savefile->WriteFloat( value ), static_cast<int>( sizeof( value ) ), offset, detail );
 }
@@ -843,6 +820,11 @@ static bool UI_ReadSaveGameFloat( idFile *savefile, float &value, const char *de
 			detail ? detail : "float", offset, bytesRead, static_cast<int>( sizeof( value ) ) );
 		return false;
 	}
+	if ( !std::isfinite( value ) ) {
+		common->Warning( "idUserInterfaceLocal::ReadFromSaveGame: non-finite %s at offset %d",
+			detail ? detail : "float", offset );
+		return false;
+	}
 	return true;
 }
 
@@ -949,9 +931,8 @@ bool idUserInterfaceLocal::ReadFromSaveGame( idFile *savefile ) {
 	activateStr = restoredActivateStr;
 	pendingCmd = restoredPendingCmd;
 	returnCmd = restoredReturnCmd;
-	cursorX = restoredCursorX;
-	cursorY = restoredCursorY;
 	desktop->ReadFromSaveGame( savefile );
+	SetCursor( restoredCursorX, restoredCursorY );
 
 	return true;
 }
@@ -1001,6 +982,53 @@ idUserInterfaceLocal::SetCursor
 void idUserInterfaceLocal::SetCursor( float x, float y ) {
 	cursorX = x;
 	cursorY = y;
+	ClampCursor();
+}
+
+/*
+==============
+idUserInterfaceLocal::ClampCursor
+==============
+*/
+void idUserInterfaceLocal::ClampCursor( void ) {
+	if ( !std::isfinite( cursorX ) ) {
+		cursorX = 0.0f;
+	}
+	if ( !std::isfinite( cursorY ) ) {
+		cursorY = 0.0f;
+	}
+
+	// Retail clamps the cursor to the virtual screen, and the game's in-world
+	// GUI interaction depends on it: idPlayer::UpdateFocus parks the cursor at
+	// the corner before every absolute reposition. Menu GUIs may extend past
+	// the 4:3 canvas, so retain their aspect-corrected bounds.
+	float minX = 0.0f;
+	float minY = 0.0f;
+	float maxX = static_cast<float>( VIRTUAL_WIDTH );
+	float maxY = static_cast<float>( VIRTUAL_HEIGHT );
+	if ( desktop != NULL ) {
+		if ( std::isfinite( desktop->forceAspectWidth ) && desktop->forceAspectWidth > 0.0f ) {
+			maxX = desktop->forceAspectWidth;
+		}
+		if ( std::isfinite( desktop->forceAspectHeight ) && desktop->forceAspectHeight > 0.0f ) {
+			maxY = desktop->forceAspectHeight;
+		}
+		if ( ( desktop->GetFlags() & WIN_MENUGUI ) && ui_aspectCorrection.GetBool() ) {
+			float xExpand = 0.0f;
+			float yExpand = 0.0f;
+			uiManagerLocal.dc.GetVirtualScreenExpansion( maxX, maxY, xExpand, yExpand );
+			if ( std::isfinite( xExpand ) && xExpand >= 0.0f ) {
+				minX -= xExpand;
+				maxX += xExpand;
+			}
+			if ( std::isfinite( yExpand ) && yExpand >= 0.0f ) {
+				minY -= yExpand;
+				maxY += yExpand;
+			}
+		}
+	}
+	cursorX = idMath::ClampFloat( minX, maxX, cursorX );
+	cursorY = idMath::ClampFloat( minY, maxY, cursorY );
 }
 
 bool idUserInterfaceLocal::GetMaxTextIndex( const char *windowName, const char *text, wrapInfo_t& wrapInfo ) const {

@@ -7,7 +7,7 @@ This file tracks current known issues and upcoming features.
 - [x] Viewport sometimes remains black when changing between SP and MP; investigate update/refresh logic during module transitions.
 - [ ] Menu cursor handling needs improvement (focus, capture, and consistency across input modes and resolutions).
 - [x] The locked door/scripted trigger progression bug inherited from Quake4Doom was fixed by porting OpenD3's x64 script-compiler pointer-temp storage guard (4-byte object-ref temp vs 8-byte pointer temp mismatch).
-- [ ] Machinegun zoom projection yaw differs from viewangles yaw.
+- [x] Machinegun zoom projection yaw now follows the interpolated camera actually presented in both SP and MP.
 
 ## Upcoming Features and Improvements
 

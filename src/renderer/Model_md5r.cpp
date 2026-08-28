@@ -1548,21 +1548,39 @@ bool R_MD5R_CreateDecalTriangles( idRenderModelDecal *decalModel, const srfTrian
 			idFixedWinding fw;
 			fw.SetNumPoints( 3 );
 			const int localIndices[3] = { v1, v2, v3 };
+			bool projectionValid = true;
 			for ( int pointNum = 0; pointNum < 3; ++pointNum ) {
 				const idVec3 position = batchSilTraceVerts[ localIndices[pointNum] ].xyzw.ToVec3();
+				if ( !std::isfinite( position.x ) || !std::isfinite( position.y ) || !std::isfinite( position.z ) ) {
+					projectionValid = false;
+					break;
+				}
 				fw[pointNum] = position;
 
-				if ( localInfo.parallel ) {
-					fw[pointNum].s = localInfo.textureAxis[0].Distance( position );
-					fw[pointNum].t = localInfo.textureAxis[1].Distance( position );
-				} else {
+				idVec3 texturePoint = position;
+				if ( !localInfo.parallel ) {
 					const idVec3 dir = position - localInfo.projectionOrigin;
-					float scale = 0.0f;
-					localInfo.boundingPlanes[NUM_DECAL_BOUNDING_PLANES - 1].RayIntersection( position, dir, scale );
-					const idVec3 projectedPoint = position + scale * dir;
-					fw[pointNum].s = localInfo.textureAxis[0].Distance( projectedPoint );
-					fw[pointNum].t = localInfo.textureAxis[1].Distance( projectedPoint );
+					float scale;
+					if ( !localInfo.boundingPlanes[NUM_DECAL_BOUNDING_PLANES - 1].RayIntersection( position, dir, scale ) ||
+						 !std::isfinite( scale ) ) {
+						projectionValid = false;
+						break;
+					}
+					texturePoint = position + scale * dir;
+					if ( !std::isfinite( texturePoint.x ) || !std::isfinite( texturePoint.y ) || !std::isfinite( texturePoint.z ) ) {
+						projectionValid = false;
+						break;
+					}
 				}
+				fw[pointNum].s = localInfo.textureAxis[0].Distance( texturePoint );
+				fw[pointNum].t = localInfo.textureAxis[1].Distance( texturePoint );
+				if ( !std::isfinite( fw[pointNum].s ) || !std::isfinite( fw[pointNum].t ) ) {
+					projectionValid = false;
+					break;
+				}
+			}
+			if ( !projectionValid ) {
+				continue;
 			}
 
 			const int orBits = cullBits[v1] | cullBits[v2] | cullBits[v3];
@@ -3011,7 +3029,7 @@ bool rvRenderModelMD5R::ReadLevelLoadCachePayload( idFile &file ) {
 	}
 	staged.meshes.SetNum( meshCount );
 	idList<byte> decodedMaterialFlags;
-	decodedMaterialFlags.SetNum( meshCount );
+	decodedMaterialFlags.AssureSize( meshCount, static_cast<byte>( 0 ) );
 	int totalPrimBatches = 0;
 	for ( int meshIndex = 0; meshIndex < meshCount; ++meshIndex ) {
 		rvMD5RMesh &mesh = staged.meshes[meshIndex];

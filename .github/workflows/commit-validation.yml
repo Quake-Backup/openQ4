@@ -15,7 +15,7 @@ env:
   # Keep the engine's shared File/FileSystem ABI locked to the companion
   # revision that implements GAME_API 46, generated-animation cache v3, and
   # the game-owned transient time-scale interface.
-  OPENQ4_GAMELIBS_SHA: 9215976fa43353e4c22b617a175ad06b7547ddae
+  OPENQ4_GAMELIBS_SHA: 67fcd3e2142bc07c4871873ea1ec6fe592ac8a5a
 
 jobs:
   script-smoke:
@@ -84,6 +84,7 @@ jobs:
             tools/tests/aas_settings_contract.py \
             tools/tests/arena_campaign.py \
             tools/tests/async_drop_client_contract.py \
+            tools/tests/base64_input_safety.py \
             tools/tests/campaign_split_state_transition.py \
             tools/tests/clang_tidy_input_safety.py \
             tools/tests/cmdargs_append_contract.py \
@@ -106,6 +107,7 @@ jobs:
             tools/tests/level_load_cache.py \
             tools/tests/hdr_postprocess_math.py \
             tools/tests/idstr_input_safety.py \
+            tools/tests/lexer_input_safety.py \
             tools/tests/lexer_peek_contract.py \
             tools/tests/key_bind_presentation.py \
             tools/tests/levelshot_inventory.py \
@@ -136,6 +138,7 @@ jobs:
             tools/tests/loading_pacifier_pacing.py \
             tools/tests/map_entity_strings.py \
             tools/tests/weapon_wheel_time_scale.py \
+            tools/tests/weapon_zoom_view_alignment.py \
             tools/tests/macos_apple_gl21_arb2_corridor.py \
             tools/tests/macos_dedicated_server_smoke.py \
             tools/tests/macos_dedicated_server_smoke_contract.py \
@@ -194,6 +197,7 @@ jobs:
             tools/tests/renderer_advanced_lighting.py \
             tools/tests/renderer_budget_contract.py \
             tools/tests/renderer_cel_shading.py \
+            tools/tests/renderer_demo_projection_safety.py \
             tools/tests/renderer_gpu_frame_timing.py \
             tools/tests/renderer_gpu_skinning.py \
             tools/tests/renderer_temporal_presentation.py \
@@ -233,6 +237,8 @@ jobs:
             tools/tests/stock_asset_baseline.py \
             tools/tests/stock_media_fallbacks.py \
             tools/tests/ui_embedded_icons.py \
+            tools/tests/ui_cursor_state_safety.py \
+            tools/tests/ui_window_state_safety.py \
             tools/tests/validation_hardening.py \
             tools/tests/vk_shader_header_pin.py \
             tools/tests/vk_temporal_resolve_shader_pin.py \
@@ -246,6 +252,7 @@ jobs:
           python tools/tests/aas_settings_contract.py
           python tools/tests/arena_campaign.py
           python tools/tests/async_drop_client_contract.py
+          python tools/tests/base64_input_safety.py
           python tools/tests/campaign_split_state_transition.py
           python tools/tests/clang_tidy_input_safety.py
           python tools/tests/cmdargs_append_contract.py
@@ -268,6 +275,7 @@ jobs:
           python tools/tests/level_load_cache.py
           python tools/tests/hdr_postprocess_math.py
           python tools/tests/idstr_input_safety.py
+          python tools/tests/lexer_input_safety.py
           python tools/tests/lexer_peek_contract.py
           python tools/tests/key_bind_presentation.py
           python tools/tests/levelshot_inventory.py
@@ -295,6 +303,7 @@ jobs:
           python tools/tests/loading_pacifier_pacing.py
           python tools/tests/map_entity_strings.py
           python tools/tests/weapon_wheel_time_scale.py
+          python tools/tests/weapon_zoom_view_alignment.py
           python tools/tests/macos_apple_gl21_arb2_corridor.py
           python tools/tests/macos_dedicated_server_smoke_contract.py
           python tools/tests/macos_evidence_plumbing.py
@@ -352,6 +361,7 @@ jobs:
           python tools/tests/renderer_advanced_lighting.py
           python tools/tests/renderer_budget_contract.py
           python tools/tests/renderer_cel_shading.py
+          python tools/tests/renderer_demo_projection_safety.py
           python tools/tests/renderer_gpu_frame_timing.py
           python tools/tests/renderer_gpu_skinning.py
           python tools/tests/renderer_temporal_presentation.py
@@ -389,6 +399,8 @@ jobs:
           python tools/tests/stock_asset_baseline.py
           python tools/tests/stock_media_fallbacks.py
           python tools/tests/ui_embedded_icons.py
+          python tools/tests/ui_cursor_state_safety.py
+          python tools/tests/ui_window_state_safety.py
           python tools/tests/validation_hardening.py
           python tools/tests/vk_shader_header_pin.py
           python tools/tests/vk_temporal_resolve_shader_pin.py

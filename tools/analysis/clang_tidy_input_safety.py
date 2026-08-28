@@ -23,8 +23,17 @@ from typing import Any, Sequence
 
 
 ROOT = Path(__file__).resolve().parents[2]
-PRODUCTION_SOURCE = ROOT / "src" / "framework" / "UsercmdGen.cpp"
-PRODUCTION_HEADER = ROOT / "src" / "idlib" / "NumericString.h"
+PRODUCTION_SOURCES = (
+    ROOT / "src" / "framework" / "UsercmdGen.cpp",
+    ROOT / "src" / "idlib" / "Lexer.cpp",
+    ROOT / "src" / "idlib" / "Base64.cpp",
+    ROOT / "src" / "renderer" / "ModelDecal.cpp",
+    ROOT / "src" / "ui" / "SimpleWindow.cpp",
+)
+PRODUCTION_HEADERS = (
+    ROOT / "src" / "idlib" / "NumericString.h",
+    ROOT / "src" / "idlib" / "Token.h",
+)
 SAFETY_TEST_SOURCE = ROOT / "tools" / "tests" / "native" / "CoreSafetyTest.cpp"
 DEFAULT_OUTPUT_DIR = ROOT / ".tmp" / "clang-tidy-input-safety"
 MSVC_DRIVER_MODE = "--driver-mode=cl"
@@ -43,6 +52,7 @@ CHECKS = (
     "clang-analyzer-security.*",
     "clang-analyzer-cplusplus.NewDelete*",
     "clang-analyzer-cplusplus.PlacementNew",
+    "clang-analyzer-optin.cplusplus.UninitializedObject",
     "clang-analyzer-unix.Malloc",
     "clang-analyzer-unix.MismatchedDeallocator",
     "clang-analyzer-deadcode.DeadStores",
@@ -52,11 +62,12 @@ REQUIRED_ENABLED_CHECKS = (
     "clang-analyzer-security.insecureAPI.strcpy",
     "clang-analyzer-cplusplus.NewDelete",
     "clang-analyzer-cplusplus.PlacementNew",
+    "clang-analyzer-optin.cplusplus.UninitializedObject",
     "clang-analyzer-unix.Malloc",
     "clang-analyzer-unix.MismatchedDeallocator",
     "clang-analyzer-deadcode.DeadStores",
 )
-HEADER_FILTER = r".*[\\/]src[\\/]idlib[\\/]NumericString[.]h$"
+HEADER_FILTER = r".*[\\/]src[\\/]idlib[\\/](?:NumericString|Token)[.]h$"
 
 
 class AnalysisError(RuntimeError):
@@ -276,25 +287,37 @@ def build_analysis_database(build_dir: Path, root: Path = ROOT) -> list[dict[str
     if not isinstance(raw_database, list) or not all(isinstance(entry, dict) for entry in raw_database):
         raise AnalysisError(f"compilation database must contain a JSON array: {database_path}")
 
-    production_source = root / "src" / "framework" / "UsercmdGen.cpp"
+    production_sources = tuple(root / source.relative_to(ROOT) for source in PRODUCTION_SOURCES)
     precompiled_header = root / "src" / "idlib" / "precompiled.h"
     safety_source = root / "tools" / "tests" / "native" / "CoreSafetyTest.cpp"
-    production_entry = choose_production_entry(raw_database, production_source)
-    production_arguments = sanitize_compile_arguments(compile_arguments(production_entry), precompiled_header)
-    directory = str(Path(production_entry["directory"]).resolve())
+    analysis_database: list[dict[str, Any]] = []
+    primary_arguments: list[str] | None = None
+    primary_directory = ""
+    for production_source in production_sources:
+        production_entry = choose_production_entry(raw_database, production_source)
+        production_arguments = sanitize_compile_arguments(compile_arguments(production_entry), precompiled_header)
+        directory = str(Path(production_entry["directory"]).resolve())
+        analysis_database.append(
+            {
+                "directory": directory,
+                "arguments": production_arguments,
+                "file": str(production_source.resolve()),
+            }
+        )
+        if primary_arguments is None:
+            primary_arguments = production_arguments
+            primary_directory = directory
 
-    return [
+    if primary_arguments is None:
+        raise AnalysisError("input-safety analysis has no production translation units")
+    analysis_database.append(
         {
-            "directory": directory,
-            "arguments": production_arguments,
-            "file": str(production_source.resolve()),
-        },
-        {
-            "directory": directory,
-            "arguments": safety_test_arguments(production_arguments, safety_source, root),
+            "directory": primary_directory,
+            "arguments": safety_test_arguments(primary_arguments, safety_source, root),
             "file": str(safety_source.resolve()),
-        },
-    ]
+        }
+    )
+    return analysis_database
 
 
 def validate_output_dir(output_dir: Path, root: Path = ROOT) -> Path:
@@ -352,11 +375,11 @@ def clang_tidy_command(
     root: Path = ROOT,
     msvc: bool = False,
 ) -> list[str]:
-    production_source = root / "src" / "framework" / "UsercmdGen.cpp"
+    production_sources = tuple(root / source.relative_to(ROOT) for source in PRODUCTION_SOURCES)
     safety_test_source = root / "tools" / "tests" / "native" / "CoreSafetyTest.cpp"
     command = [
         executable,
-        str(production_source.resolve()),
+        *(str(source.resolve()) for source in production_sources),
         str(safety_test_source.resolve()),
         "-p",
         str(database_dir.resolve()),
@@ -425,7 +448,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
 def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv)
     try:
-        for required in (PRODUCTION_SOURCE, PRODUCTION_HEADER, SAFETY_TEST_SOURCE):
+        for required in (*PRODUCTION_SOURCES, *PRODUCTION_HEADERS, SAFETY_TEST_SOURCE):
             if not required.is_file():
                 raise AnalysisError(f"required input-safety source is missing: {required}")
 

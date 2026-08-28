@@ -407,6 +407,7 @@ def run_python_tests(args: argparse.Namespace, root: Path, env: dict[str, str]) 
         root / "tools" / "tests" / "aas_settings_contract.py",
         root / "tools" / "tests" / "arena_campaign.py",
         root / "tools" / "tests" / "async_drop_client_contract.py",
+        root / "tools" / "tests" / "base64_input_safety.py",
         root / "tools" / "tests" / "campaign_split_state_transition.py",
         root / "tools" / "tests" / "clang_tidy_input_safety.py",
         root / "tools" / "tests" / "cmdargs_append_contract.py",
@@ -429,6 +430,7 @@ def run_python_tests(args: argparse.Namespace, root: Path, env: dict[str, str]) 
         root / "tools" / "tests" / "level_load_cache.py",
         root / "tools" / "tests" / "hdr_postprocess_math.py",
         root / "tools" / "tests" / "idstr_input_safety.py",
+        root / "tools" / "tests" / "lexer_input_safety.py",
         root / "tools" / "tests" / "lexer_peek_contract.py",
         root / "tools" / "tests" / "key_bind_presentation.py",
         root / "tools" / "tests" / "levelshot_inventory.py",
@@ -512,6 +514,7 @@ def run_python_tests(args: argparse.Namespace, root: Path, env: dict[str, str]) 
         root / "tools" / "tests" / "renderer_advanced_lighting.py",
         root / "tools" / "tests" / "renderer_budget_contract.py",
         root / "tools" / "tests" / "renderer_cel_shading.py",
+        root / "tools" / "tests" / "renderer_demo_projection_safety.py",
         root / "tools" / "tests" / "renderer_gpu_frame_timing.py",
         root / "tools" / "tests" / "renderer_gpu_skinning.py",
         root / "tools" / "tests" / "renderer_mp_flat_items.py",
@@ -551,10 +554,13 @@ def run_python_tests(args: argparse.Namespace, root: Path, env: dict[str, str]) 
         root / "tools" / "tests" / "stock_asset_baseline.py",
         root / "tools" / "tests" / "stock_media_fallbacks.py",
         root / "tools" / "tests" / "ui_embedded_icons.py",
+        root / "tools" / "tests" / "ui_cursor_state_safety.py",
+        root / "tools" / "tests" / "ui_window_state_safety.py",
         root / "tools" / "tests" / "validation_hardening.py",
         root / "tools" / "tests" / "vk_shader_header_pin.py",
         root / "tools" / "tests" / "vk_temporal_resolve_shader_pin.py",
         root / "tools" / "tests" / "vscode_fast_build.py",
+        root / "tools" / "tests" / "weapon_zoom_view_alignment.py",
     ]
     failures: list[str] = []
     for test_script in tests:

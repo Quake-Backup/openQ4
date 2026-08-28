@@ -83,9 +83,30 @@ def validate_tree(root: Path, context: str) -> None:
         raise AssertionError(f"{context}: guards must precede argv installation")
 
 
+def validate_auto_exec_capture_boundary() -> None:
+    for relative_path in ("src/game/Game_local.cpp", "src/mpgame/Game_local.cpp"):
+        source = (GAME_LIBS_ROOT / relative_path).read_text(encoding="utf-8")
+        body = function_body(
+            source,
+            "void idGameLocal::CheckAutoExecAfterMapLoad",
+            relative_path,
+        )
+        safe_dispatch = "BufferCommandArgs( CMD_EXEC_APPEND, execArgs )"
+        unsafe_dispatch = "BufferCommandArgs( CMD_EXEC_NOW, execArgs )"
+        if safe_dispatch not in body:
+            raise AssertionError(
+                f"{relative_path}: post-map cfg must be queued outside the active draw"
+            )
+        if unsafe_dispatch in body:
+            raise AssertionError(
+                f"{relative_path}: post-map cfg still executes synchronously during Draw"
+            )
+
+
 def main() -> None:
     validate_tree(ROOT, "engine idCmdArgs")
     validate_tree(GAME_LIBS_ROOT, "GameLibs idCmdArgs")
+    validate_auto_exec_capture_boundary()
 
     argc = 0
     for _ in range(MAX_COMMAND_ARGS):

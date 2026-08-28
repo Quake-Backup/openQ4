@@ -115,6 +115,7 @@ private:
 
 	float						cursorX;
 	float						cursorY;
+	void						ClampCursor( void );
 
 	int							time;
 

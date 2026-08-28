@@ -3248,6 +3248,43 @@ void idWindow::SetInitialState(const char *_name) {
 
 /*
 ================
+OpenQ4_ParseTimelineMilliseconds
+================
+*/
+static bool OpenQ4_ParseTimelineMilliseconds( const char *text, int &milliseconds ) {
+	if ( text == NULL || text[0] == '\0' ) {
+		return false;
+	}
+
+	bool negative = false;
+	if ( text[0] == '+' || text[0] == '-' ) {
+		negative = text[0] == '-';
+		text++;
+	}
+	if ( text[0] == '\0' ) {
+		return false;
+	}
+
+	uint64 magnitude = 0;
+	const uint64 magnitudeLimit = negative ? 2147483648ULL : 2147483647ULL;
+	for ( ; text[0] != '\0'; text++ ) {
+		if ( text[0] < '0' || text[0] > '9' ) {
+			return false;
+		}
+		const uint64 digit = static_cast<uint64>( text[0] - '0' );
+		if ( magnitude > ( magnitudeLimit - digit ) / 10ULL ) {
+			return false;
+		}
+		magnitude = magnitude * 10ULL + digit;
+	}
+
+	const int64 signedValue = negative ? -static_cast<int64>( magnitude ) : static_cast<int64>( magnitude );
+	milliseconds = static_cast<int>( signedValue );
+	return true;
+}
+
+/*
+================
 idWindow::Parse
 ================
 */
@@ -3455,6 +3492,7 @@ bool idWindow::Parse( idParser *src, bool rebuild) {
 			src->SetMarker ( );
 			
 			if ( !ParseScript ( src, *ev->mEvent ) ) {
+				delete ev;
 				ret = false;
 				break;
 			}
@@ -3480,8 +3518,6 @@ bool idWindow::Parse( idParser *src, bool rebuild) {
 			namedEvents.Append(ev);
 		}
 		else if ( token == "onTime" ) {
-			idTimeLineEvent *ev = new idTimeLineEvent;
-
 			if ( !src->ReadToken(&token) ) {
 				src->Error( "Unexpected end of file" );
 				return false;
@@ -3505,16 +3541,29 @@ bool idWindow::Parse( idParser *src, bool rebuild) {
 				return false;
 			}
 
-			ev->time = atoi( timeToken );
+			int eventTime = 0;
+			if ( !OpenQ4_ParseTimelineMilliseconds( timeToken, eventTime ) ) {
+				src->Error( "Invalid onTime value '%s'", timeToken );
+				return false;
+			}
 			if ( relativeTime ) {
 				const int previousTime = ( timeLineEvents.Num() > 0 ) ? timeLineEvents[ timeLineEvents.Num() - 1 ]->time : 0;
-				ev->time += previousTime;
+				const int64 combinedTime = static_cast<int64>( eventTime ) + static_cast<int64>( previousTime );
+				if ( combinedTime < idMath::INT_MIN || combinedTime > idMath::INT_MAX ) {
+					src->Error( "onTime value '%s' overflows the timeline", timeToken );
+					return false;
+				}
+				eventTime = static_cast<int>( combinedTime );
 			}
+
+			idTimeLineEvent *ev = new idTimeLineEvent;
+			ev->time = eventTime;
 			
 			// reset the mark since we dont want it to include the time
 			src->SetMarker ( );
 
 			if (!ParseScript(src, *ev->event, &ev->time)) {
+				delete ev;
 				ret = false;
 				break;
 			}
@@ -4105,7 +4154,7 @@ intptr_t idWindow::ParseTerm( idParser *src,	idWinVar *var, intptr_t component )
 	} else {
 		// ugly but used for post parsing to fixup named vars
 		char *p = new char[token.Length()+1];
-		strcpy(p, token);
+		idStr::Copynz( p, token.c_str(), token.Length() + 1 );
 		a = (intptr_t)p;
 		b = -2;
 		return EmitOp(a, b, WOP_TYPE_VAR);
@@ -4605,31 +4654,37 @@ void idWindow::WriteToDemoFile( class idDemoFile *f ) {
 idWindow::WriteString
 ===============
 */
-void idWindow::WriteSaveGameString( const char *string, idFile *savefile ) {
+static bool OpenQ4_IsFiniteSaveGameRectangle( const idRectangle &rect ) {
+	return std::isfinite( rect.x ) && std::isfinite( rect.y ) &&
+		std::isfinite( rect.w ) && std::isfinite( rect.h );
+}
+
+static bool OpenQ4_IsFiniteSaveGameVec2( const idVec2 &vec ) {
+	return std::isfinite( vec.x ) && std::isfinite( vec.y );
+}
+
+bool idWindow::WriteSaveGameString( const char *string, idFile *savefile ) {
 	if ( savefile == NULL || string == NULL ) {
 		common->Error( "idWindow::WriteSaveGameString: invalid output file/string for window '%s'",
 			name.c_str() );
+		return false;
 	}
 	const int len = idLib::SizeToInt( strlen( string ), "idWindow::WriteSaveGameString" );
 	const int maxSavedStringLength = 64 * 1024;
 	if ( len > maxSavedStringLength ) {
 		common->Error( "idWindow::WriteSaveGameString: string for window '%s' in gui '%s' is too long (%d bytes)",
 			name.c_str(), gui ? gui->GetSourceFile() : "<null>", len );
+		return false;
 	}
-	const int lengthOffset = savefile->Tell();
-	const int lengthBytes = savefile->WriteInt( len );
-	if ( lengthBytes != static_cast<int>( sizeof( len ) ) ) {
-		common->Error( "idWindow::WriteSaveGameString: failed to write length for window '%s' at offset %d (%d of %d bytes)",
-			name.c_str(), lengthOffset, lengthBytes, static_cast<int>( sizeof( len ) ) );
+	if ( !OpenQ4_WriteSaveGameInt( savefile, len, "idWindow::WriteSaveGameString", "length" ) ) {
+		return false;
 	}
 	if ( len > 0 ) {
-		const int stringOffset = savefile->Tell();
-		const int stringBytes = savefile->Write( string, len );
-		if ( stringBytes != len ) {
-			common->Error( "idWindow::WriteSaveGameString: failed to write string for window '%s' at offset %d (%d of %d bytes)",
-				name.c_str(), stringOffset, stringBytes, len );
+		if ( !OpenQ4_WriteSaveGameBytes( savefile, string, len, "idWindow::WriteSaveGameString", "string" ) ) {
+			return false;
 		}
 	}
+	return true;
 }
 
 /*
@@ -4637,10 +4692,11 @@ void idWindow::WriteSaveGameString( const char *string, idFile *savefile ) {
 idWindow::WriteSaveGameTransition
 ===============
 */
-void idWindow::WriteSaveGameTransition( idTransitionData &trans, idFile *savefile ) {
+bool idWindow::WriteSaveGameTransition( idTransitionData &trans, idFile *savefile ) {
 	if ( savefile == NULL || gui == NULL || gui->GetDesktop() == NULL || trans.data == NULL ) {
 		common->Error( "idWindow::WriteSaveGameTransition: invalid transition context for window '%s'",
 			name.c_str() );
+		return false;
 	}
 	drawWin_t dw;
 	dw.simp = NULL;
@@ -4649,27 +4705,22 @@ void idWindow::WriteSaveGameTransition( idTransitionData &trans, idFile *savefil
 	if ( transitionOffset < 0 || transitionOffset > 0x7fffffff || ( dw.win == NULL ) == ( dw.simp == NULL ) ) {
 		common->Error( "idWindow::WriteSaveGameTransition: could not resolve transition target for window '%s' in gui '%s'",
 			name.c_str(), gui->GetSourceFile() );
+		return false;
 	}
 	const idStr winName = ( dw.win != NULL ) ? dw.win->GetName() : dw.simp->name.c_str();
 	drawWin_t *foundWindow = gui->GetDesktop()->FindChildByName( winName );
 	if ( winName.IsEmpty() || foundWindow == NULL || foundWindow->win != dw.win || foundWindow->simp != dw.simp ) {
 		common->Error( "idWindow::WriteSaveGameTransition: transition target '%s' for window '%s' in gui '%s' is missing or ambiguous",
 			winName.c_str(), name.c_str(), gui->GetSourceFile() );
+		return false;
 	}
 	const int savedOffset = static_cast<int>( transitionOffset );
-	const int offsetPosition = savefile->Tell();
-	const int offsetBytes = savefile->WriteInt( savedOffset );
-	if ( offsetBytes != static_cast<int>( sizeof( savedOffset ) ) ) {
-		common->Error( "idWindow::WriteSaveGameTransition: failed to write target offset at %d (%d of %d bytes)",
-			offsetPosition, offsetBytes, static_cast<int>( sizeof( savedOffset ) ) );
+	if ( !OpenQ4_WriteSaveGameInt( savefile, savedOffset, "idWindow::WriteSaveGameTransition", "target offset" ) ||
+		 !WriteSaveGameString( winName, savefile ) ||
+		 !OpenQ4_WriteSaveGameField( savefile, trans.interp, "idWindow::WriteSaveGameTransition", "interpolate state" ) ) {
+		return false;
 	}
-	WriteSaveGameString( winName, savefile );
-	const int interpolationPosition = savefile->Tell();
-	const int interpolationBytes = savefile->Write( &trans.interp, sizeof( trans.interp ) );
-	if ( interpolationBytes != static_cast<int>( sizeof( trans.interp ) ) ) {
-		common->Error( "idWindow::WriteSaveGameTransition: failed to write interpolate state at %d (%d of %d bytes)",
-			interpolationPosition, interpolationBytes, static_cast<int>( sizeof( trans.interp ) ) );
-	}
+	return true;
 }
 
 /*
@@ -4677,28 +4728,35 @@ void idWindow::WriteSaveGameTransition( idTransitionData &trans, idFile *savefil
 idWindow::ReadSaveGameTransition
 ===============
 */
-void idWindow::ReadSaveGameTransition( idTransitionData &trans, idFile *savefile ) {
-	int offset;
+bool idWindow::ReadSaveGameTransition( idTransitionData &trans, idFile *savefile ) {
+	int offset = -1;
+	trans.data = NULL;
 
-	OpenQ4_ReadSaveGameField( savefile, offset, "idWindow::ReadSaveGameTransition", "offset" );
+	if ( !OpenQ4_ReadSaveGameInt( savefile, offset, "idWindow::ReadSaveGameTransition", "offset" ) ) {
+		return false;
+	}
 	if ( offset != -1 ) {
 		if ( offset < 0 ) {
 			common->Error( "idWindow::ReadSaveGameTransition: invalid target offset %d for window '%s' in gui '%s'",
 				offset, name.c_str(), gui ? gui->GetSourceFile() : "<null>" );
+			return false;
 		}
 		idStr winName;
-		ReadSaveGameString( winName, savefile );
-		OpenQ4_ReadSaveGameField( savefile, trans.interp, "idWindow::ReadSaveGameTransition", "interpolate state" );
-		trans.data = NULL;
+		if ( !ReadSaveGameString( winName, savefile ) ||
+			 !OpenQ4_ReadSaveGameField( savefile, trans.interp, "idWindow::ReadSaveGameTransition", "interpolate state" ) ) {
+			return false;
+		}
 		trans.offset = offset;
 		if ( winName.IsEmpty() ) {
 			common->Error( "idWindow::ReadSaveGameTransition: transition for window '%s' in gui '%s' has an empty target name",
 				name.c_str(), gui ? gui->GetSourceFile() : "<null>" );
+			return false;
 		}
 		idWinStr *strVar = new idWinStr();
 		strVar->Set( winName );
 		trans.data = dynamic_cast< idWinVar* >( strVar );
 	}
+	return true;
 }
 
 static const int SAVEGAME_WINDOW_REFERENCE_NULL = -1;
@@ -4716,21 +4774,27 @@ int idWindow::SaveGameChildIDCompare( idWindow * const *left, idWindow * const *
 	return 0;
 }
 
-void idWindow::BuildSaveGameChildOrder( idList<idWindow *> &orderedChildren, const char *operation ) const {
+bool idWindow::BuildSaveGameChildOrder( idList<idWindow *> &orderedChildren, const char *operation ) const {
 	orderedChildren.SetNum( children.Num() );
 	for ( int i = 0; i < children.Num(); i++ ) {
 		idWindow *child = children[i];
 		if ( child == NULL ) {
 			common->Error( "%s: window '%s' in gui '%s' has a NULL child at index %d",
 				operation, name.c_str(), gui ? gui->GetSourceFile() : "<null>", i );
+			orderedChildren.Clear();
+			return false;
 		}
 		if ( child->parent != this ) {
 			common->Error( "%s: child '%s' of window '%s' in gui '%s' has an inconsistent parent",
 				operation, child->name.c_str(), name.c_str(), gui ? gui->GetSourceFile() : "<null>" );
+			orderedChildren.Clear();
+			return false;
 		}
 		if ( child->childID < 0 ) {
 			common->Error( "%s: child '%s' of window '%s' in gui '%s' has invalid id %d",
 				operation, child->name.c_str(), name.c_str(), gui ? gui->GetSourceFile() : "<null>", child->childID );
+			orderedChildren.Clear();
+			return false;
 		}
 		orderedChildren[i] = child;
 	}
@@ -4740,21 +4804,28 @@ void idWindow::BuildSaveGameChildOrder( idList<idWindow *> &orderedChildren, con
 			common->Error( "%s: children '%s' and '%s' of window '%s' in gui '%s' have duplicate id %d",
 				operation, orderedChildren[i - 1]->name.c_str(), orderedChildren[i]->name.c_str(), name.c_str(),
 				gui ? gui->GetSourceFile() : "<null>", orderedChildren[i]->childID );
+			orderedChildren.Clear();
+			return false;
 		}
 	}
+	return true;
 }
 
 bool idWindow::FindSaveGameDescendantOrdinal( const idWindow *window, int &nextOrdinal, int &foundOrdinal, int depth ) const {
 	if ( depth > SAVEGAME_MAX_WINDOW_DEPTH ) {
 		common->Error( "idWindow::WriteToSaveGame: gui '%s' exceeds the maximum window nesting depth",
 			gui ? gui->GetSourceFile() : "<null>" );
+		return false;
 	}
 	idList<idWindow *> orderedChildren;
-	BuildSaveGameChildOrder( orderedChildren, "idWindow::WriteToSaveGame" );
+	if ( !BuildSaveGameChildOrder( orderedChildren, "idWindow::WriteToSaveGame" ) ) {
+		return false;
+	}
 	for ( int i = 0; i < orderedChildren.Num(); i++ ) {
 		if ( nextOrdinal >= SAVEGAME_MAX_WINDOW_DESCENDANTS ) {
 			common->Error( "idWindow::WriteToSaveGame: gui '%s' exceeds the maximum descendant count",
 				gui ? gui->GetSourceFile() : "<null>" );
+			return false;
 		}
 		idWindow *child = orderedChildren[i];
 		const int childOrdinal = nextOrdinal++;
@@ -4773,13 +4844,17 @@ idWindow *idWindow::FindSaveGameDescendantByOrdinal( int targetOrdinal, int &nex
 	if ( depth > SAVEGAME_MAX_WINDOW_DEPTH ) {
 		common->Error( "idWindow::ReadFromSaveGame: gui '%s' exceeds the maximum window nesting depth",
 			gui ? gui->GetSourceFile() : "<null>" );
+		return NULL;
 	}
 	idList<idWindow *> orderedChildren;
-	BuildSaveGameChildOrder( orderedChildren, "idWindow::ReadFromSaveGame" );
+	if ( !BuildSaveGameChildOrder( orderedChildren, "idWindow::ReadFromSaveGame" ) ) {
+		return NULL;
+	}
 	for ( int i = 0; i < orderedChildren.Num(); i++ ) {
 		if ( nextOrdinal >= SAVEGAME_MAX_WINDOW_DESCENDANTS ) {
 			common->Error( "idWindow::ReadFromSaveGame: gui '%s' exceeds the maximum descendant count",
 				gui ? gui->GetSourceFile() : "<null>" );
+			return NULL;
 		}
 		idWindow *child = orderedChildren[i];
 		if ( nextOrdinal++ == targetOrdinal ) {
@@ -4793,39 +4868,49 @@ idWindow *idWindow::FindSaveGameDescendantByOrdinal( int targetOrdinal, int &nex
 	return NULL;
 }
 
-void idWindow::FindSaveGameFlaggedDescendants( unsigned int flag, idWindow *&match, int &matches, int &visited, int depth ) {
+bool idWindow::FindSaveGameFlaggedDescendants( unsigned int flag, idWindow *&match, int &matches, int &visited, int depth ) {
 	if ( depth > SAVEGAME_MAX_WINDOW_DEPTH ) {
 		common->Error( "idWindow::ReadFromSaveGame: gui '%s' exceeds the maximum window nesting depth",
 			gui ? gui->GetSourceFile() : "<null>" );
+		return false;
 	}
 	idList<idWindow *> orderedChildren;
-	BuildSaveGameChildOrder( orderedChildren, "idWindow::ReadFromSaveGame" );
+	if ( !BuildSaveGameChildOrder( orderedChildren, "idWindow::ReadFromSaveGame" ) ) {
+		return false;
+	}
 	for ( int i = 0; i < orderedChildren.Num(); i++ ) {
 		if ( visited++ >= SAVEGAME_MAX_WINDOW_DESCENDANTS ) {
 			common->Error( "idWindow::ReadFromSaveGame: gui '%s' exceeds the maximum descendant count",
 				gui ? gui->GetSourceFile() : "<null>" );
+			return false;
 		}
 		idWindow *child = orderedChildren[i];
 		if ( ( child->flags & flag ) != 0 ) {
 			match = child;
 			matches++;
 		}
-		child->FindSaveGameFlaggedDescendants( flag, match, matches, visited, depth + 1 );
+		if ( !child->FindSaveGameFlaggedDescendants( flag, match, matches, visited, depth + 1 ) ) {
+			return false;
+		}
 	}
+	return true;
 }
 
-void idWindow::ValidateRestoredTrackedWindowPointers( bool hadSavedFocusReference, bool hadSavedCaptureReference ) {
+bool idWindow::ValidateRestoredTrackedWindowPointers( bool hadSavedFocusReference, bool hadSavedCaptureReference ) {
 	if ( ( flags & WIN_DESKTOP ) == 0 ) {
-		return;
+		return true;
 	}
 
 	idWindow *flaggedFocus = NULL;
 	int focusMatches = 0;
 	int visited = 0;
-	FindSaveGameFlaggedDescendants( WIN_FOCUS, flaggedFocus, focusMatches, visited, 0 );
+	if ( !FindSaveGameFlaggedDescendants( WIN_FOCUS, flaggedFocus, focusMatches, visited, 0 ) ) {
+		return false;
+	}
 	if ( focusMatches > 1 ) {
 		common->Error( "idWindow::ReadFromSaveGame: gui '%s' restored %d focused windows",
 			gui ? gui->GetSourceFile() : "<null>", focusMatches );
+		return false;
 	}
 	if ( focusMatches == 1 ) {
 		// Legacy v2 saves could serialize a nested window using only its parent-local
@@ -4834,29 +4919,42 @@ void idWindow::ValidateRestoredTrackedWindowPointers( bool hadSavedFocusReferenc
 	} else if ( hadSavedFocusReference || focusedChild != NULL ) {
 		common->Error( "idWindow::ReadFromSaveGame: gui '%s' restored a focused child reference without a focused window",
 			gui ? gui->GetSourceFile() : "<null>" );
+		return false;
 	}
 
 	idWindow *flaggedCapture = NULL;
 	int captureMatches = 0;
 	visited = 0;
-	FindSaveGameFlaggedDescendants( WIN_CAPTURE, flaggedCapture, captureMatches, visited, 0 );
+	if ( !FindSaveGameFlaggedDescendants( WIN_CAPTURE, flaggedCapture, captureMatches, visited, 0 ) ) {
+		return false;
+	}
 	if ( captureMatches > 1 ) {
 		common->Error( "idWindow::ReadFromSaveGame: gui '%s' restored %d captured windows",
 			gui ? gui->GetSourceFile() : "<null>", captureMatches );
+		return false;
 	}
 	if ( captureMatches == 1 ) {
 		captureChild = flaggedCapture;
 	} else if ( hadSavedCaptureReference || captureChild != NULL ) {
 		common->Error( "idWindow::ReadFromSaveGame: gui '%s' restored a capture child reference without a captured window",
 			gui ? gui->GetSourceFile() : "<null>" );
+		return false;
 	}
+	return true;
 }
 
-void idWindow::WriteSaveGameChildReference( idWindow *child, idFile *savefile, const char *fieldName, bool allowDescendant ) {
+bool idWindow::WriteSaveGameChildReference( idWindow *child, idFile *savefile, const char *fieldName, bool allowDescendant ) {
+	if ( savefile == NULL ) {
+		common->Error( "idWindow::WriteToSaveGame: invalid output file while writing %s for window '%s'",
+			fieldName ? fieldName : "child reference", name.c_str() );
+		return false;
+	}
 	int childId = -1;
 	if ( child != NULL ) {
 		idList<idWindow *> orderedChildren;
-		BuildSaveGameChildOrder( orderedChildren, "idWindow::WriteToSaveGame" );
+		if ( !BuildSaveGameChildOrder( orderedChildren, "idWindow::WriteToSaveGame" ) ) {
+			return false;
+		}
 		bool isDirectChild = false;
 		for ( int i = 0; i < orderedChildren.Num(); i++ ) {
 			if ( orderedChildren[i] == child ) {
@@ -4872,44 +4970,52 @@ void idWindow::WriteSaveGameChildReference( idWindow *child, idFile *savefile, c
 			if ( !FindSaveGameDescendantOrdinal( child, nextOrdinal, foundOrdinal, 0 ) ) {
 				common->Error( "idWindow::WriteToSaveGame: %s for window '%s' in gui '%s' is not a descendant",
 					fieldName ? fieldName : "child reference", name.c_str(), gui ? gui->GetSourceFile() : "<null>" );
+				return false;
 			}
 			childId = SAVEGAME_WINDOW_REFERENCE_DESCENDANT_BASE - foundOrdinal;
 		} else {
 			common->Error( "idWindow::WriteToSaveGame: %s for window '%s' in gui '%s' is not a valid direct child",
 				fieldName ? fieldName : "child reference", name.c_str(), gui ? gui->GetSourceFile() : "<null>" );
+			return false;
 		}
 	}
-	const int offset = savefile->Tell();
-	const int bytesWritten = savefile->WriteInt( childId );
-	if ( bytesWritten != static_cast<int>( sizeof( childId ) ) ) {
-		common->Error( "idWindow::WriteToSaveGame: failed to write %s for window '%s' at offset %d (%d of %d bytes)",
-			fieldName ? fieldName : "child reference", name.c_str(), offset, bytesWritten, static_cast<int>( sizeof( childId ) ) );
-	}
+	return OpenQ4_WriteSaveGameInt( savefile, childId, "idWindow::WriteToSaveGame",
+		fieldName ? fieldName : "child reference" );
 }
 
-idWindow *idWindow::ReadSaveGameChildReference( idFile *savefile, const char *fieldName, bool allowDescendant, bool *hadSerializedReference ) {
+idWindow *idWindow::ReadSaveGameChildReference( idFile *savefile, const char *fieldName, bool allowDescendant,
+		bool *hadSerializedReference, bool *readSucceeded ) {
 	int savedChildId = -1;
-	const int offset = savefile->Tell();
-	const int bytesRead = savefile->ReadInt( savedChildId );
-	if ( bytesRead != static_cast<int>( sizeof( savedChildId ) ) ) {
-		common->Error( "idWindow::ReadFromSaveGame: truncated %s for window '%s' at offset %d (%d of %d bytes)",
-			fieldName ? fieldName : "child reference", name.c_str(), offset, bytesRead, static_cast<int>( sizeof( savedChildId ) ) );
+	if ( readSucceeded != NULL ) {
+		*readSucceeded = false;
+	}
+	if ( hadSerializedReference != NULL ) {
+		*hadSerializedReference = false;
+	}
+	if ( !OpenQ4_ReadSaveGameInt( savefile, savedChildId, "idWindow::ReadFromSaveGame",
+			fieldName ? fieldName : "child reference" ) ) {
+		return NULL;
 	}
 	if ( hadSerializedReference != NULL ) {
 		*hadSerializedReference = savedChildId != SAVEGAME_WINDOW_REFERENCE_NULL;
 	}
 	if ( savedChildId == SAVEGAME_WINDOW_REFERENCE_NULL ) {
+		if ( readSucceeded != NULL ) {
+			*readSucceeded = true;
+		}
 		return NULL;
 	}
 	if ( savedChildId < 0 ) {
 		if ( !allowDescendant || savedChildId > SAVEGAME_WINDOW_REFERENCE_DESCENDANT_BASE ) {
 			common->Error( "idWindow::ReadFromSaveGame: invalid %s %d for window '%s' in gui '%s'",
 				fieldName ? fieldName : "child reference", savedChildId, name.c_str(), gui ? gui->GetSourceFile() : "<null>" );
+			return NULL;
 		}
 		const int64 targetOrdinal64 = static_cast<int64>( SAVEGAME_WINDOW_REFERENCE_DESCENDANT_BASE ) - static_cast<int64>( savedChildId );
 		if ( targetOrdinal64 < 0 || targetOrdinal64 >= SAVEGAME_MAX_WINDOW_DESCENDANTS ) {
 			common->Error( "idWindow::ReadFromSaveGame: invalid descendant ordinal %lld for %s in window '%s' in gui '%s'",
 				static_cast<long long>( targetOrdinal64 ), fieldName ? fieldName : "child reference", name.c_str(), gui ? gui->GetSourceFile() : "<null>" );
+			return NULL;
 		}
 		const int targetOrdinal = static_cast<int>( targetOrdinal64 );
 		int nextOrdinal = 0;
@@ -4917,14 +5023,23 @@ idWindow *idWindow::ReadSaveGameChildReference( idFile *savefile, const char *fi
 		if ( resolved == NULL ) {
 			common->Error( "idWindow::ReadFromSaveGame: descendant ordinal %d for %s in window '%s' in gui '%s' could not be resolved",
 				targetOrdinal, fieldName ? fieldName : "child reference", name.c_str(), gui ? gui->GetSourceFile() : "<null>" );
+			return NULL;
+		}
+		if ( readSucceeded != NULL ) {
+			*readSucceeded = true;
 		}
 		return resolved;
 	}
 
 	idList<idWindow *> orderedChildren;
-	BuildSaveGameChildOrder( orderedChildren, "idWindow::ReadFromSaveGame" );
+	if ( !BuildSaveGameChildOrder( orderedChildren, "idWindow::ReadFromSaveGame" ) ) {
+		return NULL;
+	}
 	for ( int i = 0; i < orderedChildren.Num(); i++ ) {
 		if ( orderedChildren[i]->childID == savedChildId ) {
+			if ( readSucceeded != NULL ) {
+				*readSucceeded = true;
+			}
 			return orderedChildren[i];
 		}
 	}
@@ -4932,6 +5047,9 @@ idWindow *idWindow::ReadSaveGameChildReference( idFile *savefile, const char *fi
 		// Legacy v2 wrote a nested desktop focus/capture target as its parent-local
 		// positive child id. It cannot be resolved here, but its restored flag can
 		// identify the intended descendant after the complete window tree is read.
+		if ( readSucceeded != NULL ) {
+			*readSucceeded = true;
+		}
 		return NULL;
 	}
 	common->Error( "idWindow::ReadFromSaveGame: %s %d for window '%s' in gui '%s' does not match a direct child",
@@ -4948,40 +5066,60 @@ void idWindow::WriteToSaveGame( idFile *savefile ) {
 	int i;
 	if ( savefile == NULL || gui == NULL ) {
 		common->Error( "idWindow::WriteToSaveGame: invalid save context for window '%s'", name.c_str() );
+		return;
 	}
 
-	WriteSaveGameString( cmd, savefile );
-
-	savefile->Write( &actualX, sizeof( actualX ) );
-	savefile->Write( &actualY, sizeof( actualY ) );
-	savefile->Write( &childID, sizeof( childID ) );
-	savefile->Write( &flags, sizeof( flags ) );
-	savefile->Write( &lastTimeRun, sizeof( lastTimeRun ) );
-	savefile->Write( &drawRect, sizeof( drawRect ) );
-	savefile->Write( &clientRect, sizeof( clientRect ) );
-	savefile->Write( &origin, sizeof( origin ) );
-	savefile->Write( &fontNum, sizeof( fontNum ) );
-	savefile->Write( &timeLine, sizeof( timeLine ) );
-	savefile->Write( &xOffset, sizeof( xOffset ) );
-	savefile->Write( &yOffset, sizeof( yOffset ) );
-	savefile->Write( &cursor, sizeof( cursor ) );
-	savefile->Write( &forceAspectWidth, sizeof( forceAspectWidth ) );
-	savefile->Write( &forceAspectHeight, sizeof( forceAspectHeight ) );
-	savefile->Write( &matScalex, sizeof( matScalex ) );
-	savefile->Write( &matScaley, sizeof( matScaley ) );
-	savefile->Write( &borderSize, sizeof( borderSize ) );
-	savefile->Write( &textAlign, sizeof( textAlign ) );
-	savefile->Write( &textAlignx, sizeof( textAlignx ) );
-	savefile->Write( &textAligny, sizeof( textAligny ) );
-	const signed char savedTextStyle = static_cast<signed char>( static_cast<int>( textstyle ) );
+	const float savedTextStyleValue = textstyle;
 	const float savedTextSpacing = textspacing;
-	savefile->Write( &savedTextStyle, sizeof( savedTextStyle ) );
-	savefile->Write( &savedTextSpacing, sizeof( savedTextSpacing ) );
-	savefile->Write( &textShadow, sizeof( textShadow ) );
-	savefile->Write( &shear, sizeof( shear ) );
+	if ( !std::isfinite( actualX ) || !std::isfinite( actualY ) ||
+		 !OpenQ4_IsFiniteSaveGameRectangle( drawRect ) || !OpenQ4_IsFiniteSaveGameRectangle( clientRect ) ||
+		 !OpenQ4_IsFiniteSaveGameRectangle( textRect ) || !OpenQ4_IsFiniteSaveGameVec2( origin ) ||
+		 !std::isfinite( xOffset ) || !std::isfinite( yOffset ) ||
+		 !std::isfinite( forceAspectWidth ) || !std::isfinite( forceAspectHeight ) ||
+		 !std::isfinite( matScalex ) || !std::isfinite( matScaley ) || !std::isfinite( borderSize ) ||
+		 !std::isfinite( textAlignx ) || !std::isfinite( textAligny ) ||
+		 !std::isfinite( savedTextStyleValue ) || savedTextStyleValue < -128.0f || savedTextStyleValue > 127.0f ||
+		 !std::isfinite( savedTextSpacing ) || !OpenQ4_IsFiniteSaveGameVec2( shear ) ) {
+		common->Error( "idWindow::WriteToSaveGame: refusing non-finite or out-of-range layout state for window '%s' in gui '%s'",
+			name.c_str(), gui->GetSourceFile() );
+		return;
+	}
 
-	WriteSaveGameString( name, savefile );
-	WriteSaveGameString( comment, savefile );
+	if ( !WriteSaveGameString( cmd, savefile ) ||
+		 !OpenQ4_WriteSaveGameField( savefile, actualX, "idWindow::WriteToSaveGame", "actualX" ) ||
+		 !OpenQ4_WriteSaveGameField( savefile, actualY, "idWindow::WriteToSaveGame", "actualY" ) ||
+		 !OpenQ4_WriteSaveGameField( savefile, childID, "idWindow::WriteToSaveGame", "childID" ) ||
+		 !OpenQ4_WriteSaveGameField( savefile, flags, "idWindow::WriteToSaveGame", "flags" ) ||
+		 !OpenQ4_WriteSaveGameField( savefile, lastTimeRun, "idWindow::WriteToSaveGame", "last time run" ) ||
+		 !OpenQ4_WriteSaveGameField( savefile, drawRect, "idWindow::WriteToSaveGame", "draw rect" ) ||
+		 !OpenQ4_WriteSaveGameField( savefile, clientRect, "idWindow::WriteToSaveGame", "client rect" ) ||
+		 !OpenQ4_WriteSaveGameField( savefile, origin, "idWindow::WriteToSaveGame", "origin" ) ||
+		 !OpenQ4_WriteSaveGameField( savefile, fontNum, "idWindow::WriteToSaveGame", "font number" ) ||
+		 !OpenQ4_WriteSaveGameField( savefile, timeLine, "idWindow::WriteToSaveGame", "timeline" ) ||
+		 !OpenQ4_WriteSaveGameField( savefile, xOffset, "idWindow::WriteToSaveGame", "x offset" ) ||
+		 !OpenQ4_WriteSaveGameField( savefile, yOffset, "idWindow::WriteToSaveGame", "y offset" ) ||
+		 !OpenQ4_WriteSaveGameField( savefile, cursor, "idWindow::WriteToSaveGame", "cursor" ) ||
+		 !OpenQ4_WriteSaveGameField( savefile, forceAspectWidth, "idWindow::WriteToSaveGame", "force aspect width" ) ||
+		 !OpenQ4_WriteSaveGameField( savefile, forceAspectHeight, "idWindow::WriteToSaveGame", "force aspect height" ) ||
+		 !OpenQ4_WriteSaveGameField( savefile, matScalex, "idWindow::WriteToSaveGame", "material scale x" ) ||
+		 !OpenQ4_WriteSaveGameField( savefile, matScaley, "idWindow::WriteToSaveGame", "material scale y" ) ||
+		 !OpenQ4_WriteSaveGameField( savefile, borderSize, "idWindow::WriteToSaveGame", "border size" ) ||
+		 !OpenQ4_WriteSaveGameField( savefile, textAlign, "idWindow::WriteToSaveGame", "text align" ) ||
+		 !OpenQ4_WriteSaveGameField( savefile, textAlignx, "idWindow::WriteToSaveGame", "text align x" ) ||
+		 !OpenQ4_WriteSaveGameField( savefile, textAligny, "idWindow::WriteToSaveGame", "text align y" ) ) {
+		return;
+	}
+	const signed char savedTextStyle = static_cast<signed char>( static_cast<int>( textstyle ) );
+	if ( !OpenQ4_WriteSaveGameField( savefile, savedTextStyle, "idWindow::WriteToSaveGame", "text style" ) ||
+		 !OpenQ4_WriteSaveGameField( savefile, savedTextSpacing, "idWindow::WriteToSaveGame", "text spacing" ) ||
+		 !OpenQ4_WriteSaveGameField( savefile, textShadow, "idWindow::WriteToSaveGame", "text shadow" ) ||
+		 !OpenQ4_WriteSaveGameField( savefile, shear, "idWindow::WriteToSaveGame", "shear" ) ) {
+		return;
+	}
+
+	if ( !WriteSaveGameString( name, savefile ) || !WriteSaveGameString( comment, savefile ) ) {
+		return;
+	}
 
 	// WinVars
 	noTime.WriteToSaveGame( savefile );
@@ -5004,17 +5142,22 @@ void idWindow::WriteToSaveGame( idFile *savefile ) {
 		if ( definedVars[i] == NULL ) {
 			common->Error( "idWindow::WriteToSaveGame: NULL defined variable %d for window '%s' in gui '%s'",
 				i, name.c_str(), gui->GetSourceFile() );
+			return;
 		}
 		definedVars[i]->WriteToSaveGame( savefile );
 	}
 
-	savefile->Write( &textRect, sizeof( textRect ) );
+	if ( !OpenQ4_WriteSaveGameField( savefile, textRect, "idWindow::WriteToSaveGame", "text rect" ) ) {
+		return;
+	}
 
 	// Window pointers saved as the child ID of the window
 	const bool desktopTrackedDescendants = ( flags & WIN_DESKTOP ) != 0;
-	WriteSaveGameChildReference( focusedChild, savefile, "focused child id", desktopTrackedDescendants );
-	WriteSaveGameChildReference( captureChild, savefile, "capture child id", desktopTrackedDescendants );
-	WriteSaveGameChildReference( overChild, savefile, "hovered child id", false );
+	if ( !WriteSaveGameChildReference( focusedChild, savefile, "focused child id", desktopTrackedDescendants ) ||
+		 !WriteSaveGameChildReference( captureChild, savefile, "capture child id", desktopTrackedDescendants ) ||
+		 !WriteSaveGameChildReference( overChild, savefile, "hovered child id", false ) ) {
+		return;
+	}
 
 
 	// Scripts
@@ -5029,18 +5172,25 @@ void idWindow::WriteToSaveGame( idFile *savefile ) {
 		if ( timeLineEvents[i] == NULL || timeLineEvents[i]->event == NULL ) {
 			common->Error( "idWindow::WriteToSaveGame: incomplete timeline event %d for window '%s' in gui '%s'",
 				i, name.c_str(), gui->GetSourceFile() );
+			return;
 		}
-		OpenQ4_WriteSaveGameBool( savefile, timeLineEvents[i]->pending, "idWindow::WriteToSaveGame", "timeline pending flag" );
-		OpenQ4_WriteSaveGameInt( savefile, timeLineEvents[i]->time, "idWindow::WriteToSaveGame", "timeline event time" );
+		if ( !OpenQ4_WriteSaveGameBool( savefile, timeLineEvents[i]->pending, "idWindow::WriteToSaveGame", "timeline pending flag" ) ||
+			 !OpenQ4_WriteSaveGameInt( savefile, timeLineEvents[i]->time, "idWindow::WriteToSaveGame", "timeline event time" ) ) {
+			return;
+		}
 		timeLineEvents[i]->event->WriteToSaveGame( savefile );
 	}
 
 	// Transitions
 	int num = transitions.Num();
 
-	savefile->Write( &num, sizeof( num ) );
+	if ( !OpenQ4_WriteSaveGameInt( savefile, num, "idWindow::WriteToSaveGame", "transition count" ) ) {
+		return;
+	}
 	for ( i = 0; i < transitions.Num(); i++ ) {
-		WriteSaveGameTransition( transitions[ i ], savefile );
+		if ( !WriteSaveGameTransition( transitions[ i ], savefile ) ) {
+			return;
+		}
 	}
 
 
@@ -5049,8 +5199,11 @@ void idWindow::WriteToSaveGame( idFile *savefile ) {
 		if ( namedEvents[i] == NULL || namedEvents[i]->mEvent == NULL || namedEvents[i]->mName.IsEmpty() ) {
 			common->Error( "idWindow::WriteToSaveGame: incomplete named event %d for window '%s' in gui '%s'",
 				i, name.c_str(), gui->GetSourceFile() );
+			return;
 		}
-		WriteSaveGameString( namedEvents[i]->mName, savefile );
+		if ( !WriteSaveGameString( namedEvents[i]->mName, savefile ) ) {
+			return;
+		}
 		namedEvents[i]->mEvent->WriteToSaveGame( savefile );
 	}
 
@@ -5064,6 +5217,7 @@ void idWindow::WriteToSaveGame( idFile *savefile ) {
 		if ( ( window.simp == NULL ) == ( window.win == NULL ) ) {
 			common->Error( "idWindow::WriteToSaveGame: draw window %d for '%s' in gui '%s' has invalid simple/full ownership",
 				i, name.c_str(), gui->GetSourceFile() );
+			return;
 		}
 		if ( window.simp != NULL ) {
 			window.simp->WriteToSaveGame( savefile );
@@ -5078,22 +5232,34 @@ void idWindow::WriteToSaveGame( idFile *savefile ) {
 idWindow::ReadSaveGameString
 ===============
 */
-void idWindow::ReadSaveGameString( idStr &string, idFile *savefile ) {
-	int len;
+bool idWindow::ReadSaveGameString( idStr &string, idFile *savefile ) {
+	string.Clear();
+	if ( savefile == NULL ) {
+		common->Error( "idWindow::ReadSaveGameString: invalid input file for window '%s'", name.c_str() );
+		return false;
+	}
+	int len = 0;
 	const int offset = savefile->Tell();
 
-	OpenQ4_ReadSaveGameField( savefile, len, "idWindow::ReadSaveGameString", "length" );
+	if ( !OpenQ4_ReadSaveGameInt( savefile, len, "idWindow::ReadSaveGameString", "length" ) ) {
+		return false;
+	}
 	const int remainingBytes = Max( 0, savefile->Length() - savefile->Tell() );
 	const int maxSavedStringLength = 64 * 1024;
 	if ( len < 0 || len > maxSavedStringLength || len > remainingBytes ) {
 		common->Error( "idWindow::ReadSaveGameString: invalid length %d at offset %d (remaining %d)",
 			len, offset, remainingBytes );
+		return false;
 	}
 
 	string.Fill( ' ', len );
 	if ( len > 0 ) {
-		OpenQ4_ReadSaveGameBytes( savefile, &string[0], len, "idWindow::ReadSaveGameString", "string" );
+		if ( !OpenQ4_ReadSaveGameBytes( savefile, &string[0], len, "idWindow::ReadSaveGameString", "string" ) ) {
+			string.Clear();
+			return false;
+		}
 	}
+	return true;
 }
 
 /*
@@ -5105,61 +5271,123 @@ void idWindow::ReadFromSaveGame( idFile *savefile ) {
 	int i;
 	if ( savefile == NULL || gui == NULL ) {
 		common->Error( "idWindow::ReadFromSaveGame: invalid restore context for parsed window '%s'", name.c_str() );
+		return;
 	}
 
 	transitions.Clear();
 
-	ReadSaveGameString( cmd, savefile );
-
-	OpenQ4_ReadSaveGameField( savefile, actualX, "idWindow::ReadFromSaveGame", "actualX" );
-	OpenQ4_ReadSaveGameField( savefile, actualY, "idWindow::ReadFromSaveGame", "actualY" );
+	idStr savedCmd;
+	float savedActualX;
+	float savedActualY;
 	int savedChildID = -1;
 	unsigned int savedFlags = 0;
-	OpenQ4_ReadSaveGameField( savefile, savedChildID, "idWindow::ReadFromSaveGame", "childID" );
-	OpenQ4_ReadSaveGameField( savefile, savedFlags, "idWindow::ReadFromSaveGame", "flags" );
-	OpenQ4_ReadSaveGameField( savefile, lastTimeRun, "idWindow::ReadFromSaveGame", "last time run" );
-	OpenQ4_ReadSaveGameField( savefile, drawRect, "idWindow::ReadFromSaveGame", "draw rect" );
-	OpenQ4_ReadSaveGameField( savefile, clientRect, "idWindow::ReadFromSaveGame", "client rect" );
-	OpenQ4_ReadSaveGameField( savefile, origin, "idWindow::ReadFromSaveGame", "origin" );
-	OpenQ4_ReadSaveGameField( savefile, fontNum, "idWindow::ReadFromSaveGame", "font number" );
-	OpenQ4_ReadSaveGameField( savefile, timeLine, "idWindow::ReadFromSaveGame", "timeline" );
-	OpenQ4_ReadSaveGameField( savefile, xOffset, "idWindow::ReadFromSaveGame", "x offset" );
-	OpenQ4_ReadSaveGameField( savefile, yOffset, "idWindow::ReadFromSaveGame", "y offset" );
-	OpenQ4_ReadSaveGameField( savefile, cursor, "idWindow::ReadFromSaveGame", "cursor" );
-	OpenQ4_ReadSaveGameField( savefile, forceAspectWidth, "idWindow::ReadFromSaveGame", "force aspect width" );
-	OpenQ4_ReadSaveGameField( savefile, forceAspectHeight, "idWindow::ReadFromSaveGame", "force aspect height" );
-	OpenQ4_ReadSaveGameField( savefile, matScalex, "idWindow::ReadFromSaveGame", "material scale x" );
-	OpenQ4_ReadSaveGameField( savefile, matScaley, "idWindow::ReadFromSaveGame", "material scale y" );
-	OpenQ4_ReadSaveGameField( savefile, borderSize, "idWindow::ReadFromSaveGame", "border size" );
-	OpenQ4_ReadSaveGameField( savefile, textAlign, "idWindow::ReadFromSaveGame", "text align" );
-	OpenQ4_ReadSaveGameField( savefile, textAlignx, "idWindow::ReadFromSaveGame", "text align x" );
-	OpenQ4_ReadSaveGameField( savefile, textAligny, "idWindow::ReadFromSaveGame", "text align y" );
+	int savedLastTimeRun;
+	idRectangle savedDrawRect;
+	idRectangle savedClientRect;
+	idVec2 savedOrigin;
+	unsigned char savedFontNum;
+	int savedTimeLine;
+	float savedXOffset;
+	float savedYOffset;
+	unsigned char savedCursor;
+	float savedForceAspectWidth;
+	float savedForceAspectHeight;
+	float savedMatScaleX;
+	float savedMatScaleY;
+	float savedBorderSize;
+	signed char savedTextAlign;
+	float savedTextAlignX;
+	float savedTextAlignY;
 	signed char savedTextStyle = 0;
 	float savedTextSpacing = 0.0f;
-	OpenQ4_ReadSaveGameField( savefile, savedTextStyle, "idWindow::ReadFromSaveGame", "text style" );
-	OpenQ4_ReadSaveGameField( savefile, savedTextSpacing, "idWindow::ReadFromSaveGame", "text spacing" );
-	textstyle = static_cast<float>( savedTextStyle );
-	textspacing = savedTextSpacing;
-	OpenQ4_ReadSaveGameField( savefile, textShadow, "idWindow::ReadFromSaveGame", "text shadow" );
-	OpenQ4_ReadSaveGameField( savefile, shear, "idWindow::ReadFromSaveGame", "shear" );
+	signed char savedTextShadow;
+	idVec2 savedShear;
+
+	if ( !ReadSaveGameString( savedCmd, savefile ) ||
+		 !OpenQ4_ReadSaveGameField( savefile, savedActualX, "idWindow::ReadFromSaveGame", "actualX" ) ||
+		 !OpenQ4_ReadSaveGameField( savefile, savedActualY, "idWindow::ReadFromSaveGame", "actualY" ) ||
+		 !OpenQ4_ReadSaveGameField( savefile, savedChildID, "idWindow::ReadFromSaveGame", "childID" ) ||
+		 !OpenQ4_ReadSaveGameField( savefile, savedFlags, "idWindow::ReadFromSaveGame", "flags" ) ||
+		 !OpenQ4_ReadSaveGameField( savefile, savedLastTimeRun, "idWindow::ReadFromSaveGame", "last time run" ) ||
+		 !OpenQ4_ReadSaveGameField( savefile, savedDrawRect, "idWindow::ReadFromSaveGame", "draw rect" ) ||
+		 !OpenQ4_ReadSaveGameField( savefile, savedClientRect, "idWindow::ReadFromSaveGame", "client rect" ) ||
+		 !OpenQ4_ReadSaveGameField( savefile, savedOrigin, "idWindow::ReadFromSaveGame", "origin" ) ||
+		 !OpenQ4_ReadSaveGameField( savefile, savedFontNum, "idWindow::ReadFromSaveGame", "font number" ) ||
+		 !OpenQ4_ReadSaveGameField( savefile, savedTimeLine, "idWindow::ReadFromSaveGame", "timeline" ) ||
+		 !OpenQ4_ReadSaveGameField( savefile, savedXOffset, "idWindow::ReadFromSaveGame", "x offset" ) ||
+		 !OpenQ4_ReadSaveGameField( savefile, savedYOffset, "idWindow::ReadFromSaveGame", "y offset" ) ||
+		 !OpenQ4_ReadSaveGameField( savefile, savedCursor, "idWindow::ReadFromSaveGame", "cursor" ) ||
+		 !OpenQ4_ReadSaveGameField( savefile, savedForceAspectWidth, "idWindow::ReadFromSaveGame", "force aspect width" ) ||
+		 !OpenQ4_ReadSaveGameField( savefile, savedForceAspectHeight, "idWindow::ReadFromSaveGame", "force aspect height" ) ||
+		 !OpenQ4_ReadSaveGameField( savefile, savedMatScaleX, "idWindow::ReadFromSaveGame", "material scale x" ) ||
+		 !OpenQ4_ReadSaveGameField( savefile, savedMatScaleY, "idWindow::ReadFromSaveGame", "material scale y" ) ||
+		 !OpenQ4_ReadSaveGameField( savefile, savedBorderSize, "idWindow::ReadFromSaveGame", "border size" ) ||
+		 !OpenQ4_ReadSaveGameField( savefile, savedTextAlign, "idWindow::ReadFromSaveGame", "text align" ) ||
+		 !OpenQ4_ReadSaveGameField( savefile, savedTextAlignX, "idWindow::ReadFromSaveGame", "text align x" ) ||
+		 !OpenQ4_ReadSaveGameField( savefile, savedTextAlignY, "idWindow::ReadFromSaveGame", "text align y" ) ||
+		 !OpenQ4_ReadSaveGameField( savefile, savedTextStyle, "idWindow::ReadFromSaveGame", "text style" ) ||
+		 !OpenQ4_ReadSaveGameField( savefile, savedTextSpacing, "idWindow::ReadFromSaveGame", "text spacing" ) ||
+		 !OpenQ4_ReadSaveGameField( savefile, savedTextShadow, "idWindow::ReadFromSaveGame", "text shadow" ) ||
+		 !OpenQ4_ReadSaveGameField( savefile, savedShear, "idWindow::ReadFromSaveGame", "shear" ) ) {
+		return;
+	}
 
 	idStr savedName;
 	idStr savedComment;
-	ReadSaveGameString( savedName, savefile );
-	ReadSaveGameString( savedComment, savefile );
+	if ( !ReadSaveGameString( savedName, savefile ) || !ReadSaveGameString( savedComment, savefile ) ) {
+		return;
+	}
+	if ( !std::isfinite( savedActualX ) || !std::isfinite( savedActualY ) ||
+		 !OpenQ4_IsFiniteSaveGameRectangle( savedDrawRect ) || !OpenQ4_IsFiniteSaveGameRectangle( savedClientRect ) ||
+		 !OpenQ4_IsFiniteSaveGameVec2( savedOrigin ) || !std::isfinite( savedXOffset ) || !std::isfinite( savedYOffset ) ||
+		 !std::isfinite( savedForceAspectWidth ) || !std::isfinite( savedForceAspectHeight ) ||
+		 !std::isfinite( savedMatScaleX ) || !std::isfinite( savedMatScaleY ) || !std::isfinite( savedBorderSize ) ||
+		 !std::isfinite( savedTextAlignX ) || !std::isfinite( savedTextAlignY ) ||
+		 !std::isfinite( savedTextSpacing ) || !OpenQ4_IsFiniteSaveGameVec2( savedShear ) ) {
+		common->Error( "idWindow::ReadFromSaveGame: non-finite layout state for saved window '%s' in gui '%s'",
+			savedName.c_str(), gui->GetSourceFile() );
+		return;
+	}
 	if ( savedChildID != childID ) {
 		common->Error( "idWindow::ReadFromSaveGame: saved child id %d for window '%s' does not match parsed id %d in gui '%s'",
 			savedChildID, savedName.c_str(), childID, gui->GetSourceFile() );
+		return;
 	}
 	const unsigned int structuralFlagMask = WIN_CHILD | WIN_DESKTOP;
 	if ( ( savedFlags & structuralFlagMask ) != ( flags & structuralFlagMask ) ) {
 		common->Error( "idWindow::ReadFromSaveGame: saved structural flags 0x%08x for window '%s' do not match parsed flags 0x%08x in gui '%s'",
 			savedFlags & structuralFlagMask, savedName.c_str(), flags & structuralFlagMask, gui->GetSourceFile() );
+		return;
 	}
 	if ( savedName.Icmp( name ) != 0 ) {
 		common->Error( "idWindow::ReadFromSaveGame: saved window '%s' does not match parsed window '%s' in gui '%s'",
 			savedName.c_str(), name.c_str(), gui->GetSourceFile() );
+		return;
 	}
+	cmd = savedCmd;
+	actualX = savedActualX;
+	actualY = savedActualY;
+	lastTimeRun = savedLastTimeRun;
+	drawRect = savedDrawRect;
+	clientRect = savedClientRect;
+	origin = savedOrigin;
+	fontNum = savedFontNum;
+	timeLine = savedTimeLine;
+	xOffset = savedXOffset;
+	yOffset = savedYOffset;
+	cursor = savedCursor;
+	forceAspectWidth = savedForceAspectWidth;
+	forceAspectHeight = savedForceAspectHeight;
+	matScalex = savedMatScaleX;
+	matScaley = savedMatScaleY;
+	borderSize = savedBorderSize;
+	textAlign = savedTextAlign;
+	textAlignx = savedTextAlignX;
+	textAligny = savedTextAlignY;
+	textstyle = static_cast<float>( savedTextStyle );
+	textspacing = savedTextSpacing;
+	textShadow = savedTextShadow;
+	shear = savedShear;
 	flags = savedFlags;
 	comment = savedComment;
 
@@ -5186,19 +5414,37 @@ void idWindow::ReadFromSaveGame( idFile *savefile ) {
 		if ( definedVars[i] == NULL ) {
 			common->Error( "idWindow::ReadFromSaveGame: NULL parsed defined variable %d for window '%s' in gui '%s'",
 				i, name.c_str(), gui->GetSourceFile() );
+			return;
 		}
 		definedVars[i]->ReadFromSaveGame( savefile );
 	}
 
-	OpenQ4_ReadSaveGameField( savefile, textRect, "idWindow::ReadFromSaveGame", "text rect" );
+	idRectangle savedTextRect;
+	if ( !OpenQ4_ReadSaveGameField( savefile, savedTextRect, "idWindow::ReadFromSaveGame", "text rect" ) ) {
+		return;
+	}
+	if ( !OpenQ4_IsFiniteSaveGameRectangle( savedTextRect ) ) {
+		common->Error( "idWindow::ReadFromSaveGame: non-finite text rectangle for window '%s' in gui '%s'",
+			name.c_str(), gui->GetSourceFile() );
+		return;
+	}
+	textRect = savedTextRect;
 
 	// Window pointers saved as the child ID of the window
 	const bool desktopTrackedDescendants = ( flags & WIN_DESKTOP ) != 0;
 	bool hadSavedFocusReference = false;
 	bool hadSavedCaptureReference = false;
-	focusedChild = ReadSaveGameChildReference( savefile, "focused child id", desktopTrackedDescendants, &hadSavedFocusReference );
-	captureChild = ReadSaveGameChildReference( savefile, "capture child id", desktopTrackedDescendants, &hadSavedCaptureReference );
-	overChild = ReadSaveGameChildReference( savefile, "hovered child id", false );
+	bool focusReadSucceeded = false;
+	bool captureReadSucceeded = false;
+	bool overReadSucceeded = false;
+	focusedChild = ReadSaveGameChildReference( savefile, "focused child id", desktopTrackedDescendants,
+		&hadSavedFocusReference, &focusReadSucceeded );
+	captureChild = ReadSaveGameChildReference( savefile, "capture child id", desktopTrackedDescendants,
+		&hadSavedCaptureReference, &captureReadSucceeded );
+	overChild = ReadSaveGameChildReference( savefile, "hovered child id", false, NULL, &overReadSucceeded );
+	if ( !focusReadSucceeded || !captureReadSucceeded || !overReadSucceeded ) {
+		return;
+	}
 	
 	// Scripts
 	for ( i = 0; i < SCRIPT_COUNT; i++ ) {
@@ -5212,23 +5458,31 @@ void idWindow::ReadFromSaveGame( idFile *savefile ) {
 		if ( timeLineEvents[i] == NULL || timeLineEvents[i]->event == NULL ) {
 			common->Error( "idWindow::ReadFromSaveGame: incomplete parsed timeline event %d for window '%s' in gui '%s'",
 				i, name.c_str(), gui->GetSourceFile() );
+			return;
 		}
-		OpenQ4_ReadSaveGameBool( savefile, timeLineEvents[i]->pending, "idWindow::ReadFromSaveGame", "timeline pending flag" );
-		OpenQ4_ReadSaveGameInt( savefile, timeLineEvents[i]->time, "idWindow::ReadFromSaveGame", "timeline event time" );
+		if ( !OpenQ4_ReadSaveGameBool( savefile, timeLineEvents[i]->pending, "idWindow::ReadFromSaveGame", "timeline pending flag" ) ||
+			 !OpenQ4_ReadSaveGameInt( savefile, timeLineEvents[i]->time, "idWindow::ReadFromSaveGame", "timeline event time" ) ) {
+			return;
+		}
 		timeLineEvents[i]->event->ReadFromSaveGame( savefile );
 	}
 
 
 	// Transitions
-	int num;
-	OpenQ4_ReadSaveGameField( savefile, num, "idWindow::ReadFromSaveGame", "transition count" );
+	int num = 0;
+	if ( !OpenQ4_ReadSaveGameInt( savefile, num, "idWindow::ReadFromSaveGame", "transition count" ) ) {
+		return;
+	}
 	if ( num < 0 || num > 4096 ) {
 		common->Error( "idWindow::ReadFromSaveGame: invalid transition count %d for window '%s'", num, name.c_str() );
+		return;
 	}
 	for ( i = 0; i < num; i++ ) {
 		idTransitionData trans;
 		trans.data = NULL;
-		ReadSaveGameTransition( trans, savefile );
+		if ( !ReadSaveGameTransition( trans, savefile ) ) {
+			return;
+		}
 		if ( trans.data ) {
 			transitions.Append( trans );
 		}
@@ -5240,10 +5494,13 @@ void idWindow::ReadFromSaveGame( idFile *savefile ) {
 		if ( namedEvents[i] == NULL || namedEvents[i]->mEvent == NULL ) {
 			common->Error( "idWindow::ReadFromSaveGame: incomplete parsed named event %d for window '%s' in gui '%s'",
 				i, name.c_str(), gui->GetSourceFile() );
+			return;
 		}
 
 		idStr savedEventName;
-		ReadSaveGameString( savedEventName, savefile );
+		if ( !ReadSaveGameString( savedEventName, savefile ) ) {
+			return;
+		}
 
 		int matchedIndex = -1;
 		for ( int j = i; j < namedEvents.Num(); j++ ) {
@@ -5264,6 +5521,7 @@ void idWindow::ReadFromSaveGame( idFile *savefile ) {
 		if ( matchedIndex == -1 ) {
 			common->Error( "idWindow::ReadFromSaveGame: saved named event '%s' is missing from parsed window '%s' in gui '%s'; restore cannot continue without desynchronizing the stream",
 				savedEventName.c_str(), name.c_str(), gui->GetSourceFile() );
+			return;
 		}
 
 		if ( matchedIndex != i ) {
@@ -5275,6 +5533,7 @@ void idWindow::ReadFromSaveGame( idFile *savefile ) {
 		if ( namedEvents[i] == NULL || namedEvents[i]->mEvent == NULL ) {
 			common->Error( "idWindow::ReadFromSaveGame: named event '%s' for window '%s' in gui '%s' has no script payload target",
 				savedEventName.c_str(), name.c_str(), gui->GetSourceFile() );
+			return;
 		}
 		namedEvents[i]->mEvent->ReadFromSaveGame( savefile );
 	}
@@ -5288,6 +5547,7 @@ void idWindow::ReadFromSaveGame( idFile *savefile ) {
 		if ( ( window.simp == NULL ) == ( window.win == NULL ) ) {
 			common->Error( "idWindow::ReadFromSaveGame: draw window %d for '%s' in gui '%s' has invalid simple/full ownership",
 				i, name.c_str(), gui->GetSourceFile() );
+			return;
 		}
 		if ( window.simp != NULL ) {
 			window.simp->ReadFromSaveGame( savefile );
@@ -5297,8 +5557,12 @@ void idWindow::ReadFromSaveGame( idFile *savefile ) {
 	}
 
 	if ( flags & WIN_DESKTOP ) {
-		ValidateRestoredTrackedWindowPointers( hadSavedFocusReference, hadSavedCaptureReference );
-		FixupTransitions();
+		if ( !ValidateRestoredTrackedWindowPointers( hadSavedFocusReference, hadSavedCaptureReference ) ) {
+			return;
+		}
+		if ( !FixupTransitions() ) {
+			return;
+		}
 	}
 }
 
@@ -5321,15 +5585,17 @@ int idWindow::NumTransitions() {
 idWindow::FixupTransitions
 ===============
 */
-void idWindow::FixupTransitions() {
+bool idWindow::FixupTransitions() {
 	if ( gui == NULL || gui->GetDesktop() == NULL ) {
 		common->Error( "idWindow::FixupTransitions: window '%s' has no gui desktop during savegame restore", name.c_str() );
+		return false;
 	}
 	int i, c = transitions.Num();
 	for ( i = 0; i < c; i++ ) {
 		if ( transitions[i].data == NULL ) {
 			common->Error( "idWindow::FixupTransitions: transition %d for window '%s' in gui '%s' has no saved target",
 				i, name.c_str(), gui->GetSourceFile() );
+			return false;
 		}
 		const idStr transitionTarget = static_cast<idWinStr *>( transitions[i].data )->c_str();
 		drawWin_t *dw = gui->GetDesktop()->FindChildByName( transitionTarget );
@@ -5338,6 +5604,7 @@ void idWindow::FixupTransitions() {
 		if ( dw != NULL && ( ( dw->win == NULL ) == ( dw->simp == NULL ) ) ) {
 			common->Error( "idWindow::FixupTransitions: target '%s' for window '%s' in gui '%s' has invalid simple/full ownership",
 				transitionTarget.c_str(), name.c_str(), gui->GetSourceFile() );
+			return false;
 		}
 		if ( dw && ( dw->win || dw->simp ) ){
 			const intptr_t transitionOffset = (intptr_t)transitions[i].offset;
@@ -5420,15 +5687,20 @@ void idWindow::FixupTransitions() {
 		if ( transitions[i].data == NULL ) {
 			common->Error( "idWindow::FixupTransitions: could not resolve saved transition target '%s' offset %d for window '%s' in gui '%s'",
 				transitionTarget.c_str(), transitions[i].offset, name.c_str(), gui->GetSourceFile() );
+			return false;
 		}
 	}
 	for ( c = 0; c < children.Num(); c++ ) {
 		if ( children[c] == NULL ) {
 			common->Error( "idWindow::FixupTransitions: window '%s' in gui '%s' has a NULL child at index %d",
 				name.c_str(), gui->GetSourceFile(), c );
+			return false;
 		}
-		children[c]->FixupTransitions();
+		if ( !children[c]->FixupTransitions() ) {
+			return false;
+		}
 	}
+	return true;
 }
 
 

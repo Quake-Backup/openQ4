@@ -54,6 +54,21 @@ static ID_INLINE void R_SetGuiDrawVert( idDrawVert *vert, float x, float y, floa
 	R_SetGuiDrawVertPayload( vert );
 }
 
+static bool R_IsFiniteGuiDemoDrawVert( const idDrawVert &vert ) {
+	for ( int component = 0; component < 3; component++ ) {
+		if ( !std::isfinite( vert.xyz[component] ) || !std::isfinite( vert.normal[component] ) ||
+			 !std::isfinite( vert.tangents[0][component] ) || !std::isfinite( vert.tangents[1][component] ) ) {
+			return false;
+		}
+	}
+	return std::isfinite( vert.st[0] ) && std::isfinite( vert.st[1] );
+}
+
+static bool R_IsFiniteGuiDemoColor( const float color[4] ) {
+	return std::isfinite( color[0] ) && std::isfinite( color[1] ) &&
+		std::isfinite( color[2] ) && std::isfinite( color[3] );
+}
+
 static bool R_RejectGuiModelDemo( idDemoFile *demo, const char *reason ) {
 	common->Warning( "Malformed render demo GUI model: %s; playback stopped safely", reason );
 	if ( demo != NULL ) {
@@ -167,6 +182,11 @@ bool idGuiModel::ReadFromDemo( idDemoFile *demo ) {
 			Clear();
 			return R_RejectGuiModelDemo( demo, "truncated vertex payload" );
 		}
+		verts[j].color2[0] = verts[j].color2[1] = verts[j].color2[2] = verts[j].color2[3] = 255;
+		if ( !R_IsFiniteGuiDemoDrawVert( verts[j] ) ) {
+			Clear();
+			return R_RejectGuiModelDemo( demo, "non-finite vertex payload" );
+		}
 	}
 	
 	i = 0;
@@ -223,6 +243,10 @@ bool idGuiModel::ReadFromDemo( idDemoFile *demo ) {
 			 demo->ReadInt( surf->numIndexes ) != sizeof( surf->numIndexes ) ) {
 			Clear();
 			return R_RejectGuiModelDemo( demo, "truncated surface payload" );
+		}
+		if ( !R_IsFiniteGuiDemoColor( surf->color ) ) {
+			Clear();
+			return R_RejectGuiModelDemo( demo, "non-finite surface color" );
 		}
 		if ( surf->firstVert < 0 || surf->numVerts < 0 || surf->firstVert > verts.Num() - surf->numVerts ||
 			 surf->firstIndex < 0 || surf->numIndexes < 0 || surf->firstIndex > indexes.Num() - surf->numIndexes ) {

@@ -123,21 +123,27 @@ def fake_entry(directory: Path, source: Path, target: str) -> dict[str, object]:
 def check_database_generation() -> None:
     build_dir = WORK / "builddir"
     build_dir.mkdir(parents=True, exist_ok=True)
-    source = ROOT / "src" / "framework" / "UsercmdGen.cpp"
-    database = [
-        fake_entry(build_dir, source, "openQ4-ded_x64.exe"),
-        fake_entry(build_dir, source, "openQ4-client_x64.exe"),
-    ]
+    sources = tuple(Path(source).resolve() for source in ANALYSIS.PRODUCTION_SOURCES)
+    database = []
+    for source in sources:
+        database.extend(
+            (
+                fake_entry(build_dir, source, "openQ4-ded_x64.exe"),
+                fake_entry(build_dir, source, "openQ4-client_x64.exe"),
+            )
+        )
     (build_dir / "compile_commands.json").write_text(json.dumps(database), encoding="utf-8")
 
     generated = ANALYSIS.build_analysis_database(build_dir)
-    if len(generated) != 2:
-        raise AssertionError("analysis database must contain production and native safety translation units")
-    production, safety = generated
-    if not any("openQ4-client_x64.exe.p" in str(argument) for argument in production["arguments"]):
-        raise AssertionError("analysis did not select the deterministic client compilation command")
-    if Path(production["file"]).resolve() != source.resolve():
-        raise AssertionError("analysis production entry targets the wrong source")
+    if len(generated) != len(sources) + 1:
+        raise AssertionError("analysis database must contain every production and native safety translation unit")
+    production_entries = generated[:-1]
+    safety = generated[-1]
+    if tuple(Path(entry["file"]).resolve() for entry in production_entries) != sources:
+        raise AssertionError("analysis production entries target the wrong sources or order")
+    for entry in production_entries:
+        if not any("openQ4-client_x64.exe.p" in str(argument) for argument in entry["arguments"]):
+            raise AssertionError("analysis did not select the deterministic client compilation command")
     if Path(safety["file"]).resolve() != (ROOT / "tools" / "tests" / "native" / "CoreSafetyTest.cpp").resolve():
         raise AssertionError("analysis safety entry targets the wrong source")
     if any(str(argument).lower().startswith(("/fi", "/yu", "/fp")) for argument in safety["arguments"]):
@@ -149,6 +155,7 @@ def check_fail_closed_profile() -> None:
         "clang-analyzer-core.*",
         "clang-analyzer-security.*",
         "clang-analyzer-cplusplus.NewDelete*",
+        "clang-analyzer-optin.cplusplus.UninitializedObject",
         "clang-analyzer-unix.Malloc",
         "clang-analyzer-deadcode.DeadStores",
     }
@@ -159,13 +166,19 @@ def check_fail_closed_profile() -> None:
             "clang-analyzer-core.CallAndMessage",
             "clang-analyzer-security.insecureAPI.strcpy",
             "clang-analyzer-cplusplus.NewDelete",
+            "clang-analyzer-optin.cplusplus.UninitializedObject",
             "clang-analyzer-unix.Malloc",
             "clang-analyzer-deadcode.DeadStores",
         }
     ):
         raise AssertionError("clang-tidy capability check does not fail closed")
 
-    for header in (r"E:\Repositories\openQ4\src\idlib\NumericString.h", "/repo/src/idlib/NumericString.h"):
+    for header in (
+        r"E:\Repositories\openQ4\src\idlib\NumericString.h",
+        "/repo/src/idlib/NumericString.h",
+        r"E:\Repositories\openQ4\src\idlib\Token.h",
+        "/repo/src/idlib/Token.h",
+    ):
         if re.match(ANALYSIS.HEADER_FILTER, header) is None:
             raise AssertionError(f"header filter does not match production path style {header!r}")
     if re.match(ANALYSIS.HEADER_FILTER, "/repo/src/idlib/Str.h") is not None:
@@ -174,14 +187,13 @@ def check_fail_closed_profile() -> None:
     command = ANALYSIS.clang_tidy_command("clang-tidy", WORK)
     if "--warnings-as-errors=*" not in command:
         raise AssertionError("clang-tidy diagnostics are not fail-closed")
-    if not any(argument.startswith("--header-filter=") and "NumericString[.]h" in argument for argument in command):
-        raise AssertionError("production numeric helper is excluded from header diagnostics")
-    expected_sources = {
-        str((ROOT / "src" / "framework" / "UsercmdGen.cpp").resolve()),
-        str((ROOT / "tools" / "tests" / "native" / "CoreSafetyTest.cpp").resolve()),
-    }
+    header_argument = next((argument for argument in command if argument.startswith("--header-filter=")), "")
+    if "NumericString|Token" not in header_argument:
+        raise AssertionError("production numeric/token helpers are excluded from header diagnostics")
+    expected_sources = {str(Path(source).resolve()) for source in ANALYSIS.PRODUCTION_SOURCES}
+    expected_sources.add(str((ROOT / "tools" / "tests" / "native" / "CoreSafetyTest.cpp").resolve()))
     if not expected_sources.issubset(set(command)):
-        raise AssertionError("clang-tidy command does not cover both safety translation units")
+        raise AssertionError("clang-tidy command does not cover every safety translation unit")
 
 
 def check_output_guard() -> None:

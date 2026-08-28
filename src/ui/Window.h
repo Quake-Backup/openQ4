@@ -320,15 +320,16 @@ public:
 	virtual void WriteToDemoFile( class idDemoFile *f );
 
 	// SaveGame support
-	void			WriteSaveGameString( const char *string, idFile *savefile );
-	void			WriteSaveGameTransition( idTransitionData &trans, idFile *savefile );
-	void			WriteSaveGameChildReference( idWindow *child, idFile *savefile, const char *fieldName, bool allowDescendant );
+	bool			WriteSaveGameString( const char *string, idFile *savefile );
+	bool			WriteSaveGameTransition( idTransitionData &trans, idFile *savefile );
+	bool			WriteSaveGameChildReference( idWindow *child, idFile *savefile, const char *fieldName, bool allowDescendant );
 	virtual void	WriteToSaveGame( idFile *savefile );
-	void			ReadSaveGameString( idStr &string, idFile *savefile );
-	void			ReadSaveGameTransition( idTransitionData & trans, idFile *savefile );
-	idWindow *		ReadSaveGameChildReference( idFile *savefile, const char *fieldName, bool allowDescendant, bool *hadSerializedReference = NULL );
+	bool			ReadSaveGameString( idStr &string, idFile *savefile );
+	bool			ReadSaveGameTransition( idTransitionData & trans, idFile *savefile );
+	idWindow *		ReadSaveGameChildReference( idFile *savefile, const char *fieldName, bool allowDescendant,
+						bool *hadSerializedReference = NULL, bool *readSucceeded = NULL );
 	virtual void	ReadFromSaveGame( idFile *savefile );
-	void			FixupTransitions();
+	bool			FixupTransitions();
 	virtual void HasAction(){};
 	virtual void HasScripts(){};
 
@@ -398,11 +399,11 @@ protected:
 	bool HasDirectChildReference( const idWindow *window ) const;
 	bool HasDescendantReference( const idWindow *window ) const;
 	static int SaveGameChildIDCompare( idWindow * const *left, idWindow * const *right );
-	void BuildSaveGameChildOrder( idList<idWindow *> &orderedChildren, const char *operation ) const;
+	bool BuildSaveGameChildOrder( idList<idWindow *> &orderedChildren, const char *operation ) const;
 	bool FindSaveGameDescendantOrdinal( const idWindow *window, int &nextOrdinal, int &foundOrdinal, int depth ) const;
 	idWindow *FindSaveGameDescendantByOrdinal( int targetOrdinal, int &nextOrdinal, int depth );
-	void FindSaveGameFlaggedDescendants( unsigned int flag, idWindow *&match, int &matches, int &visited, int depth );
-	void ValidateRestoredTrackedWindowPointers( bool hadSavedFocusReference, bool hadSavedCaptureReference );
+	bool FindSaveGameFlaggedDescendants( unsigned int flag, idWindow *&match, int &matches, int &visited, int depth );
+	bool ValidateRestoredTrackedWindowPointers( bool hadSavedFocusReference, bool hadSavedCaptureReference );
 	void ClearTrackedWindowReference( const idWindow *window );
 	void ValidateTrackedWindowPointers();
 	void UpdateWinVars();

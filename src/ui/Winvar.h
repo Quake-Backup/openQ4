@@ -34,95 +34,138 @@ If you have questions concerning this license or the applicable additional terms
 static const char VAR_GUIPREFIX[] = "gui::";
 static const int VAR_GUIPREFIX_LEN = static_cast<int>( sizeof( VAR_GUIPREFIX ) - 1 );
 
-static ID_INLINE void OpenQ4_WriteSaveGameBytes( idFile *savefile, const void *buffer, int len, const char *context, const char *fieldName ) {
+static ID_INLINE bool OpenQ4_WriteSaveGameBytes( idFile *savefile, const void *buffer, int len, const char *context, const char *fieldName ) {
 	if ( savefile == NULL || len < 0 || ( buffer == NULL && len > 0 ) ) {
 		common->Error( "%s: invalid output while writing %s", context ? context : "savegame write", fieldName ? fieldName : "data" );
+		return false;
 	}
 	const int offset = savefile->Tell();
 	const int bytesWritten = savefile->Write( buffer, len );
 	if ( bytesWritten != len ) {
 		common->Error( "%s: failed to write %s at offset %d (wrote %d of %d)",
 			context ? context : "savegame write", fieldName ? fieldName : "data", offset, bytesWritten, len );
+		return false;
 	}
+	return true;
 }
 
-static ID_INLINE void OpenQ4_ReadSaveGameBytes( idFile *savefile, void *buffer, int len, const char *context, const char *fieldName ) {
+static ID_INLINE bool OpenQ4_ReadSaveGameBytes( idFile *savefile, void *buffer, int len, const char *context, const char *fieldName ) {
 	if ( savefile == NULL || len < 0 || ( buffer == NULL && len > 0 ) ) {
+		if ( buffer != NULL && len > 0 ) {
+			memset( buffer, 0, len );
+		}
 		common->Error( "%s: invalid input while reading %s", context ? context : "savegame restore", fieldName ? fieldName : "data" );
+		return false;
 	}
 	const int offset = savefile->Tell();
 	const int bytesRead = savefile->Read( buffer, len );
 	if ( bytesRead != len ) {
+		if ( buffer != NULL && len > 0 ) {
+			memset( buffer, 0, len );
+		}
 		common->Error( "%s: truncated %s at offset %d (read %d of %d)",
 			context ? context : "savegame restore", fieldName ? fieldName : "data", offset, bytesRead, len );
+		return false;
 	}
+	return true;
 }
 
-static ID_INLINE void OpenQ4_WriteSaveGameBool( idFile *savefile, bool value, const char *context, const char *fieldName ) {
+static ID_INLINE bool OpenQ4_WriteSaveGameBool( idFile *savefile, bool value, const char *context, const char *fieldName ) {
 	const unsigned char savedValue = value ? 1 : 0;
 	const int offset = savefile != NULL ? savefile->Tell() : -1;
 	const int bytesWritten = savefile != NULL ? savefile->WriteUnsignedChar( savedValue ) : 0;
 	if ( bytesWritten != 1 ) {
 		common->Error( "%s: failed to write %s at offset %d (wrote %d of 1)",
 			context ? context : "savegame write", fieldName ? fieldName : "boolean", offset, bytesWritten );
+		return false;
 	}
+	return true;
 }
 
-static ID_INLINE void OpenQ4_ReadSaveGameBool( idFile *savefile, bool &value, const char *context, const char *fieldName ) {
+static ID_INLINE bool OpenQ4_ReadSaveGameBool( idFile *savefile, bool &value, const char *context, const char *fieldName ) {
 	unsigned char savedValue = 0;
 	const int offset = savefile != NULL ? savefile->Tell() : -1;
 	const int bytesRead = savefile != NULL ? savefile->ReadUnsignedChar( savedValue ) : 0;
 	if ( bytesRead != 1 || savedValue > 1 ) {
+		value = false;
 		common->Error( "%s: invalid %s at offset %d (read %d bytes, value %u)",
 			context ? context : "savegame restore", fieldName ? fieldName : "boolean", offset, bytesRead,
 			static_cast<unsigned int>( savedValue ) );
+		return false;
 	}
 	value = savedValue != 0;
+	return true;
 }
 
-static ID_INLINE void OpenQ4_WriteSaveGameInt( idFile *savefile, int value, const char *context, const char *fieldName ) {
+static ID_INLINE bool OpenQ4_WriteSaveGameInt( idFile *savefile, int value, const char *context, const char *fieldName ) {
 	const int offset = savefile != NULL ? savefile->Tell() : -1;
 	const int bytesWritten = savefile != NULL ? savefile->WriteInt( value ) : 0;
 	if ( bytesWritten != static_cast<int>( sizeof( value ) ) ) {
 		common->Error( "%s: failed to write %s at offset %d (wrote %d of %d)",
 			context ? context : "savegame write", fieldName ? fieldName : "integer", offset, bytesWritten,
 			static_cast<int>( sizeof( value ) ) );
+		return false;
 	}
+	return true;
 }
 
-static ID_INLINE void OpenQ4_ReadSaveGameInt( idFile *savefile, int &value, const char *context, const char *fieldName ) {
+static ID_INLINE bool OpenQ4_ReadSaveGameInt( idFile *savefile, int &value, const char *context, const char *fieldName ) {
 	const int offset = savefile != NULL ? savefile->Tell() : -1;
 	const int bytesRead = savefile != NULL ? savefile->ReadInt( value ) : 0;
 	if ( bytesRead != static_cast<int>( sizeof( value ) ) ) {
+		value = 0;
 		common->Error( "%s: truncated %s at offset %d (read %d of %d)",
 			context ? context : "savegame restore", fieldName ? fieldName : "integer", offset, bytesRead,
 			static_cast<int>( sizeof( value ) ) );
+		return false;
 	}
+	return true;
 }
 
-static ID_INLINE void OpenQ4_WriteSaveGameFloat( idFile *savefile, float value, const char *context, const char *fieldName ) {
+static ID_INLINE bool OpenQ4_WriteSaveGameFloat( idFile *savefile, float value, const char *context, const char *fieldName ) {
+	if ( !std::isfinite( value ) ) {
+		common->Error( "%s: refusing non-finite %s", context ? context : "savegame write",
+			fieldName ? fieldName : "float" );
+		return false;
+	}
 	const int offset = savefile != NULL ? savefile->Tell() : -1;
 	const int bytesWritten = savefile != NULL ? savefile->WriteFloat( value ) : 0;
 	if ( bytesWritten != static_cast<int>( sizeof( value ) ) ) {
 		common->Error( "%s: failed to write %s at offset %d (wrote %d of %d)",
 			context ? context : "savegame write", fieldName ? fieldName : "float", offset, bytesWritten,
 			static_cast<int>( sizeof( value ) ) );
+		return false;
 	}
+	return true;
 }
 
-static ID_INLINE void OpenQ4_ReadSaveGameFloat( idFile *savefile, float &value, const char *context, const char *fieldName ) {
+static ID_INLINE bool OpenQ4_ReadSaveGameFloat( idFile *savefile, float &value, const char *context, const char *fieldName ) {
 	const int offset = savefile != NULL ? savefile->Tell() : -1;
 	const int bytesRead = savefile != NULL ? savefile->ReadFloat( value ) : 0;
 	if ( bytesRead != static_cast<int>( sizeof( value ) ) ) {
 		common->Error( "%s: truncated %s at offset %d (read %d of %d)",
 			context ? context : "savegame restore", fieldName ? fieldName : "float", offset, bytesRead,
 			static_cast<int>( sizeof( value ) ) );
+		value = 0.0f;
+		return false;
 	}
+	if ( !std::isfinite( value ) ) {
+		common->Error( "%s: non-finite %s at offset %d", context ? context : "savegame restore",
+			fieldName ? fieldName : "float", offset );
+		value = 0.0f;
+		return false;
+	}
+	return true;
 }
 
 template< class type >
-static ID_INLINE void OpenQ4_ReadSaveGameField( idFile *savefile, type &value, const char *context, const char *fieldName ) {
-	OpenQ4_ReadSaveGameBytes( savefile, &value, sizeof( value ), context, fieldName );
+static ID_INLINE bool OpenQ4_WriteSaveGameField( idFile *savefile, const type &value, const char *context, const char *fieldName ) {
+	return OpenQ4_WriteSaveGameBytes( savefile, &value, sizeof( value ), context, fieldName );
+}
+
+template< class type >
+static ID_INLINE bool OpenQ4_ReadSaveGameField( idFile *savefile, type &value, const char *context, const char *fieldName ) {
+	return OpenQ4_ReadSaveGameBytes( savefile, &value, sizeof( value ), context, fieldName );
 }
 
 class idWindow;
@@ -317,33 +360,49 @@ public:
 
 	// SaveGames
 	virtual void WriteToSaveGame( idFile *savefile ) {
-		OpenQ4_WriteSaveGameBool( savefile, eval, "idWinStr::WriteToSaveGame", "eval flag" );
+		if ( !OpenQ4_WriteSaveGameBool( savefile, eval, "idWinStr::WriteToSaveGame", "eval flag" ) ) {
+			return;
+		}
 
 		const int len = data.Length();
 		const int maxSavedStringLength = 64 * 1024;
 		if ( len < 0 || len > maxSavedStringLength ) {
 			common->Error( "idWinStr::WriteToSaveGame: invalid string length %d", len );
+			return;
 		}
-		OpenQ4_WriteSaveGameInt( savefile, len, "idWinStr::WriteToSaveGame", "string length" );
+		if ( !OpenQ4_WriteSaveGameInt( savefile, len, "idWinStr::WriteToSaveGame", "string length" ) ) {
+			return;
+		}
 		if ( len > 0 ) {
 			OpenQ4_WriteSaveGameBytes( savefile, data.c_str(), len, "idWinStr::WriteToSaveGame", "string" );
 		}
 	}
 	virtual void ReadFromSaveGame( idFile *savefile ) {
-		OpenQ4_ReadSaveGameBool( savefile, eval, "idWinStr::ReadFromSaveGame", "eval flag" );
+		if ( !OpenQ4_ReadSaveGameBool( savefile, eval, "idWinStr::ReadFromSaveGame", "eval flag" ) ) {
+			data.Clear();
+			return;
+		}
 
-		int len;
+		int len = 0;
 		const int offset = savefile->Tell();
-		OpenQ4_ReadSaveGameInt( savefile, len, "idWinStr::ReadFromSaveGame", "string length" );
+		if ( !OpenQ4_ReadSaveGameInt( savefile, len, "idWinStr::ReadFromSaveGame", "string length" ) ) {
+			data.Clear();
+			return;
+		}
 		const int remainingBytes = Max( 0, savefile->Length() - savefile->Tell() );
 		const int maxSavedStringLength = 64 * 1024;
 		if ( len < 0 || len > maxSavedStringLength || len > remainingBytes ) {
 			common->Error( "idWinStr::ReadFromSaveGame: invalid string length %d at offset %d (remaining %d)",
 				len, offset, remainingBytes );
+			data.Clear();
+			return;
 		}
 		if ( len > 0 ) {
 			data.Fill( ' ', len );
-			OpenQ4_ReadSaveGameBytes( savefile, &data[0], len, "idWinStr::ReadFromSaveGame", "string" );
+			if ( !OpenQ4_ReadSaveGameBytes( savefile, &data[0], len, "idWinStr::ReadFromSaveGame", "string" ) ) {
+				data.Clear();
+				return;
+			}
 		} else {
 			data.Clear();
 		}
@@ -936,33 +995,61 @@ public:
 	}
 
 	virtual void WriteToSaveGame( idFile *savefile ) {
-		OpenQ4_WriteSaveGameBool( savefile, eval, "idWinBackground::WriteToSaveGame", "eval flag" );
+		if ( !OpenQ4_WriteSaveGameBool( savefile, eval, "idWinBackground::WriteToSaveGame", "eval flag" ) ) {
+			return;
+		}
 
 		const int len = data.Length();
 		const int maxSavedStringLength = 64 * 1024;
 		if ( len < 0 || len > maxSavedStringLength ) {
 			common->Error( "idWinBackground::WriteToSaveGame: invalid material name length %d", len );
+			return;
 		}
-		OpenQ4_WriteSaveGameInt( savefile, len, "idWinBackground::WriteToSaveGame", "material name length" );
+		if ( !OpenQ4_WriteSaveGameInt( savefile, len, "idWinBackground::WriteToSaveGame", "material name length" ) ) {
+			return;
+		}
 		if ( len > 0 ) {
 			OpenQ4_WriteSaveGameBytes( savefile, data.c_str(), len, "idWinBackground::WriteToSaveGame", "material name" );
 		}
 	}
 	virtual void ReadFromSaveGame( idFile *savefile ) {
-		OpenQ4_ReadSaveGameBool( savefile, eval, "idWinBackground::ReadFromSaveGame", "eval flag" );
+		if ( !OpenQ4_ReadSaveGameBool( savefile, eval, "idWinBackground::ReadFromSaveGame", "eval flag" ) ) {
+			data.Clear();
+			if ( mat != NULL ) {
+				*mat = NULL;
+			}
+			return;
+		}
 
-		int len;
+		int len = 0;
 		const int offset = savefile->Tell();
-		OpenQ4_ReadSaveGameInt( savefile, len, "idWinBackground::ReadFromSaveGame", "material name length" );
+		if ( !OpenQ4_ReadSaveGameInt( savefile, len, "idWinBackground::ReadFromSaveGame", "material name length" ) ) {
+			data.Clear();
+			if ( mat != NULL ) {
+				*mat = NULL;
+			}
+			return;
+		}
 		const int remainingBytes = Max( 0, savefile->Length() - savefile->Tell() );
 		const int maxSavedStringLength = 64 * 1024;
 		if ( len < 0 || len > maxSavedStringLength || len > remainingBytes ) {
 			common->Error( "idWinBackground::ReadFromSaveGame: invalid material name length %d at offset %d (remaining %d)",
 				len, offset, remainingBytes );
+			data.Clear();
+			if ( mat != NULL ) {
+				*mat = NULL;
+			}
+			return;
 		}
 		if ( len > 0 ) {
 			data.Fill( ' ', len );
-			OpenQ4_ReadSaveGameBytes( savefile, &data[0], len, "idWinBackground::ReadFromSaveGame", "material name" );
+			if ( !OpenQ4_ReadSaveGameBytes( savefile, &data[0], len, "idWinBackground::ReadFromSaveGame", "material name" ) ) {
+				data.Clear();
+				if ( mat != NULL ) {
+					*mat = NULL;
+				}
+				return;
+			}
 		} else {
 			data.Clear();
 		}
