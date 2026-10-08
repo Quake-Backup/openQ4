@@ -8,6 +8,8 @@ the stock GUI, and lays its groups out on the section 14.4 anchors: the 4:3
 center screen, the side screens capped by `ui_hudWidth`, the safe inset
 `ui_hudSafeInset` and the HUD scale `ui_hudScale`. `ui_hudLayout 0` keeps the
 stock layout, drawn through the [HUD presentation bridge](hud-coverage.md).
+Settings > Game Options > HUD sets all four (HUD Layout, HUD Size, HUD Width
+and Safe Area Inset); see the [settings structure](../settings-menu-structure.md).
 
 ## Minimal
 

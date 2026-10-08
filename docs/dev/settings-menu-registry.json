@@ -3256,6 +3256,122 @@
       "accessibility": "Standard focusable choiceDef row. Turning the marker off restores stock Quake 4's crosshair recolour on a hit."
     },
     {
+      "id": "game.hud_layout",
+      "pane": "Game Options",
+      "section": "HUD",
+      "source": "game",
+      "target_type": "cvar",
+      "restart_required": false,
+      "path": "Settings > Game Options > HUD > HUD Layout",
+      "container": "set_game_hudlayout",
+      "widgets": [
+        "set_game_hudlayout_value"
+      ],
+      "widget_type": "choice",
+      "label_key": "#str_231236",
+      "choices_key": "#str_231237",
+      "values": [
+        "0",
+        "1",
+        "2"
+      ],
+      "target": "ui_hudLayout",
+      "default": "1",
+      "accessibility": "Focusable choiceDef row. Classic keeps the stock HUD, Remastered anchors it to the screen edges and Minimal keeps health, armor, ammunition and the crosshair."
+    },
+    {
+      "id": "game.hud_scale",
+      "pane": "Game Options",
+      "section": "HUD",
+      "source": "game",
+      "target_type": "cvar",
+      "restart_required": false,
+      "path": "Settings > Game Options > HUD > HUD Size",
+      "container": "set_game_hudscale",
+      "widgets": [
+        "set_game_hudscale_slider_bar",
+        "set_game_hudscale_value"
+      ],
+      "edit_fields": [
+        {
+          "name": "set_game_hudscale_value",
+          "maxchars": 4
+        }
+      ],
+      "widget_type": "slider_edit",
+      "label_key": "#str_231238",
+      "target": "ui_hudScale",
+      "default": "1",
+      "ui_range": {
+        "low": "0.5",
+        "high": "2",
+        "step": "0.05"
+      },
+      "cvar_range": {
+        "low": "0.5",
+        "high": "2"
+      },
+      "accessibility": "Slider with paired edit field. Scales the HUD independently of the menus."
+    },
+    {
+      "id": "game.hud_width",
+      "pane": "Game Options",
+      "section": "HUD",
+      "source": "game",
+      "target_type": "cvar",
+      "restart_required": false,
+      "path": "Settings > Game Options > HUD > HUD Width",
+      "container": "set_game_hudwidth",
+      "widgets": [
+        "set_game_hudwidth_value"
+      ],
+      "widget_type": "choice",
+      "label_key": "#str_231239",
+      "choices_key": "#str_231240",
+      "values": [
+        "0",
+        "1",
+        "2"
+      ],
+      "target": "ui_hudWidth",
+      "default": "1",
+      "accessibility": "Focusable choiceDef row. How far edge HUD groups spread on wide screens."
+    },
+    {
+      "id": "game.hud_inset",
+      "pane": "Game Options",
+      "section": "HUD",
+      "source": "game",
+      "target_type": "cvar",
+      "restart_required": false,
+      "path": "Settings > Game Options > HUD > Safe Area Inset",
+      "container": "set_game_hudinset",
+      "widgets": [
+        "set_game_hudinset_slider_bar",
+        "set_game_hudinset_value"
+      ],
+      "edit_fields": [
+        {
+          "name": "set_game_hudinset_value",
+          "maxchars": 4
+        }
+      ],
+      "widget_type": "slider_edit",
+      "label_key": "#str_231241",
+      "target": "ui_hudSafeInset",
+      "default": "0",
+      "ui_range": {
+        "low": "0",
+        "high": "10",
+        "step": "0.5"
+      },
+      "cvar_range": {
+        "low": "0",
+        "high": "10"
+      },
+      "accessibility": "Slider with paired edit field. Moves the HUD inward by a percentage of the view."
+    },
+    {
       "id": "game.auto_skip_cinematics",
       "pane": "Game Options",
       "section": "Gameplay And View",

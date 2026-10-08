@@ -210,6 +210,16 @@ The Game Options pane is `p_settings_game` and is included from `content/baseoq4
 | Crosshair Color | `choiceDef` | `set_game_xhaircolor_value` | GUI state `g_crosshairColorChoice` | White, red, orange, yellow, green, cyan, blue, magenta | Focusable picker. Selection writes `g_crosshairColor` RGBA values and updates the preview. The in-game crosshair takes the new colour at once. |
 | Hit Marker | `choiceDef` | `set_game_hitmarker_value` | `hud_hitMarker` | `No;Yes` | Boolean picker, on by default. Off restores stock Quake 4's crosshair recolour on a hit; `hud_hitMarkerScale` and `hud_crosshairHitFlash` stay console-only. |
 
+### HUD
+
+| Label | Widget type | Value widget | Target | Values or range | Notes |
+|---|---|---|---|---|---|
+| HUD | `windowDef` label | `set_game_hud` | N/A | N/A | Section label below Crosshair. |
+| HUD Layout | `choiceDef` | `set_game_hudlayout_value` | `ui_hudLayout` | `0 Classic`, `1 Remastered`, `2 Minimal` | Classic is the stock HUD; Remastered anchors it to the screen edges; Minimal keeps health, armor, ammunition and the crosshair. See `docs/dev/ui/remastered-hud.md`. |
+| HUD Size | `sliderDef` + `editDef` | `set_game_hudscale_slider_bar`, `set_game_hudscale_value` | `ui_hudScale` | `0.5..2`, step `0.05` | Independent of menu size; narrow screens limit the status bar to keep every gauge visible. |
+| HUD Width | `choiceDef` | `set_game_hudwidth_value` | `ui_hudWidth` | `0 16:9`, `1 21:9`, `2 Full` | How far edge HUD groups spread on wide screens. |
+| Safe Area Inset | `sliderDef` + `editDef` | `set_game_hudinset_slider_bar`, `set_game_hudinset_value` | `ui_hudSafeInset` | `0..10` percent, step `0.5` | Moves the HUD inward from every edge. |
+
 ### Corpse, Language, Console
 
 | Label | Widget type | Value widget | Target | Values or range | Notes |

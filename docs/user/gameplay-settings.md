@@ -361,7 +361,8 @@ bars and the Tourney bracket. After you die in multiplayer, a Respawn prompt
 names your attack key once you can return, with a countdown while overtime
 delays your respawn.
 
-Console settings are saved automatically:
+**Settings > Game Options > HUD** sets the layout, size, width and safe area.
+The same settings are console variables, saved automatically:
 
 | Setting | Default | Range | Effect |
 | --- | --- | --- | --- |

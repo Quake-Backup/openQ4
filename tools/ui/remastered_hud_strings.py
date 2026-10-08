@@ -84,6 +84,24 @@ ENTRIES = {
     "#str_231234": ("RESPAWN IN", "RENASCE EM", "OŽIVENÍ ZA", "RÉAPPARITION DANS", "WIEDEREINSTIEG IN", "ÚJRAÉLEDÉSIG",
                     "RINASCITA TRA", "ODRODZENIE ZA", "ВОЗРОЖДЕНИЕ ЧЕРЕЗ", "REAPARICIÓN EN", "YENİDEN DOĞMAYA",
                     "ВІДРОДЖЕННЯ ЧЕРЕЗ"),
+    # Settings > Game Options > HUD (section 13.9): the section label, its rows and their choices.
+    "#str_231235": ("HUD",) * 12,
+    "#str_231236": ("HUD Layout", "Layout do HUD", "Rozložení HUD", "Disposition du HUD", "HUD-Layout", "HUD elrendezés",
+                    "Layout HUD", "Układ HUD", "Макет HUD", "Diseño del HUD", "HUD düzeni", "Макет HUD"),
+    "#str_231237": ("Classic;Remastered;Minimal", "Clássico;Remasterizado;Mínimo", "Klasické;Remasterované;Minimální",
+                    "Classique;Remasterisé;Minimal", "Klassisch;Remastered;Minimal", "Klasszikus;Felújított;Minimális",
+                    "Classico;Rimasterizzato;Minimo", "Klasyczny;Odnowiony;Minimalny", "Классический;Ремастер;Минимальный",
+                    "Clásico;Remasterizado;Mínimo", "Klasik;Yenilenmiş;Minimal", "Класичний;Ремастер;Мінімальний"),
+    "#str_231238": ("HUD Size", "Tamanho do HUD", "Velikost HUD", "Taille du HUD", "HUD-Größe", "HUD méret", "Dimensione HUD",
+                    "Rozmiar HUD", "Размер HUD", "Tamaño del HUD", "HUD boyutu", "Розмір HUD"),
+    "#str_231239": ("HUD Width", "Largura do HUD", "Šířka HUD", "Largeur du HUD", "HUD-Breite", "HUD szélesség",
+                    "Larghezza HUD", "Szerokość HUD", "Ширина HUD", "Ancho del HUD", "HUD genişliği", "Ширина HUD"),
+    "#str_231240": ("16:9;21:9;Full", "16:9;21:9;Total", "16:9;21:9;Celá", "16:9;21:9;Plein", "16:9;21:9;Voll",
+                    "16:9;21:9;Teljes", "16:9;21:9;Piena", "16:9;21:9;Pełna", "16:9;21:9;Вся", "16:9;21:9;Completa",
+                    "16:9;21:9;Tam", "16:9;21:9;Уся"),
+    "#str_231241": ("Safe Area Inset", "Margem da área segura", "Okraj bezpečné oblasti", "Marge de zone sûre",
+                    "Sicherheitsrand", "Biztonsági margó", "Margine area sicura", "Margines obszaru bezpiecznego",
+                    "Отступ безопасной зоны", "Margen de zona segura", "Güvenli alan boşluğu", "Відступ безпечної зони"),
 }
 
 LINE = re.compile(r'^\s*"(#str_\d+)"\s*"(.*)"\s*$')
