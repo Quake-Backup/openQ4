@@ -2502,6 +2502,15 @@ static void Cmd_TestHitMarker_f( const idCmdArgs &args ) {
 	rvHitMarker::Trigger( damage, flags, HITMARKER_PRECISE );
 }
 
+static void Cmd_TestHudOverlays_f(const idCmdArgs& args) {
+	idPlayer* player=gameLocal.GetLocalPlayer();
+	if (!player || !gameLocal.CheatsOk()) return;
+	idVec3 origin;idMat3 axis;player->GetViewPos(origin,axis);
+	gameLocal.mpGame.damageNumbers.Add(origin+axis[0]*128.0f,args.Argc()>1?atoi(args.Argv(1)):75,1,0);
+	gameLocal.lagometer.Update(20,2);
+	rvHitMarker::Trigger(75,0,HITMARKER_PRECISE);
+}
+
 /*
 ==================
 Cmd_WeaponSplat_f
@@ -3538,6 +3547,8 @@ void Cmd_SetPMCVars_f ( const idCmdArgs &args ) {
 	}
 }
 
+#include "../../game/gamesys/AudioGraphDebug.inl"
+
 void Cmd_FadeSound_f( const idCmdArgs &args )	{
 
 	if( args.Argc() < 2)	{
@@ -3938,6 +3949,28 @@ static void Cmd_Follow_f( const idCmdArgs &args ) {
 	player->RequestSpectatorFollow( operation, targetSlot );
 }
 
+static void Cmd_TestStatusBar_f( const idCmdArgs &args ) {
+	idPlayer *player = gameLocal.GetLocalPlayer();
+	if ( player ) player->DebugStatusBar( args );
+}
+
+static void Cmd_TestWeaponWheel_f( const idCmdArgs &args ) {
+	idPlayer *player = gameLocal.GetLocalPlayer();
+	if ( player ) player->DebugWeaponWheel( args );
+}
+
+// testScoreboard <msec>: holds the local player's scoreboard open, as a tournament's
+// end does, so headless captures can show it without input.
+static void Cmd_TestScoreboard_f( const idCmdArgs &args ) {
+	idPlayer *player = gameLocal.GetLocalPlayer();
+	if ( !player || args.Argc() < 2 ) {
+		gameLocal.Printf( "usage: testScoreboard <msec>\n" );
+		return;
+	}
+	player->forceScoreBoard = true;
+	player->forceScoreBoardTime = gameLocal.time + idMath::ClampInt( 1, 60000, atoi( args.Argv( 1 ) ) );
+}
+
 /*
 =================
 idGameLocal::InitConsoleCommands
@@ -4005,6 +4038,7 @@ void idGameLocal::InitConsoleCommands( void ) {
 	cmdSystem->AddCommand( "testClassicLight",	Cmd_TestClassicLight_f,		CMD_FL_GAME|CMD_FL_CHEAT,	"raises the classic dynamic lights in front of the player" );
 	cmdSystem->AddCommand( "testDeath",				Cmd_TestDeath_f,			CMD_FL_GAME|CMD_FL_CHEAT,	"tests death" );
 	cmdSystem->AddCommand( "testHitMarker",		Cmd_TestHitMarker_f,		CMD_FL_GAME|CMD_FL_CHEAT,	"tests the crosshair hit marker" );
+	cmdSystem->AddCommand("testHudOverlays",Cmd_TestHudOverlays_f,CMD_FL_GAME|CMD_FL_CHEAT,"stages damage numbers, hit feedback and one network graph sample without input");
 	cmdSystem->AddCommand( "testSave",				Cmd_TestSave_f,				CMD_FL_GAME|CMD_FL_CHEAT,	"writes out a test savegame" );
 	cmdSystem->AddCommand( "testModel",				idTestModel::TestModel_f,			CMD_FL_GAME|CMD_FL_CHEAT,	"tests a model", idTestModel::ArgCompletion_TestModel );
 	cmdSystem->AddCommand( "testSkin",				idTestModel::TestSkin_f,			CMD_FL_GAME|CMD_FL_CHEAT,	"tests a skin on an existing testModel", idCmdSystem::ArgCompletion_Decl<DECL_SKIN> );
@@ -4146,6 +4180,10 @@ void idGameLocal::InitConsoleCommands( void ) {
 
 // jshepard: fade music in / out
 	cmdSystem->AddCommand( "fadeSound",				Cmd_FadeSound_f,			CMD_FL_GAME|CMD_FL_CHEAT,	"fades all sound by X decibles over Y seconds" );
+	cmdSystem->AddCommand( "testRadioChatter", Cmd_TestRadioChatter_f, CMD_FL_GAME|CMD_FL_CHEAT, "plays or probes the radio HUD audio graph", idCmdSystem::ArgCompletion_SoundName );
+	cmdSystem->AddCommand( "testStatusBar", Cmd_TestStatusBar_f, CMD_FL_GAME|CMD_FL_CHEAT, "status bar: probe or stats <health> <armor>" );
+	cmdSystem->AddCommand( "testWeaponWheel", Cmd_TestWeaponWheel_f, CMD_FL_GAME|CMD_FL_CHEAT, "weapon wheel: open, slot N, release, cancel, family marine|strogg, probe" );
+	cmdSystem->AddCommand( "testScoreboard", Cmd_TestScoreboard_f, CMD_FL_GAME|CMD_FL_CHEAT, "holds the scoreboard open for <msec>" );
 
 // mekberg: added.
 	cmdSystem->AddCommand( "setPMCVars",			Cmd_SetPMCVars_f,			CMD_FL_GAME,				"Resets player movement cvars" );

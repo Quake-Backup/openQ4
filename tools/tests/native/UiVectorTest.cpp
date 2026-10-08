@@ -6,6 +6,8 @@
 #include <cstdio>
 #include <cstdlib>
 #include <limits>
+#include <fstream>
+#include <iterator>
 
 using namespace openq4::ui;
 static void Check(bool condition, const char* message) {
@@ -162,7 +164,47 @@ static void CoverageChecks() {
 	Check(!TessellatePath(path,options,mesh,error) && mesh.vertices.size() == previous,"coverage budget failure preserves previous mesh");
 	std::puts("UI coverage: analytic area, independent per-pixel oracle, holes/intersections, translucent stroke unions, subpixel rails, clipping and exact hit geometry passed");
 }
-int main() {
+static void ScopePaintChecks(const Node& node) {
+	for (const auto& path : node.paths) if (path.fill.type == PaintType::Radial || path.fill.type == PaintType::Diamond || path.fill.type == PaintType::Conic) {
+		VectorOptions options; options.widthDp = 960; options.heightDp = 720;
+		for (double scale : {.5,1.0,2.0,3.0}) {
+			options.transform.a = options.transform.d = scale;
+			// Same padded viewport policy as VectorElement, including 4K output.
+			options.pixelBounds = VectorPixelBounds{0,0,static_cast<int>(960*scale),static_cast<int>(720*scale)};
+			VectorMesh mesh; std::string error;
+			const bool success = TessellatePath(path,options,mesh,error);
+			std::fprintf(stderr,"Scope paint %s scale %.1f: vertices=%zu success=%d %s\n",path.id.c_str(),scale,mesh.vertices.size(),success,error.c_str());
+			Check(success,"scope paint fits the normal geometry budget through 4K");
+		}
+	}
+	for (const auto& child : node.children) ScopePaintChecks(child);
+}
+
+static void DocumentGeometryBudget(const Node& node) {
+	size_t vertices = 0;
+	for (const auto& path : node.paths) {
+		VectorOptions options; options.widthDp = 960; options.heightDp = 720;
+		options.pixelBounds = VectorPixelBounds{0,0,960,720};
+		VectorMesh mesh; std::string error;
+		Check(TessellatePath(path,options,mesh,error),"document path compiles within its budget");
+		vertices += mesh.vertices.size();
+	}
+	if (vertices) std::printf("%s %zu vertices\n",node.id.c_str(),vertices);
+	for (const auto& child : node.children) DocumentGeometryBudget(child);
+}
+
+int main(int argc, char** argv) {
+	if (argc > 1) {
+		std::ifstream file(argv[1]);
+		std::string source{std::istreambuf_iterator<char>(file),std::istreambuf_iterator<char>()};
+		Document document; std::vector<Diagnostic> diagnostics;
+		const bool valid = document.Load(source,diagnostics);
+		for (const auto& d : diagnostics) std::fprintf(stderr,"%s: %s\n",d.pointer.c_str(),d.message.c_str());
+		Check(valid,"document for gradient budget");
+		if (argc > 2) { DocumentGeometryBudget(document.Model().root); return 0; }
+		ScopePaintChecks(document.Model().root);
+		return 0;
+	}
 	VectorOptions options; options.widthDp = 100; options.heightDp = 80;
 	options.antialias = false; // These checks measure geometric area, before pixel coverage.
 	VectorMesh mesh; std::string error;
@@ -234,6 +276,18 @@ int main() {
 	Check(green,"middle gradient stop becomes real geometry even without an original vertex there");
 	path.fill.stops = {{0,{1,0,0,1}},{1,{0,0,1,0}}}; build(path);
 	for (const auto& v : mesh.vertices) Check(Near(v.b,0) && Near(v.r,v.a),"transparent gradient endpoint cannot tint visible premultiplied colour");
+	for (const auto type : {PaintType::Radial,PaintType::Diamond,PaintType::Conic}) {
+		path.fill.type = type; path.fill.from = P(50,40); path.fill.to = P(100,40);
+		path.fill.stops = {{0,{1,1,1,0}},{1,{1,1,1,1}}};
+		build(path);
+		Check(Near(Area(mesh),8000),"curved gradient subdivision preserves coverage");
+		for (const auto point : {VectorPoint{55.381,46.619},VectorPoint{72.381,50.619},VectorPoint{5.381,4.619}}) {
+			const double dx = point.x-50, dy = point.y-40;
+			const double turn = std::atan2(dy,dx)/(2*3.14159265358979323846);
+			const double expected = type == PaintType::Conic ? turn-std::floor(turn) : std::min(1.0,(type == PaintType::Radial ? std::hypot(dx,dy) : std::abs(dx)+std::abs(dy))/50);
+			Check(Near(SampleAlpha(mesh,point.x,point.y),expected,.035),"radial, diamond and conic paints interpolate without coverage seams");
+		}
+	}
 	const auto previousVertices = mesh.vertices.size();
 	options.maximumVertices = 3;
 	Check(!TessellatePath(path,options,mesh,error) && !error.empty() && mesh.vertices.size() == previousVertices,"budget failure retains previous complete mesh");

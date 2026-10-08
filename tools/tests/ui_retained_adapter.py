@@ -158,7 +158,7 @@ struct Bounds { float x=0,y=0,width=0,height=0; };
 struct Viewport {
     int width=1920,height=1080;
     float displayScale=1,userScale=1,pixelDensityX=2,pixelDensityY=2,originX=80,originY=40;
-    float fitScale=1,canvasHeight=0;
+    float fitScale=1,canvasHeight=0,canvasMinWidth=0;
     float DpRatio() const { return canvasHeight>0&&height>0 ? height/canvasHeight : displayScale*userScale; }
 };
 static DocumentModel modelTemplate;
@@ -940,6 +940,16 @@ static void CheckCompletionWrites() {
     assert(Live().completionTakes>takes && Live().completionWrites.empty());
     assert(gui.GetStateBool("flag") && std::string(gui.GetStateString("text"))=="finished" &&
            std::string(gui.GetStateString("unrelated"))=="unmodified");
+    // Game HUD replacements hide their stock counterparts only on a successful
+    // submission in this frame. Failure must invalidate a previous receipt.
+    idStr receipt;
+    assert(gui.GetPresentationValue("__retained::drawSucceeded",receipt) && std::string(receipt.c_str())=="1");
+    rejectDraw=true; gui.Redraw(1);
+    assert(gui.GetPresentationValue("__retained::drawSucceeded",receipt) && std::string(receipt.c_str())=="0");
+    rejectDraw=false; gui.Redraw(2);
+    assert(gui.GetPresentationValue("__retained::drawSucceeded",receipt) && std::string(receipt.c_str())=="1");
+    gui.Redraw(3,false);
+    assert(gui.GetPresentationValue("__retained::drawSucceeded",receipt) && std::string(receipt.c_str())=="0");
 }
 static void CheckEventBridge() {
     assert(views.empty()); cvars=CVars{}; consoleObject.open=false; windowFocused=true;

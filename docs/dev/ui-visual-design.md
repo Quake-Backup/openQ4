@@ -1,11 +1,13 @@
 # openQ4 UI Visual Design
 
-Specification version 1.14, 1 October 2026 (1.10 to 1.13 the same day, 1.7 to
+Specification version 1.19, 7 October 2026 (1.15 and 1.16 earlier that day, 1.14 on 1 October, 1.10 to 1.13 the same day, 1.7 to
 1.9 on 29 September, 1.6 on 28 September, 1.4 and 1.5 on 27 September, 1.1 to
 1.3 on 26 September, 1.0 on 8 September 2026). Status:
 implementation target; the replacement has not shipped. Applies to every
 player-facing GUI and to the visual editor's Quake 4 preview. Implementation and
 evidence are tracked in [the replacement plan](plans/idtech5-ui.md).
+
+Version 1.19 adds smoothly fading Gaussian scene focus beneath the weapon wheel and HUD, superseding the former no-blur backing. Version 1.18 preserves the weapon wheel's original right-side placement and adds an archived horizontal offset, with zero centered and narrow-view safety fitting. This supersedes the centered default in earlier wheel specifications.
 
 Version 1.1 added measured references from a survey of the effective retail
 GUI scripts, interface art, fonts and materials, and corrected anatomy that did
@@ -2116,7 +2118,8 @@ weapon color code, and the Marine gauge and scope constructions.
 
 | Measure | Value at 100% HUD scale |
 | --- | --- |
-| Ring | Inner radius 104 dp, outer radius 232 dp, centered on the projection center |
+| Ring | Inner radius 104 dp, outer radius 232 dp, vertically centered |
+| Position | `ui_weaponWheelOffset` is an archived integer percentage of viewport width measured from the projection center: default `27` keeps the existing 77% horizontal position, `0` centers, negative moves left; range −40 to +40. Settings > Game > Controller exposes the value beside wheel sensitivity. On narrow views, fit the isotropic wheel and clamp its center inside the view without changing the saved preference. Apply the setting to Marine, Strogg, multiplayer and Classic wheels |
 | Slots | Every weapon of the game mode in strip order, clockwise from the top. Unlike the compacted strip, positions never move: an unowned weapon keeps its segment as an outline at 0.15 and cannot be selected. Quake 4 has eleven positions and *The Awakening* thirteen; the segments narrow to keep one ring |
 | Segment | Black at 0.50 with 2 dp corner radii and 6 dp gaps of constant width |
 | Contents | The weapon glyph of section 14.16 at the family's icon color and 60%, the weapon number in Lowpixel 12 dp at the inner edge, and the reserve in Chain 17 dp |
@@ -2127,7 +2130,7 @@ weapon color code, and the Marine gauge and scope constructions.
 | No ammunition | The dim icon under the red prohibition sign. Releasing on it keeps the current weapon and gives the refusal feedback of section 13.5 |
 | Hub | A black 0.55 disc of 86 dp inside the machinegun scope's double ring (86 and 80 dp, #B3D06E at 0.35) and its 16 compass dots at 93 dp, turned so the bright dot faces the selection. The disc is a signal screen: the briefing's torn video bands at their 0.06 rest level and additive scanlines at 0.11 roll down it |
 | Center | The weapon name in Marine 12 dp and #B0C891, on two lines when it would not fit on one, and the ammunition as `clip / reserve` in Chain 21 dp, over the signal screen. Nothing else: the radio's waveform belongs to the transmission display, not to a weapon selector. A pointer on the inner ring faces the selection |
-| Backing | A black radial wash at 0.35 out to 280 dp; no blur |
+| Backing | A black radial wash at 0.35 out to 280 dp over high-quality scene soft focus: separable Gaussian sigma 8 dp, saturation 0.94, eased with the wheel blend. Filter the full wide/tall scene before the HUD and wheel artwork so their vectors and text stay sharp. Apply in SP and MP without changing MP simulation speed; respect the opaque-backing fallback and submit no focus pass once closed |
 
 **Selection.** A stick selects the segment under its angle beyond 35%
 deflection, with 4 degrees of hysteresis at boundaries; inside the dead zone
@@ -2247,19 +2250,27 @@ its wheel is the Marine wheel with these changes:
   each GUI's stock corner of the 4:3 canvas.
   - **Timing.** It appears and disappears in one frame and stays up for the
     voice line plus 150 ms, or 5 s.
-  - **Waveform.** Its motion is the additive #FF8000 carrier waveform, the
+  - **Classic waveform.** Its motion is the additive #FF8000 carrier waveform, the
     stock `waveform.tga`: a recorded voice trace with a 4-texel core and
     bursts of spikes up to 32% of its height above and below it, flat in 37%
     of its columns. Rebuild it column by column as vector bars (Appendix
     B.5); a generated zigzag does not read as speech.
-  - **Mask and scroll.** A right trapezoid 19.2 u wide at the top and 23.1 u
+  - **Mask and Classic scroll.** A right trapezoid 19.2 u wide at the top and 23.1 u
     at the bottom, its leading side leaning with the plate. The trace scrolls
     toward the leading edge at 24.6 u/s.
-  - **Height.** Classic steps it every 79 ms through the canned table, 0.71
-    to 2.5 times, core included. Remastered follows the playing line's level:
-    the core stays and the spikes scale from nearly flat between words to
-    2.35 times. The canned table returns when the sound system reports no
-    level.
+  - **Playback graph.** Classic steps its height every 79 ms through the canned
+    table, 0.71 to 2.5 times, core included. Remastered draws actual decoded PCM
+    peaks from the playing radio channel: 40 columns at 60 Hz, oldest at the
+    leading edge and the current sample at the trailing edge. The 650 ms history
+    changes shape with the line, including pauses between words; it never scales
+    a prerecorded trace. The normalized peak has a square response, with each
+    side reaching 32% of the drawing rectangle's height above/below a thin core.
+    Read the sample's playback cursor, including pause, pitch and slow motion;
+    never advance it from UI frames. Meter before user volume changes. Missing,
+    stopped and finished audio is a flat core, with no canned fallback. New
+    samples clear the previous line's history. Other player sounds cannot drive
+    the radio graph. Reduced motion shows a stationary band at the current
+    level, preserving the instrument's information without horizontal motion.
   - **Squad emblem.** When the line addresses the player, the player's squad
     stencil (#FFFF00) and its black 0.40 plate shrink into place beside the
     bar over 500 ms, the stencil from 42x39 u to 22x22 u. Every new line
@@ -2474,9 +2485,15 @@ of the stock's breathing lines in the center column.
 **Voice (Remastered).** One plate per talker stacks directly above the chat
 box, newest nearest it: a sheared HUD plate at black 0.50 holding the
 transmission trace (section 14.8) in the talker's team text color, or #FFFF8D
-in deathmatch, following their voice level, then the speaker symbol and the
+in deathmatch, plotting their actual decoded playback history, then the speaker symbol and the
 name. Your own transmission reads YOU on the header-band plate at 0.30 with a
-microphone. Each trace keeps its own phase, so two talkers never move in step.
+microphone. Every talker owns a separate audio history; never share a meter or
+invent differing phases. Your own display follows the outgoing audio stream,
+received displays follow the decoded stream that is being played. A muted,
+unavailable or disconnected source stays flat. The temporary stock MP adapter
+fits 24 samples into its smaller graph; the complete talker plates use the same
+40-sample history as radio. Restoring the multiplayer microphone capture,
+codec and playback backend is a separate unfinished integration dependency.
 
 ### 14.10 Alarms and motion
 
@@ -2493,7 +2510,7 @@ microphone. Each trace keeps its own phase, so two talkers never move in step.
 | Dead Zone score | Jumps to the team color on each control tick and relaxes to white | A steady team color for 1 s |
 | Timer, last ten seconds | #E46D56 with a 1 Hz pulse (Remastered) | Steady #E46D56 |
 | Tourney arena finished | Blue 1.00 to 0.40 over 500 ms | Immediate 0.40 |
-| Voice waveform | Continuous scroll | Static trace |
+| Voice waveform | Actual playback history | Stationary current-level band |
 | Vehicle warnings | 2 Hz hull and shield, 1 Hz electric | Steady warning colors |
 | Spectator text | 900 ms breathing | Steady |
 | EKG | 37.5 dp/s | Kept: it is an instrument |
@@ -2699,10 +2716,14 @@ the HUD, and the field of view changes over 100 ms.
 
 **Refinements.** At any aspect each scope keeps its aperture's shape around
 the aim point, and its outermost layer reaches the screen edges: the
-machinegun's veil and smear, the railgun's haze or the nailgun's surround.
+machinegun's veil, the railgun's haze or the nailgun's surround.
 Nothing stretches, and the marks are vector geometry at every resolution.
-Remastered renders the machinegun's smear as a continuous radial blur instead
-of the stock's six stepped samples, and adds the railgun's diamond sweep at 8%
+Remastered applies a separable Gaussian soft focus outside every scope, with
+13.5 dp sigma and 0.86 saturation. A 38 u feather follows each aperture's
+circle or diamond, leaving the sight interior sharp and covering every outer
+screen band. The mask rises through 0.08, 0.50 and 0.92 at 8, 19 and 30 u
+beyond the aperture; it reaches full strength at 38 u. There is no radial
+stretch or stepped smear. Remastered adds the railgun's diamond sweep at 8%
 instead of the stock's 2%, which no screen shows. *The Awakening*'s Core
 Cannon takes the machinegun scope through its scope modification.
 
@@ -3155,6 +3176,91 @@ Each page opens with its primary action focused (Auto join on Welcome's Join
 tab) and keeps its focus while the player changes values on it. The tab set is
 fixed; the strip scrolls only on compact widths (section 13.3).
 
+### 14.19 Medical Labs implant activation
+
+This is the temporary **medchange** overlay at the end of stroggification,
+not the later `strogg_noise` body-table HUD or the world-space implant monitor.
+The retail `vehicle_medbed` definition selects `guis/vehicles/medchange.gui`;
+`nanocyteFade()` in `scripts/maps/medlabs.script` sends its `activate` event
+as the white surgical flash fades away. Preserve that gameplay event and the
+independent `hurt` and `saveMessage` events. The overlay starts hidden and
+must never become a permanent HUD.
+
+**Construction.** Reconstruct the gold hexagon glow and the four edge pieces
+as editable vector geometry. The activation color is `(1, .815, .435)`
+(approximately #FFD06F); black is the unlit additive state, not an opaque
+black cover. Hexagons occupy 86×86 u boxes, with tips at approximately
+`(1,43), (22,7), (64,7), (85,43), (64,79), (22,79)`. Their bright rim fades
+inward. Preserve this stock hexagonal motif within the otherwise 45-degree
+interface. Corner pieces occupy 256 u boxes, mirrored at each corner;
+their sloping bright edges and inward glow are independent of the hex field.
+No extracted retail art belongs in the repository.
+
+**Sequence.** Keep the 38 authored center cells and their measured offsets.
+Starting at 500 ms, illuminate one cell every 50 ms and fade that cell to
+black over 500 ms. Repeat the same 37-cell order immediately a second time:
+`10,24,14,32,30,4,8,15,9,34,28,21,1,38,20,2,12,26,18,33,16,23,6,13,35,27,11,22,7,31,3,17,25,36,19,5,29`.
+Cell 37 is present but never flashed by the retail script. At 4150 ms the
+final cell, corner light and readouts begin their 500 ms fade; hide the entire
+activation overlay at **4650 ms**. The data/static ramps nominally last
+5000 ms and the orange edge glow 6000 ms, but the parent hides them at 4650 ms.
+Restart these clocks on every `activate`; do not inherit a half-finished fade.
+
+**Readouts and noise.** Two 61×19 u processor readouts at `(54,437)` and
+`(54,455)` use the Strogg face at 0.24, with 49×12 u segmented bars at x=3.
+Three 92×22 u X/Y/Z readouts at `(542,6)`, `(542,27)`, `(542,50)` use scale
+0.4. Their number cycles are 100, 150 and 200 ms; the processor cycles are
+100 and 200 ms. Keep the intentional low alpha: readouts 0.2, bars 0.4.
+Scrolling rune fields occupy `(574,70,58,72)` and `(2,350,67,81)` at 0.2.
+Rebuild these glyph streams from the Strogg face; numbers are data, while
+messages, including the quicksave notice `#str_200908`, use language tables.
+Data, pink static and color static are separate full-view layers with initial
+alpha 0.1, 0.6 and 0.2. Retain their character without a stretched 4:3 tile.
+
+**Wide and tall screens.** Use `s = min(viewWidth/640, viewHeight/480)`
+uniformly. Keep the original cell centers on the centered 640×480 u screen;
+continue the same 70 u column / 80 u row lattice through every exposed side,
+top and bottom band, with deterministic phases derived from the same sequence.
+Anchor the processor pair and lower rune field to the **left screen's bottom
+edge**, the X/Y/Z readouts and upper rune field to the **right screen's top edge**,
+and the four edge pieces to the actual view corners. Extend noise, vignette
+and hurt coverage to all four viewport boundaries. Never stretch hexagons,
+text or corner slopes, and never leave a 4:3 rectangle visible in a wide or
+portrait view. Keep the quicksave notice centered near the top.
+
+**Hurt and reduced motion.** Hurt is a separate full-view red edge pulse
+starting at `(0.6,0,0)` and falling to black over 1000 ms; it must work even
+when activation is hidden. Reduced motion preserves the timed activation,
+readouts and damage feedback using steady low-alpha cells and a gentle fade,
+without travelling noise or repeated flashes. It must not alter the map script.
+
+The editable [implant atlas sheet](ui/atlas/medlabs-implant.html) exposes a
+timeline, Replay and Hurt, and 4:3, 16:9, 21:9, 32:9 and 9:16 previews.
+`tools/ui/update_design_atlas.py` merges it into the full atlas. This specifies
+the retained replacement; its vehicle HUD migration remains tracked in the
+plan rather than being implied by the prototype.
+
+### 14.20 Recovery, death and loading continuity
+
+**MCC treatment recovery.** The opening of `mcc_2` is Kane regaining
+consciousness after medical treatment. Preserve the three authored fades,
+doctor dialogue, bed camera, objectives and release timing. During each white
+fade-in, recover acuity with a Gaussian blur falling from at most 20 dp to
+zero and saturation rising from 0.70 to 1.00, with a quiet warm peripheral
+shade. Recover smoothly through the fade and the following four seconds.
+The last white fade after leaving `mcc2_playerBed` ends the sequence; unrelated
+white fades later in the map do not trigger treatment recovery. The effect
+sits below the readable HUD and subtitles and covers the full viewport.
+
+**Death.** Preserve the original camera, respawn and fade-to-black deadlines.
+Over 1800 ms, smoothly drain scene saturation to 0.06 and soften it to
+3.4 dp sigma. A charcoal peripheral shade darkens the corners while the
+center retains scene detail. A restrained warm afterimage rises over 120 ms
+and decays by 1400 ms; reduced motion omits that accent. The HUD remains
+sharp, there is no camera shake or strobing, and revival, restore or changing
+the interface preference clears transient effect state. Classic retains the
+original view effects.
+
 ## Appendix A. Stock survey method
 
 The 1.1 survey read the 30 installed `q4base` archives of the Steam 1.4.2
@@ -3603,3 +3709,37 @@ line at 236 and the floor at 253.
 
 Register schema 13 supersedes ART-036, whose modal title stood on the raised top
 line, with ART-037.
+
+### Version 1.15
+
+Version 1.15 adds the measured Medical Labs implant activation as section
+14.19, including its 4650 ms lifetime, independent hurt pulse and full wide/tall
+composition. The atlas gains an editable sheet with five aspect ratios and
+timeline controls. Register schema 14 appends `FLOW-062` for its remaining
+retained vehicle-HUD migration.
+
+### Version 1.16
+
+Version 1.16 replaces the scope smear with a feathered Gaussian surround for
+every optic and specifies MCC treatment recovery and death grading (section
+14.20).
+
+### Version 1.17
+
+Remastered incoming transmission and voice graphs plot actual audio sample
+history, replacing fixed traces and synthetic level/phase animation. Silence
+and unavailable audio stay flat; pause and seeking follow playback. The atlas
+offers independent local audio playback for radio, received voice and your own
+transmission, without recording a microphone or uploading files. Classic keeps
+its measured texture and canned table. Register schema 16 supersedes `ART-029`
+with `ART-038`, carrying the EKG, mask, squad emblem and talker layout contracts.
+Other menu migrations and the complete-product acceptance gates stay open.
+
+### Versions 1.18–1.19: wheel placement and scene focus
+
+Version 1.18 keeps the original right-side wheel position and adds a saved,
+signed horizontal offset with zero centered. Version 1.19 follows the product
+owner’s request for quality soft focus on the scene: the wheel fades a full-view
+Gaussian focus pass beneath the HUD and its own artwork. Register schemas 17
+and 18 append `WID-036` (superseding `WID-033`) and `WID-037` (scene focus).
+The broader wheel and quick-chat acceptance remains open.

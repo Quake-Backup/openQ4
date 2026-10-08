@@ -263,6 +263,11 @@ public:
 	// just samples the raw wav file, it doesn't account for volume overrides in the
 	virtual	float			CurrentAmplitude() = 0;
 
+	// Actual decoded sample peaks, oldest to newest, at 60 Hz ending at the
+	// channel's playback cursor. Missing, stopped and silent audio is zero.
+	// Pre-volume metering; never uses authored shake data or no_flicker.
+	virtual void			AmplitudeHistory( s_channelType channel, float *peaks, int count ) = 0;
+
 	// for save games.  Index will always be > 0
 	virtual	int				Index() const = 0;
 };

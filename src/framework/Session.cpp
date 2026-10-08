@@ -72,6 +72,7 @@ idCVar	idSessionLocal::com_guid( "com_guid", "", CVAR_SYSTEM | CVAR_ARCHIVE | CV
 idCVar	idSessionLocal::com_lastQuicksave( "com_lastQuicksave", "Quicksave0", CVAR_SYSTEM | CVAR_ARCHIVE, "last quicksave slot" );
 idCVar	com_loadingContinueAutoAdvance( "com_loadingContinueAutoAdvance", "0", CVAR_SYSTEM | CVAR_INTEGER, "auto-accept the single-player loading-screen continue gate after N msec (testing), 0 = off", 0, 60000, idCmdSystem::ArgCompletion_Integer<0,60000> );
 idCVar	com_skipLoadingContinue( "com_skipLoadingContinue", "0", CVAR_SYSTEM | CVAR_BOOL, "skip the single-player loading-screen continue gate (testing)" );
+static idCVar ui_testGuiInGame( "ui_testGuiInGame", "0", CVAR_SYSTEM | CVAR_BOOL | CVAR_CHEAT, "draw the loaded game behind testGUI for transparent overlay validation" );
 idCVar	com_minLoadingGuiMsec( "com_minLoadingGuiMsec", "250", CVAR_SYSTEM | CVAR_INTEGER, "minimum time to show the loading GUI before blocking map work starts", 0, 2000, idCmdSystem::ArgCompletion_Integer<0,2000> );
 idCVar	com_showLevelLoadTimes( "com_showLevelLoadTimes", "1", CVAR_SYSTEM | CVAR_BOOL, "print detailed phase timings for level loads" );
 idCVar	com_skipLogoVideos( "com_skipLogoVideos", "1", CVAR_SYSTEM | CVAR_ARCHIVE | CVAR_BOOL, "skip startup logo videos and go straight to the main menu" );
@@ -8318,11 +8319,14 @@ void idSessionLocal::Draw() {
 			guiMsg->Redraw( presentationTime );
 		} 
 	} else if ( guiTest ) {
-		// if testing a gui, clear the screen and draw it
-		// clear the background, in case the tested gui is transparent
-		// NOTE that you can't use this for aviGame recording, it will tick at real presentation time between screenshots..
-		renderSystem->SetColor( colorBlack );
-		renderSystem->DrawStretchPic( 0, 0, 640, 480, 0, 0, 1, 1, declManager->FindMaterial( "_white" ) );
+		// Transparent optical overlays can be checked over a real render target
+		// without synthesizing zoom or other host input. Black remains default.
+		const bool scene = ui_testGuiInGame.GetBool() && mapSpawned && !com_skipGameDraw.GetBool() &&
+			GetLocalClientNum() >= 0 && game->Draw( GetLocalClientNum() );
+		if ( !scene ) {
+			renderSystem->SetColor( colorBlack );
+			renderSystem->DrawStretchPic( 0, 0, 640, 480, 0, 0, 1, 1, declManager->FindMaterial( "_white" ) );
+		}
 		guiTest->Redraw( presentationTime );
 	} else if ( guiActive ) {
 		

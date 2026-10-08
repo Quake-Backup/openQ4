@@ -32,6 +32,7 @@ If you have questions concerning this license or the applicable additional terms
 #include "DeviceContext.h"
 #include "Window.h"
 #include "UserInterfaceLocal.h"
+#include "AudioGraph.h"
 #include "SimpleWindow.h"
 
 namespace {
@@ -286,6 +287,9 @@ void idSimpleWindow::DrawBackground(const idRectangle &drawRect) {
 
 	if (background) {
 		if (matColor.w() > 0) {
+			if ( DrawPlaybackGraph( dc, gui, name.c_str(), background, drawRect, matColor ) ) {
+				return;
+			}
 			if ( ShouldDrawCinematicUnderlay( background, drawRect ) ) {
 				DrawCinematicUnderlay( dc );
 			} else if ( ShouldDrawSplashUnderlay( background, drawRect ) ) {

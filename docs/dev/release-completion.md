@@ -2,6 +2,40 @@
 
 ## 0.13.2 release candidate
 
+- [x] Lay out the gameplay HUD in visual specification section 14's Remastered
+  layout: the on-foot, multiplayer, walker and hover tank, flatbed and tram,
+  objectives and scoreboard (Tourney included) HUDs answer the stock GUIs' state
+  and events from generated retained documents, with the fields the stock GUIs
+  lack published by the game. [Remastered HUD](ui/remastered-hud.md).
+
+- [x] Route the screen-space gameplay HUD families through the retained UI,
+  including objectives, crosshairs, multiplayer score/chat/summary panels,
+  vehicles, cinematics and Awakening overlays, plus game-owned combat/input
+  indicators. Preserve stock GUI state and atomic fallback.
+  [Coverage, validation and remaining design scope](ui/hud-coverage.md).
+
+- [x] Connect the new vector ammo/health/armor status bar to normal SP/MP
+  gameplay, with Marine/Strogg variants, independent scale and safe inset,
+  and same-frame fallback to stock gauges. [Implementation and validation](ui/status-bar.md).
+
+- [x] Drive the incoming-transmission graph from decoded radio playback and
+  give the atlas separate audio-file playback for radio and voice graphs.
+  [Playback graph evidence and remaining voice integration](ui/audio-graphs.md).
+- [ ] Restore the multiplayer microphone capture/codec/playback backend before
+  qualifying live voice graphs; the inherited backend remains stubbed.
+- [x] Feather Gaussian focus outside every scope, preserve the MCC treatment
+  sequence while refining its recovery and add a restrained death grade.
+  Windowed GL/Vulkan gameplay, native layout/geometry and gate evidence are
+  recorded in `docs/dev/ui/retained-screens.md`; wider UI migration stays open.
+- [x] Add retained weapon scopes: SP/MP and vehicle scopes select the retained
+  documents with stock/mod fallback. Native screen/vector/routing tests and
+  windowed OpenGL/Vulkan gameplay captures are recorded in
+  `docs/dev/ui/retained-screens.md`.
+- [x] Add the Medical Labs implant activation to visual specification 1.15 and
+  the interactive atlas, preserving stock timing and specifying wide/tall edge
+  anchors. This completes the requested design/atlas coverage; its full retained
+  vehicle-HUD migration stays explicit as `FLOW-062`.
+
 - [x] Make temporal AA production quality and the default upscaler (idTech 6
   roadmap: complete motion ownership). The velocity pass now owns every moving
   surface per pixel on OpenGL and Vulkan: exact vectors for rigid entities,
@@ -3031,3 +3065,10 @@ Complete this section before release notes claim macOS support beyond the curren
 - [ ] Complete issue #99 high-refresh qualification: repeat human SP/MP feel, projectile/viewweapon, moving-platform, and cut-heavy camera checks on the final package; validate on Apple and dedicated high-refresh hardware; and decide the release scope for multiplayer actor/shadow presentation, bespoke FX/BSE owners, alternate cameras, and raw-input compensation. Remote multiplayer actors and the local body/world-weapon stencil shadows remain explicitly outside the current generic presentation pass.
 - [ ] Run macOS `Signoff -MacOSGraphicsBridge both`, complete the manual hardware checklist, then run `CollectResults -MacOSRunId <id> -MacOSGraphicsBridge both -RequireCompletedSignoffChecklist` on real Apple hardware and attach the auto-collected, auto-validated `.tmp/macos-vm/results/openq4-macos-results-<run-id>.tar.gz` evidence for input devices, audio devices, display modes, SP gameplay, MP `renderer-mp-smoke`, and in-game OpenGL/Metal renderer coverage beyond hosted CI compile/link/package checks; record the accepted archive in `docs/dev/macos-signoff-evidence.md`.
 - [ ] Replace temporary MSVC compatibility flag (`/Zc:strictStrings-`) with full strict-strings codebase compliance.
+
+### Native weapon wheels and horizontal placement (7 October 2026)
+
+- Replaced the `ui_retained` wheel bypass with native vector Marine/Strogg documents, stock/expansion rosters, live ammo, selection and transitions; added MP support through the existing reliable impulse path.
+- Added archived `ui_weaponWheelOffset` (default 27; 0 centered; −40..40) and a localized Game settings control; safety fitting preserves the preference on narrow views. Classic remains selectable.
+- Wheel scene focus uses an eased 8 dp Gaussian pass before the HUD in both SP and MP, covering wide/tall views and respecting the opaque-backing option.
+- Evidence and boundaries: [weapon wheels](ui/weapon-wheels.md). Full wheel/quick-chat product acceptance remains open.

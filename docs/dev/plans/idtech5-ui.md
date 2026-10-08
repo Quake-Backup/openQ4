@@ -19,6 +19,22 @@ high-quality UI product at an id Tech 5 standard.
 The [product requirement register](../ui/product-requirements.md) tracks the
 full normative scope, milestone ownership and acceptance evidence.
 
+The ammo/health/armor [status bar](../ui/status-bar.md) now has a shared SP/MP
+player bridge and separate Marine/Strogg vector documents, with live values,
+centered bottom placement and stock fallback. The [HUD presentation bridge](../ui/hud-coverage.md)
+now covers the remaining screen-space HUD families and game-owned overlays.
+The [Remastered HUD](../ui/remastered-hud.md) now lays out the on-foot,
+multiplayer, vehicle, objectives and scoreboard HUDs on the section 14.4
+anchors; the remaining displays and world-surface migration requirements remain.
+
+The 7 October scope increment supplies the three retained weapon scopes through
+the shared SP/MP preference gate. Source, tests and engine capture evidence are
+recorded in [retained screens](../ui/retained-screens.md).
+Visual specification 1.15 and the editable implant atlas sheet explicitly cover
+Medical Labs `medchange`, including its full-view wide/tall composition and
+activation/hurt timing. Its vector presentation now routes through the HUD bridge;
+the complete Remastered composition in `FLOW-062` and the larger vehicle/editor gates remain.
+
 [Visual specification 1.1](../ui-visual-design.md) (26 September 2026) records
 measured stock geometry, palette, type, motion and composition from the
 effective retail GUIs, and corrects plate, panel, checkbox and slider anatomy.
@@ -64,13 +80,18 @@ it. Version 1.14 measures the modal against the stock (the title hangs in the
 lit slot and the silhouette is inset in its rectangle); register schema 13
 supersedes one row and appends one for it.
 
-The controller weapon wheel already in openQ4-game (`356dfe56`: 12 slots,
-centered at 77% of the width, cursor selection) differs from section 14.6
-(every weapon of the mode, thirteen under The Awakening, centered on the aim
-point, stick-angle selection).
+The wheel's hardcoded classic draw path previously bypassed `ui_retained`.
+Native Marine/Strogg vector documents now bind the player's inventory, ammo and
+selection; the eleven-position stock and thirteen-position Awakening rosters
+share player logic with MP's reliable equip route. Visual 1.18 explicitly keeps
+the original 77% horizontal default through archived `ui_weaponWheelOffset 27`;
+zero centers, negative moves left, and narrow views fit without changing the
+preference. Visual 1.19 adds smooth Gaussian scene focus before the HUD,
+shared by SP and MP and faded with the wheel. See [weapon wheels](../ui/weapon-wheels.md) for runtime evidence and
+remaining wider section 14.6 work (including quick chat).
 openQ4-game's hit marker is on by default in single player and multiplayer and
 replaces the stock pop, where section 14.7 keeps the pop and offers markers in
-multiplayer only. Reconcile both before implementing those sections.
+multiplayer only. The hit-marker discrepancy remains to be reconciled before that section is accepted.
 
 The [17 September implementation audit](../ui/masked-input-review.md) refreshes
 delivery priorities and repairs vector-mask pointer/focus eligibility. The
@@ -666,3 +687,49 @@ stock screens](../ui/retained-screens.md#falling-back-to-the-stock-screens). The
 remaining stock pages, the editor and every migration and final gate stay open;
 `SHIP-001` and `GATE-007` still require every stock route to have a qualified
 retained replacement.
+
+## View effects and the HUD (7-8 October 2026)
+
+All three scopes soften the view beyond a feathered optical aperture. The
+`mcc_2` treatment gains gradual focus recovery tied to its original white fades;
+death gains restrained color loss, peripheral shading and a brief afterimage.
+These effects fill wide and tall views without stretching the optical center or
+obscuring HUD text. The shared SP/MP implementation preserves the original
+game-state timing.
+
+### 7 October 2026: playback-driven graphs
+
+Radio now uses a dedicated-channel PCM history through both legacy HUD drawing
+paths, with silence, pause, stop and source changes reflected directly. The
+atlas's radio and two voice sources use independent local audio playback.
+See [implementation and evidence](../ui/audio-graphs.md). The MP drawing adapter
+accepts separate incoming/outgoing stream bindings, but microphone voice capture,
+codec and playback remain stubbed and are explicitly unqualified. Complete
+Remastered HUD layout/behavior migration and other platform acceptance remain open.
+
+### 7 October 2026: complete screen-space HUD presentation routing
+
+The [HUD presentation bridge](../ui/hud-coverage.md) routes the
+17 retail and 10 expansion screen-space HUD roots through the retained
+renderer, with canonical vector art, preserved gameplay GUI state and atomic
+stock fallback. Game-owned hit markers, damage numbers, movement input and
+the client network graph use the same submission path. This is presentation
+coverage; the remaining Remastered layout/behavior enhancements, world-surface
+GUI migration and product/editor/platform gates remain open.
+
+### 8 October 2026: the Remastered HUD layout
+
+The [Remastered HUD](../ui/remastered-hud.md) pairs each covered stock HUD GUI
+with a generated retained document that answers the same state and events and
+lays its groups out on the section 14.4 anchors: the on-foot Marine and Strogg
+HUDs (with The Awakening's), the multiplayer HUD, the walker and hover tank
+HUD, the flatbed and tram gauges, the objectives display and notices, and the
+scoreboard. The game publishes the fields the stock GUIs lack (structured kill
+feed and chat, ordinals and gaps, the jump key, every objective, scoreboard
+rows). Event replay before a HUD's first frame, copy-on-write motion values
+with undoable event sampling, and frame-only incremental motion application
+keep the large documents cheap. `openq4-ui-remastered-hud` checks every
+document; captures cover gameplay in single player, multiplayer, a vehicle and
+the objectives. The scoreboard includes Tourney's bracket tree. The match
+summary, the chat entry, the air-defence cannon and The Awakening's vehicle
+displays remain on the stock layout.

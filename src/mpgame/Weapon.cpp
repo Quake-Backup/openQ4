@@ -13,6 +13,7 @@
 #include "ai/AI.h"
 #include "ai/AI_Manager.h"
 #include "client/ClientEffect.h"
+#include "../game/gamesys/RetainedScope.h"
 //#include "../renderer/tr_local.h"
 
 /*
@@ -648,6 +649,7 @@ rvWeapon::rvWeapon
 */
 rvWeapon::rvWeapon ( void ) {
 	viewModel	= NULL;
+	zoomGui = NULL;
 	worldModel	= NULL;
 	weaponDef	= NULL;
 	owner			= NULL;
@@ -677,6 +679,7 @@ rvWeapon::~rvWeapon
 ================
 */
 rvWeapon::~rvWeapon( void ) {
+	if ( zoomGui && zoomGui->IsUniqued() ) uiManager->DeAlloc( zoomGui );
 	int i;
 	
 	// Free all current light defs
@@ -815,7 +818,9 @@ void rvWeapon::Spawn ( void ) {
 
 	// Zoom
 	zoomFov = spawnArgs.GetInt( "zoomFov", "-1" );
-	zoomGui  = uiManager->FindGui ( spawnArgs.GetString ( "gui_zoom", "" ), true );
+	zoomGui  = uiManager->FindGui ( spawnArgs.GetString ( "gui_zoom", "" ), true, true );
+	zoomGuiRequested.Clear();
+	OpenQ4_UpdateScopeGui( zoomGui, zoomGuiRequested, spawnArgs );
 	zoomTime = spawnArgs.GetFloat ( "zoomTime", ".15" );
 	wfl.zoomHideCrosshair = spawnArgs.GetBool ( "zoomHideCrosshair", "1" );
 
@@ -2136,6 +2141,7 @@ void rvWeapon::Restore ( idRestoreGame *savefile ) {
 	// Zoom
 	savefile->ReadInt			( zoomFov );
 	savefile->ReadUserInterface	( zoomGui, &spawnArgs );
+	zoomGuiRequested.Clear();
 	savefile->ReadFloat			( zoomTime );
 
 	// Lights
@@ -2802,6 +2808,7 @@ rvWeapon::UpdateGUI
 ================
 */
 void rvWeapon::UpdateGUI( void ) {
+	OpenQ4_UpdateScopeGui( zoomGui, zoomGuiRequested, spawnArgs );
 	idUserInterface* gui;
 	
 	if ( !viewModel ) {

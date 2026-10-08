@@ -71,6 +71,11 @@ template<class T> struct idList {
         auto it=std::find(values.begin(),values.end(),value);
         if(it!=values.end()) values.erase(it);
     }
+    void Clear() { values.clear(); }
+    void DeleteContents(bool clear) {
+        for (auto value:values) delete value;
+        if (clear) values.clear();
+    }
 };
 struct idVec4 { void Zero() {} } vec4_origin;
 struct idRectangle {};
@@ -117,9 +122,15 @@ class idDemoFile;
 '''
 
 MANAGER = r'''
+static int hudDestroyed=0,hudPrecacheCalls=0;
+struct idRetainedHud {
+    ~idRetainedHud() { ++hudDestroyed; }
+    static void Precache() { ++hudPrecacheCalls; }
+};
 class idUserInterfaceManagerLocal {
 public:
     void Shutdown();
+    void ClearHudPrimitives();
     void Touch(const char*);
     void BeginLevelLoad();
     void EndLevelLoad();
@@ -141,6 +152,8 @@ public:
     void RunTimeEvents(idUserInterface*,int);
     void PumpApplicationActions(UI_ApplicationCommandCallback,void*,idUserInterface*);
     idList<idUserInterfaceManaged*> allocations,guis,alwaysThinkGUIs,demoGuis;
+    idList<idRetainedHud*> generatedHuds;
+    idList<idStr> generatedHudNames;
     unsigned long long nextAllocationId=0;
     bool clipboardBoundaryActive=false,clipboardBoundaryFailed=false;
     bool nativeBoundaryActive=false,nativeBoundaryFailed=false;
@@ -282,6 +295,7 @@ Commands* cmdSystem=&commands;
 struct idChatWindow { static void Reset() {} };
 void RetainedUI_Shutdown() {
     assert(uiManagerLocal.allocations.Num()==0);
+    assert(uiManagerLocal.generatedHuds.Num()==0 && uiManagerLocal.generatedHudNames.Num()==0);
     ++retainedShutdowns;
 }
 struct Common {
@@ -443,7 +457,14 @@ int main() {
     // The wrapper remains the material owner; its child must not be purged.
     declarations.materials.push_back({deferred});
     deferred->SetInteractive(false);
+    manager.generatedHuds.Append(new idRetainedHud);
+    manager.generatedHuds.Append(new idRetainedHud);
+    manager.generatedHudNames.Append("native/hit-marker");
+    manager.generatedHudNames.Append("native/damage-numbers");
+    const int beforeHudPrecache=hudPrecacheCalls;
     manager.BeginLevelLoad(); manager.EndLevelLoad();
+    assert(hudDestroyed==2 && manager.generatedHuds.Num()==0 && manager.generatedHudNames.Num()==0);
+    assert(hudPrecacheCalls==beforeHudPrecache+1);
     assert(manager.allocations.Num()==1 && manager.guis[0]==deferred);
     declarations.materials.clear();
     delete deferred; Empty();
@@ -560,12 +581,15 @@ int main() {
     // still owned. Shutdown destroys both exactly once and is repeatable.
     auto dual=Load("dual.gui"); dual->PublishDemo(); dual->ChangeThinking(true);
     manager.Alloc();
+    manager.generatedHuds.Append(new idRetainedHud);
+    manager.generatedHudNames.Append("native/lagometer");
     const int beforeShutdown=destroyed;
     manager.Shutdown();
+    assert(hudDestroyed==3);
     assert(destroyed==beforeShutdown+1); Empty(); // blank deferred has no child
     manager.Shutdown(); Empty();
     assert(recycledAllocation==nullptr && retainedShutdowns==6);
-    std::puts("GUI manager lifecycle: deferred routing/state/save/actions, ownership, direct deletion, refs, uniqueness, material retention, reload and callback address reuse passed");
+    std::puts("GUI manager lifecycle: HUD cache retirement, deferred routing/state/save/actions, ownership, direct deletion, refs, uniqueness, material retention, reload and callback address reuse passed");
 }
 '''
 
@@ -576,6 +600,7 @@ def production_source():
     public_header = (ROOT / 'src/ui/UserInterface.h').read_text(encoding='utf-8')
     deferred_header = (ROOT / 'src/ui/UserInterfaceDeferred.h').read_text(encoding='utf-8')
     deferred_source = (ROOT / 'src/ui/UserInterfaceDeferred.cpp').read_text(encoding='utf-8')
+    hud_source = (ROOT / 'src/ui/RetainedHud.cpp').read_text(encoding='utf-8')
     public = function_body(public_header, 'class idUserInterface {') + ';\n'
     managed = function_body(header, 'class idUserInterfaceManaged :') + ';\n'
     declarations = header[header.index('idUserInterfaceManaged *UI_CreateForPath'):]
@@ -619,6 +644,7 @@ def production_source():
     return ('#include "src/ui/UserInterfaceText.h"\n#include "src/ui/UserInterfaceClipboard.h"\n#include "src/ui/UserInterfaceNativeText.h"\n#include <limits>\n' +
             'namespace openq4 { bool SDL3_ReadTextClipboard(std::string&,std::string&) { return false; } bool SDL3_WriteTextClipboard(const std::string&,std::string&) { return false; } }\n' + SUPPORT + public + managed + declarations + deferred + MANAGER +
             '\n'.join(function_body(source, signature) for signature in signatures) +
+            function_body(hud_source, 'void idUserInterfaceManagerLocal::ClearHudPrimitives()') +
             deferred_source[deferred_source.index('idUserInterfaceDeferred::idUserInterfaceDeferred()'):])
 
 

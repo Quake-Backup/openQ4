@@ -2690,6 +2690,41 @@
       "accessibility": "Slider with paired edit field."
     },
     {
+      "id": "game.controller.wheel_offset",
+      "pane": "Game Options",
+      "section": "Controller",
+      "path": "Settings > Game Options > Controller > Wheel Horizontal Offset",
+      "source": "game",
+      "container": "set_game_wheel_offset",
+      "widgets": [
+        "set_game_wheel_offset_slider_bar",
+        "set_game_wheel_offset_value"
+      ],
+      "edit_fields": [
+        {
+          "name": "set_game_wheel_offset_value",
+          "maxchars": 4,
+          "numeric": true
+        }
+      ],
+      "widget_type": "slider_edit",
+      "label_key": "#str_230140",
+      "target_type": "cvar",
+      "target": "ui_weaponWheelOffset",
+      "default": "27",
+      "ui_range": {
+        "low": "-40",
+        "high": "40",
+        "step": "1"
+      },
+      "cvar_range": {
+        "low": "-40",
+        "high": "40"
+      },
+      "restart_required": false,
+      "accessibility": "Signed numeric edit paired with a slider. Zero centers; positive moves right, negative left. Saved preference survives narrow-view fitting."
+    },
+    {
       "id": "game.controller.look_curve",
       "pane": "Game Options",
       "section": "Controller",

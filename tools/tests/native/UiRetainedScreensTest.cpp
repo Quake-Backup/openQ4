@@ -26,6 +26,7 @@ struct ScreenHost final : Host {
 	struct Submission { std::vector<Vertex> vertices; std::uintptr_t material = 0; };
 	std::vector<Submission> draws;
 	std::vector<std::string> materials;
+	std::set<std::string> missingMaterials;
 	std::uintptr_t multiply = 7;
 	bool reducedMotion = false;
 	int errors = 0;
@@ -36,6 +37,7 @@ struct ScreenHost final : Host {
 	// The engine reports soft focus through ui_retainedSoftFocus and draws it
 	// through SoftenBackdrop; without it the runtime leaves the backdrop.
 	bool softFocus = false;
+	bool opaqueBacking = false;
 	struct Softened { float sigma = 0, saturation = 1; Bounds region; };
 	std::vector<Softened> softened;
 	std::string language = "english";
@@ -55,6 +57,7 @@ struct ScreenHost final : Host {
 		if (type != 1) return false;
 		if (name == "ui_retainedReducedMotion") { value = reducedMotion; return true; }
 		if (name == "ui_retainedSoftFocus") { value = softFocus; return true; }
+		if (name == "ui_retainedOpaqueBacking") { value = opaqueBacking; return true; }
 		return false;
 	}
 	bool SoftenBackdrop(std::uint32_t destination, float sigma, float saturation, const Bounds& region) override {
@@ -66,6 +69,7 @@ struct ScreenHost final : Host {
 	}
 	std::uintptr_t LoadMaterial(const std::string& name, int& width, int& height) override {
 		materials.push_back(name);
+		if (missingMaterials.contains(name)) { width=height=0; return 0; }
 		// Fonts and pictures: a 4:3 picture, so cover and contain differ at 16:9.
 		width = 640; height = 480;
 		return 100+materials.size();
@@ -112,6 +116,8 @@ static void CheckSchema() {
 	Document document; std::vector<Diagnostic> diagnostics;
 	Check(document.Load(Wrap(picture,R"(,"canvas":{"height":720})"),diagnostics),"image node, fit, blend and tint compile");
 	Check(document.Model().canvasHeight == 720,"view-height canvas recorded");
+	Check(Loads(Wrap(picture,R"(,"canvas":{"height":720,"minWidth":960})")) &&
+		!Loads(Wrap(picture,R"(,"canvas":{"height":720,"minWidth":100})")),"optional minimum canvas width validates and is bounded");
 	const auto markup = document.BuildMarkup();
 	Check(markup.find("decorator:image(material:q4-add/gfx/guis/loadscreens/generic none cover center center)") != std::string::npos,
 		"additive image decorator resolves from the VFS root with its fit and alignment");
@@ -143,6 +149,11 @@ static void CheckSchema() {
 	Viewport viewport; viewport.width = 1920; viewport.height = 1080; viewport.displayScale = 2; viewport.userScale = 1.5f;
 	viewport.canvasHeight = 720;
 	Check(Near(viewport.DpRatio(),1.5f,.001f),"a view-height canvas replaces density and user scale");
+	viewport.canvasMinWidth = 960;
+	viewport.width = 720; viewport.height = 1280;
+	Check(Near(viewport.DpRatio(),.75f,.001f),"portrait fits the center screen's width without stretching");
+	viewport.width = 2560; viewport.height = 1080;
+	Check(Near(viewport.DpRatio(),1.5f,.001f),"wide views keep the center screen's height");
 	viewport.canvasHeight = 0;
 	Check(Near(viewport.DpRatio(),3,.001f),"display density applies without a canvas");
 }
@@ -209,8 +220,22 @@ static void CheckTransformedClip(ScreenHost& host) {
 			Check(vertices > 0 && Near(minX,clip.x+10,.01f) && Near(maxX-minX,clip.width,.01f),"a translated overflow clip cuts its content exactly");
 			Check(statistics.clipMasks > 0 && statistics.clipMaskFallbacks == 0,"a translated clip mask is an exact rectangle");
 		} else {
-			Check(vertices > 0 && maxX-minX < clip.width+2,"a rotated overflow clip still bounds its content");
-			Check(statistics.clipMaskFallbacks > 0,"a rotated clip mask is counted as approximate");
+			// A rotated box is a convex quadrilateral: every emitted vertex
+			// lies inside all four of its rotated edges, not just its bounds.
+			Check(vertices > 0 && maxX-minX < clip.width+2,"a rotated overflow clip bounds its content");
+			Check(statistics.clipMasks > 0 && statistics.clipMaskFallbacks == 0,"a rotated clip mask is exact");
+			const float angle = 10*3.14159265f/180, c = std::cos(angle), s = std::sin(angle);
+			// The clip box (10..60 x 0..10 dp before the root's rotation about its centre).
+			Bounds root; runtime.GetBounds("root",root);
+			const float cx = root.x+root.width/2, cy = root.y+root.height/2;
+			for (const auto& draw : host.draws) for (const auto& vertex : draw.vertices) {
+				// Undo the root's translation (10, 20) and its rotation about
+				// its centre, then compare with the laid-out box.
+				const float dx = vertex.x-10-cx, dy = vertex.y-20-cy;
+				const float ux = c*dx+s*dy+cx, uy = -s*dx+c*dy+cy;
+				Check(ux >= clip.x-.05f && ux <= clip.x+clip.width+.05f && uy >= clip.y-.05f && uy <= clip.y+clip.height+.05f,
+					"a rotated overflow clip cuts its content to the rotated box");
+			}
 		}
 	}
 }
@@ -1277,8 +1302,174 @@ static void CheckWelcome(ScreenHost& host, const char* path) {
 	host.softFocus = false;
 }
 
+static void CheckScopes(ScreenHost& host, char** paths) {
+	host.softFocus = true;
+	for (int kind = 0; kind < 3; ++kind) {
+		std::fprintf(stderr,"Checking scope %d\n",kind);
+		const auto source = Read(paths[kind]);
+		Document document; std::vector<Diagnostic> diagnostics;
+		const bool valid = document.Load(source,diagnostics);
+		for (const auto& diagnostic : diagnostics) std::fprintf(stderr,"scope: %s\n",diagnostic.message.c_str());
+		Check(valid && document.Model().canvasMinWidth == 960,"scope document validates with an isotropic center");
+		Runtime runtime(host);
+		Check(runtime.Initialize() && runtime.LoadDocument(source,"guis/weapons/scope.q4ui",diagnostics),"scope loads");
+		Viewport viewport; viewport.canvasHeight = 720; viewport.canvasMinWidth = 960;
+		for (const auto size : {std::pair{640,360},std::pair{1280,360},std::pair{360,640},std::pair{3840,2160}}) {
+			viewport.width = size.first; viewport.height = size.second;
+			host.softened.clear();
+			runtime.Frame(viewport,1);
+			Bounds center, surround;
+			const float scale = viewport.DpRatio();
+			Check(runtime.GetBounds("optical-center",center) && Near(center.width,960*scale) && Near(center.height,720*scale) &&
+				Near(center.x+center.width*.5f,viewport.width*.5f) && Near(center.y+center.height*.5f,viewport.height*.5f),"wide and tall optical centers stay round and centered");
+			Check(runtime.GetBounds(kind == 0 ? "veil" : "outer-haze",surround) && Near(surround.width,static_cast<float>(viewport.width)) && Near(surround.height,static_cast<float>(viewport.height)),"scope surround covers the full view");
+			Check(!host.softened.empty() && Near(host.softened.back().sigma,13.5f*scale,.05f) && runtime.Statistics().maskApplications > 0,
+				"every scope feathers Gaussian focus through an aperture mask");
+			if (size.first == 3840) {
+				size_t vertices = 0; for (const auto& draw : host.draws) vertices += draw.vertices.size();
+				std::fprintf(stderr,"Scope %d at 4K: %zu vertices\n",kind,vertices);
+				Check(vertices * 64 < 48 * 1024 * 1024,"4K optics leave at least half the Vulkan ring for gameplay and composition");
+			}
+			host.draws.clear();
+		}
+		std::string error;
+		Check(runtime.SetState({{"playerYaw",37.0}},error,2),"scope accepts view yaw");
+		runtime.Frame(viewport,2);
+		if (kind != 1) {
+			const auto compass = runtime.PresentedValue("compass","transform");
+			Check(compass && Near(static_cast<float>(compass->data[4]),37,.01f),"scope compass follows view yaw");
+		} else {
+			Check(runtime.SetState({{"player_ammo",1.0}},error,2.1),"rail clip follows live ammo");
+			runtime.Frame(viewport,2.1);
+			Check(runtime.PresentedValue("clip-0","display")->text == "none" && runtime.PresentedValue("clip-1","display")->text == "none" && runtime.PresentedValue("clip-2","display")->text == "block","rail cells empty from the top");
+		}
+		if (kind == 2) {
+			Runtime::EventEffects effects;
+			Check(runtime.SetState({{"lockStatus",1.0},{"lockYaw",80.0},{"lockRange",std::string("12.4")},{"lockTime",std::string("2.0")}},error,3) && runtime.RunEvent("lockAquired",3,effects,error),"nailgun acquires a target");
+			runtime.Frame(viewport,3.2);
+			Check(runtime.PresentedValue("readouts","opacity")->data[0] == 1 && runtime.PresentedValue("range","text")->text == "12.4","locked readouts appear");
+			Check(Near(float(runtime.PresentedValue("glow","opacity")->data[0]),1,.001f),"one glow reaches the locked tint");
+			for (const auto size : {std::pair{1280,720},std::pair{3840,2160}}) {
+				viewport.width = size.first; viewport.height = size.second; host.draws.clear(); runtime.Frame(viewport,3.3);
+				size_t vertices = 0; for (const auto& draw : host.draws) vertices += draw.vertices.size();
+				std::fprintf(stderr,"Locked nailgun at %dx%d: %zu vertices\n",size.first,size.second,vertices);
+				Check(vertices * 64 < 48 * 1024 * 1024,"locked optic leaves geometry space for gameplay");
+			}
+			Check(runtime.RunEvent("lockStop",4,effects,error),"nailgun releases target");
+			runtime.Frame(viewport,4.4);
+			Check(runtime.PresentedValue("readouts","opacity")->data[0] == 0 && runtime.PresentedValue("lock-arrow","opacity")->data[0] == 0,"release clears lock furniture");
+			Check(Near(float(runtime.PresentedValue("glow","opacity")->data[0]),.44f,.001f),"release restores the resting light");
+		}
+	}
+	host.softFocus = false;
+}
+
+static void CheckViewEffects(ScreenHost& host, const char* path) {
+	Runtime runtime(host); std::vector<Diagnostic> diagnostics; std::string error; Runtime::EventEffects effects;
+	const bool loaded = runtime.Initialize() && runtime.LoadDocument(Read(path),"guis/continuity.q4ui",diagnostics);
+	for (const auto& d : diagnostics) std::fprintf(stderr,"%s %s\n",d.pointer.c_str(),d.message.c_str());
+	Check(loaded,"game effects load in the native runtime");
+	Viewport viewport; viewport.canvasHeight = 720; viewport.canvasMinWidth = 960;
+	host.softFocus = true; Check(runtime.SetState({{"death_amount",1.0}},error,0),"death input accepts full amount");
+	for (const auto size : {std::pair{1280,720},std::pair{2560,1080},std::pair{720,1280}}) {
+		viewport.width = size.first; viewport.height = size.second; host.softened.clear(); host.draws.clear(); runtime.Frame(viewport,1);
+		Bounds bounds; Check(runtime.GetBounds("screen",bounds) && Near(bounds.width,float(size.first)) && Near(bounds.height,float(size.second)),"game effects fill wide and tall views");
+		Check(!host.softened.empty() && Near(host.softened.back().saturation,.06f,.001f),"death grades the scene below the HUD");
+	}
+	Check(runtime.SetState({{"death_amount",0.0},{"recovery_amount",1.0}},error,2),"recovery is independent of death"); host.softened.clear(); runtime.Frame(viewport,2);
+	Check(!host.softened.empty() && Near(host.softened.back().sigma,20*viewport.DpRatio(),.01f),"recovery starts with soft acuity");
+	Check(runtime.SetState({{"recovery_amount",0.0}},error,3),"recovery completes"); host.softened.clear(); runtime.Frame(viewport,3);
+	Check(host.softened.empty(),"no inactive game-effect backdrop passes");
+	for (const auto size : {std::pair{1280,720},std::pair{2560,720},std::pair{540,960}}) {
+		viewport.width = size.first; viewport.height = size.second;
+		Check(runtime.SetState({{"wheel_amount",.5}},error,4),"wheel focus fades independently of death and recovery");
+		host.softened.clear(); runtime.Frame(viewport,4);
+		Check(host.softened.size() == 1 && Near(host.softened[0].sigma,4*viewport.DpRatio(),.01f) &&
+			Near(host.softened[0].saturation,.97f,.001f),"one gentle Gaussian scene pass at partial wheel blend");
+		Bounds bounds; Check(runtime.GetBounds("wheel-focus",bounds) && Near(bounds.width,float(size.first)) &&
+			Near(bounds.height,float(size.second)),"wheel focus covers the entire wide or tall viewport");
+		Check(runtime.SetState({{"wheel_amount",1.0}},error,5),"wheel reaches full focus");
+		host.softened.clear(); runtime.Frame(viewport,5);
+		Check(host.softened.size() == 1 && Near(host.softened[0].sigma,8*viewport.DpRatio(),.01f),"full wheel uses an eight dp Gaussian sigma");
+		Check(runtime.SetState({{"wheel_amount",0.0}},error,6),"wheel release clears focus");
+		host.softened.clear(); runtime.Frame(viewport,6);
+		Check(host.softened.empty(),"closed wheel costs no scene filter pass");
+	}
+	host.softFocus = false;
+}
+
+static void CheckWeaponWheels(ScreenHost& host, char** paths) {
+	for (int variant = 0; variant < 4; ++variant) {
+		Runtime wheel(host); std::vector<Diagnostic> diagnostics; std::string error; Runtime::EventEffects effects;
+		const bool loaded = wheel.Initialize() && wheel.LoadDocument(Read(paths[variant]),"guis/hud/weapon_wheel.q4ui",diagnostics);
+		for (const auto& d:diagnostics) std::fprintf(stderr,"wheel %s: %s\n",d.pointer.c_str(),d.message.c_str());
+		Check(loaded,"native wheel document loads");
+		const int slots = variant % 2 ? 13 : 11;
+		StateValues state = {{"blend",1.0},{"selected",2.0},{"weaponName",std::string("Shotgun")},{"ammo",std::string("8 / 24")}};
+		for (int i=0;i<slots;++i) {
+			const std::string slot="slot"+std::to_string(i);
+			state[slot+".owned"]=i!=4; state[slot+".count"]=i==3?0.0:24.0;
+			state[slot+".reserve"]=std::string("24"); state[slot+".fill"]=.5; state[slot+".index"]=std::to_string(i+1);
+		}
+		Check(wheel.SetState(state,error,0),"player inventory and localized readouts bind");
+		Viewport viewport; viewport.canvasHeight=720;
+		for (const auto size : {std::pair{1280,720},std::pair{1920,540},std::pair{405,720},std::pair{3840,2160}}) {
+			viewport.width=size.first; viewport.height=size.second;
+			const double width=720.0*size.first/size.second, fit=std::min(1.0,(width-32)/560);
+			const double reach=std::max(0.0,width*.5-264*fit-16);
+			for (const double preference : {27.0,0.0,-40.0,40.0}) {
+				const double offset=std::clamp(width*preference/100,-reach,reach);
+				Check(wheel.SetState({{"offset",offset},{"fit",fit}},error,1),"viewport placement updates");
+				host.draws.clear(); wheel.Frame(viewport,1);
+				const auto placement=wheel.PresentedValue("wheel-center","transform");
+				Check(placement && Near(float(placement->data[0]),float(offset),.01f) && Near(float(placement->data[2]),float(fit),.01f),"wheel preserves placement and isotropic safety fit");
+				Check(wheel.PresentedValue("slot4-contents","opacity")->data[0]==0,"unowned weapon content stays hidden");
+				Check(wheel.PresentedValue("slot3-empty","opacity")->data[0]==1,"empty ammo prohibition is shown");
+				Check(wheel.PresentedValue("slot2-cell3","opacity")->data[0]==1 && wheel.PresentedValue("slot2-cell4","opacity")->data[0]==0,"half reserve fills exactly four cells");
+				Check(wheel.PresentedValue("hub-ammo","text")->text=="8 / 24","live clip and reserve reach hub");
+				size_t vertices=0; for(const auto& draw:host.draws) vertices+=draw.vertices.size();
+				Check(vertices*64<48*1024*1024,"wheel leaves half of the Vulkan GUI ring for gameplay");
+			}
+		}
+		Check(wheel.RunEvent("open",2,effects,error),"wheel open transition runs"); wheel.Frame(viewport,2.4);
+		Check(wheel.PresentedValue("slot0-entry","opacity")->data[0]==1,"opening finishes fully visible");
+		Check(wheel.RunEvent("close",3,effects,error),"wheel close transition runs"); wheel.Frame(viewport,3.2);
+		Check(wheel.PresentedValue("slot0-entry","opacity")->data[0]==0,"closing removes the plates");
+		wheel.SetReducedMotion(true,4); Check(wheel.RunEvent("open",4,effects,error),"reduced-motion open runs");wheel.Frame(viewport,4.09);
+		Check(wheel.PresentedValue("slot0-entry","opacity")->data[0]==1,"reduced motion finishes within 80ms");
+		host.draws.clear();
+	}
+}
+
+#include "UiStatusBarChecks.inl"
+
+#include "UiHudChecks.inl"
+#include "UiRemasteredHudChecks.inl"
 int main(int argc, char** argv) {
-	Check(argc == 9,"usage: title.q4ui pause.q4ui loading.q4ui pause_strogg.q4ui singleplayer.q4ui campaigns.q4ui mp_escape.q4ui mp_welcome.q4ui");
+ if (argc >= 3 && std::string(argv[1]) == "--hud-bench") {
+     for (int i = 2; i < argc; ++i) BenchRemasteredHud(argv[i]);
+     return 0;
+ }
+ if (argc >= 3 && std::string(argv[1]) == "--remastered") {
+     for (int i = 2; i < argc; ++i) {
+         const std::string path = argv[i];
+         const bool strogg = path.find("strogg") != std::string::npos, awakening = path.find("awakening") != std::string::npos;
+         ScreenHost host;
+         if (path.find("_mp") != std::string::npos) { CheckRemasteredMpHud(host,argv[i]); continue; }
+         if (path.find("_vehicle") != std::string::npos) { CheckRemasteredVehicleHud(host,argv[i]); continue; }
+         if (path.find("_objectives") != std::string::npos) { CheckRemasteredObjectivesHud(host,argv[i],strogg); continue; }
+         if (path.find("_scoreboard") != std::string::npos) { CheckRemasteredScoreboardHud(host,argv[i]); continue; }
+         CheckRemasteredHud(host,argv[i],std::string("openq4.hud.remastered.")+(strogg ? "strogg" : "marine")+(awakening ? ".awakening" : ""),strogg);
+     }
+     std::printf("Remastered HUD: %d checks passed\n",checks); return 0;
+ }
+ if (argc == 2) { CheckHud(argv[1]); std::printf("HUD: %d checks passed\n",checks); return 0; }
+ if (argc == 3) {
+     ScreenHost host; CheckStatusBars(host,argv+1);
+     Check(host.errors == 0,"no retained status diagnostics");
+     std::printf("retained status bar: %d checks passed\n",checks); return 0;
+ }
+ Check(argc == 17,"usage: title pause loading pause_strogg singleplayer campaigns mp_escape mp_welcome machinegun railgun nailgun effects wheel_marine wheel_marine_awakening wheel_strogg wheel_strogg_awakening");
 	CheckSchema();
 	ScreenHost host;
 	CheckTransformedClip(host);
@@ -2364,6 +2555,9 @@ int main(int argc, char** argv) {
 	CheckMatch(host,argv[7]);
 	CheckSettings(host,argv[7],argv[8]);
 	CheckWelcome(host,argv[8]);
+	CheckScopes(host,argv+9);
+	CheckViewEffects(host,argv[12]);
+	CheckWeaponWheels(host,argv+13);
 	Check(host.errors == 0,"no retained diagnostics");
 	std::printf("retained screens: %d checks passed\n",checks);
 	return 0;

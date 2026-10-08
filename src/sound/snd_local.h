@@ -446,6 +446,7 @@ public:
 	virtual bool	CurrentlyPlaying( const s_channelType channel = SCHANNEL_ANY ) const;
 
 	virtual	float	CurrentAmplitude();
+	virtual void	AmplitudeHistory( s_channelType channel, float *peaks, int count );
 
 	virtual	int		Index() const;
 

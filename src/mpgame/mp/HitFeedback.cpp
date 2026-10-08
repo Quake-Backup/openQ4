@@ -10,6 +10,7 @@
 
 #include "../Game_local.h"
 #include "HitFeedback.h"
+#include "../../game/gamesys/HudPrimitives.h"
 
 /*
 ===============================================================================
@@ -86,7 +87,7 @@ renderSystem->DrawSmallStringExt is locked to.
 ================
 */
 static void DrawCenteredString( float x, float y, float charWidth, float charHeight,
-								const char *text, const idVec4 &color, const idMaterial *material ) {
+								const char *text, const idVec4 &color, const idMaterial *material, rvHudPrimitives& presentation ) {
 	const int	length = idStr::Length( text );
 	float		cursor;
 	int			i;
@@ -98,15 +99,13 @@ static void DrawCenteredString( float x, float y, float charWidth, float charHei
 	cursor = x - ( length * charWidth ) * 0.5f;
 	y -= charHeight * 0.5f;
 
-	renderSystem->SetColor( color );
 
 	for ( i = 0; i < length; i++ ) {
 		const int	ch = text[ i ] & 255;
 		const float	frow = ( ch >> 4 ) * 0.0625f;
 		const float	fcol = ( ch & 15 ) * 0.0625f;
 
-		renderSystem->DrawStretchPic( cursor, y, charWidth, charHeight,
-									  fcol, frow, fcol + 0.0625f, frow + 0.0625f, material );
+		presentation.Rect(cursor,y,charWidth,charHeight,color,material,idVec4(fcol,frow,fcol+.0625f,frow+.0625f),true);
 		cursor += charWidth;
 	}
 }
@@ -319,6 +318,7 @@ void rvDamageNumbers::Draw( const renderView_t *view ) {
 	}
 
 	scale = idMath::ClampFloat( 0.25f, 4.0f, hud_damageNumberScale.GetFloat() );
+	rvHudPrimitives presentation;
 
 	for ( i = 0; i < MAX_NUMBERS; i++ ) {
 		damageNumber_t *	number = &numbers[ i ];
@@ -364,14 +364,14 @@ void rvDamageNumbers::Draw( const renderView_t *view ) {
 		// shadow first, so a number stays readable over a bright wall
 		color.Set( 0.0f, 0.0f, 0.0f, alpha * 0.5f );
 		DrawCenteredString( x + NUMBER_SHADOW_OFFSET * scale, y + NUMBER_SHADOW_OFFSET * scale,
-							charWidth, charHeight, number->text, color, charSetMaterial );
+							charWidth, charHeight, number->text, color, charSetMaterial, presentation );
 
 		color = number->color;
 		color.w *= alpha;
-		DrawCenteredString( x, y, charWidth, charHeight, number->text, color, charSetMaterial );
+		DrawCenteredString( x, y, charWidth, charHeight, number->text, color, charSetMaterial, presentation );
 	}
 
-	renderSystem->SetColor( colorWhite );
+	presentation.Draw("native/damage-numbers");
 }
 
 /*

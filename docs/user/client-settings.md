@@ -40,7 +40,7 @@ Most player-facing options are available directly in the in-game menus:
 
 ## Modern and Classic Screens
 
-The title screen, the single-player pause menu and the loading screens use openQ4's modern interface. The other menus, including `Settings -> System`, keep the classic Quake 4 look for now.
+The title screen, single-player pause menu, loading screens and gameplay HUD use openQ4's modern interface. HUD coverage includes crosshairs, objectives, radio, powerups, boss and vehicle displays, multiplayer scores/chat/summary panels and Awakening overlays. See [Gameplay Status Bar](gameplay-settings.md#gameplay-status-bar) for the centered ammo/health/armor bar's independent size and safe-inset settings. The other menus, including `Settings -> System`, keep the classic Quake 4 look for now.
 
 - To use the classic screens throughout, open the console and enter `ui_retained 0`. The choice is saved; `ui_retained 1` brings the modern screens back.
 - If a modern screen can't be shown, openQ4 shows the classic one instead, with nothing to fix on your side. This happens when a mod brings its own main menu, or when a modern screen's files are missing or damaged.

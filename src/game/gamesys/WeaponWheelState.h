@@ -1,0 +1,36 @@
+// Shared local presentation state; never serialized or replicated. SDK EULA.
+	bool					weaponWheelActive;
+	int						weaponWheelHoveredSlot;
+	int						weaponWheelLastMouseX;
+	int						weaponWheelLastMouseY;
+	int						weaponWheelLastUpdateTime;
+	float					weaponWheelBlend;
+	idVec2					weaponWheelCursor;
+	idAngles				weaponWheelLastCmdAngles;
+
+	idUserInterface*        weaponWheelGui;
+	bool                    weaponWheelGuiActive;
+	int                     weaponWheelGuiSlot;
+	bool                    weaponWheelCanceled;
+	int                     weaponWheelOpenedTime;
+	bool                    weaponWheelDebug;
+	bool                    weaponWheelDebugHeld;
+	void                    InitWeaponWheel();
+	void                    FreeWeaponWheelGui();
+	bool                    CanUseWeaponWheel( void );
+	int                     GetWeaponWheelSlotCount() const;
+	bool                    DrawRetainedWeaponWheel();
+	void                    DrawLegacyWeaponWheel();
+	void					ApplyWeaponWheelInputMask( void );
+	void					ResetWeaponWheel( bool instantRestore = false );
+	void					UpdateWeaponWheel( void );
+	void					UpdateWeaponWheelEffects( void );
+	void					UpdateWeaponWheelCursor( void );
+	void					DrawWeaponWheel( void );
+	int						GetWeaponWheelSlotForWeapon( int weaponIndex ) const;
+	int						GetWeaponWheelWeaponForSlot( int slot ) const;
+	bool					HasWeaponWheelSlotWeapon( int slot ) const;
+	int						GetDefaultWeaponWheelSlot( void ) const;
+	int						GetClosestAvailableWeaponWheelSlot( float angle ) const;
+	int						GetWeaponWheelAmmoCount( int weaponIndex );
+	bool					IsWeaponWheelSlotLowAmmo( int slot );

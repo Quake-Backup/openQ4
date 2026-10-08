@@ -518,7 +518,7 @@ if build_engine or get_option('build_native_tests')
   libtess2_project = subproject('libtess2')
   openq4_retained_library = static_library(
     'openq4-retained-ui',
-    files('src/ui/retained/Runtime.cpp', 'src/ui/retained/Document.cpp', 'src/ui/retained/DocumentEdit.cpp', 'src/ui/retained/Presentation.cpp', 'src/ui/retained/Behavior.cpp', 'src/ui/retained/State.cpp', 'src/ui/retained/Motion.cpp', 'src/ui/retained/Interaction.cpp', 'src/ui/retained/ValueControlView.cpp', 'src/ui/retained/NumberControlView.cpp', 'src/ui/retained/Input.cpp', 'src/ui/retained/TextInput.cpp', 'src/ui/retained/TextEdit.cpp', 'src/ui/retained/TextEditCommand.cpp', 'src/ui/retained/TextInputBroker.cpp', 'src/ui/retained/TextRun.cpp', 'src/ui/retained/Vector.cpp', 'src/ui/retained/VectorElement.cpp', 'src/ui/application/SettingsTransaction.cpp', 'src/ui/application/SettingsJournal.cpp', 'src/ui/application/SettingsEffectPlan.cpp', 'src/ui/application/SettingsDisplayController.cpp'),
+    files('src/ui/retained/Runtime.cpp', 'src/ui/retained/Document.cpp', 'src/ui/retained/DocumentEdit.cpp', 'src/ui/retained/Presentation.cpp', 'src/ui/retained/Behavior.cpp', 'src/ui/retained/State.cpp', 'src/ui/retained/Motion.cpp', 'src/ui/retained/Interaction.cpp', 'src/ui/retained/ValueControlView.cpp', 'src/ui/retained/NumberControlView.cpp', 'src/ui/retained/Input.cpp', 'src/ui/retained/TextInput.cpp', 'src/ui/retained/TextEdit.cpp', 'src/ui/retained/TextEditCommand.cpp', 'src/ui/retained/TextInputBroker.cpp', 'src/ui/retained/TextRun.cpp', 'src/ui/retained/Vector.cpp', 'src/ui/retained/VectorElement.cpp', 'src/ui/retained/HudElement.cpp', 'src/ui/application/SettingsTransaction.cpp', 'src/ui/application/SettingsJournal.cpp', 'src/ui/application/SettingsEffectPlan.cpp', 'src/ui/application/SettingsDisplayController.cpp'),
     files('src/ui/retained/TextInputBrokerWire.cpp'),
     files('src/ui/retained/NativeTextDocument.cpp'),
     files('src/ui/retained/NativeTextEditor.cpp'),
@@ -906,7 +906,36 @@ if build_engine or get_option('build_native_tests')
              meson.project_source_root() / 'content/baseoq4/pak0/guis/menu/singleplayer.q4ui',
              meson.project_source_root() / 'content/baseoq4/pak0/guis/menu/campaigns.q4ui',
              meson.project_source_root() / 'content/baseoq4/pak0/guis/menu/mp_escape.q4ui',
-             meson.project_source_root() / 'content/baseoq4/pak0/guis/menu/mp_welcome.q4ui'], timeout: 60)
+             meson.project_source_root() / 'content/baseoq4/pak0/guis/menu/mp_welcome.q4ui',
+             meson.project_source_root() / 'content/baseoq4/pak0/guis/weapons/machinegun_scope.q4ui',
+             meson.project_source_root() / 'content/baseoq4/pak0/guis/weapons/railgun_scope.q4ui',
+             meson.project_source_root() / 'content/baseoq4/pak0/guis/weapons/nailgun_scope.q4ui',
+             meson.project_source_root() / 'content/baseoq4/pak0/guis/hud/view_effects.q4ui',
+             meson.project_source_root() / 'content/baseoq4/pak0/guis/hud/weapon_wheel_marine.q4ui',
+             meson.project_source_root() / 'content/baseoq4/pak0/guis/hud/weapon_wheel_marine_awakening.q4ui',
+             meson.project_source_root() / 'content/baseoq4/pak0/guis/hud/weapon_wheel_strogg.q4ui',
+             meson.project_source_root() / 'content/baseoq4/pak0/guis/hud/weapon_wheel_strogg_awakening.q4ui'], timeout: 240)
+    test('openq4-ui-status-bar', openq4_ui_retained_screens_test,
+      args: [meson.project_source_root() / 'content/baseoq4/pak0/guis/hud/status_bar_marine.q4ui',
+             meson.project_source_root() / 'content/baseoq4/pak0/guis/hud/status_bar_strogg.q4ui'], timeout: 240)
+    test('openq4-ui-hud', openq4_ui_retained_screens_test,
+      args: [meson.project_source_root() / 'content/baseoq4/pak0/guis/hud/artwork.q4ui'], timeout: 120)
+    # The Remastered HUD documents (ui-visual-design.md 14.4-14.12) on their anchors, answering the stock events.
+    test('openq4-ui-remastered-hud', openq4_ui_retained_screens_test,
+      args: ['--remastered',
+             meson.project_source_root() / 'content/baseoq4/pak0/guis/hud/remastered_marine.q4ui',
+             meson.project_source_root() / 'content/baseoq4/pak0/guis/hud/remastered_strogg.q4ui',
+             meson.project_source_root() / 'content/baseoq4/pak0/guis/hud/remastered_marine_awakening.q4ui',
+             meson.project_source_root() / 'content/baseoq4/pak0/guis/hud/remastered_strogg_awakening.q4ui',
+             meson.project_source_root() / 'content/baseoq4/pak0/guis/hud/remastered_mp.q4ui',
+             meson.project_source_root() / 'content/baseoq4/pak0/guis/hud/remastered_vehicle.q4ui',
+             meson.project_source_root() / 'content/baseoq4/pak0/guis/hud/remastered_objectives.q4ui',
+             meson.project_source_root() / 'content/baseoq4/pak0/guis/hud/remastered_objectives_strogg.q4ui',
+             meson.project_source_root() / 'content/baseoq4/pak0/guis/hud/remastered_scoreboard.q4ui'], timeout: 240)
+    test('openq4-ui-remastered-hud-generated', py,
+      args: [meson.project_source_root() / 'tools/ui/build_remastered_hud.py', '--check'], timeout: 120)
+    test('openq4-ui-hud-coverage', py,
+      args: [meson.project_source_root() / 'tools/tests/ui_hud_coverage.py'], timeout: 30)
     openq4_ui_value_schema_test = executable(
       'openq4-ui-value-schema-test',
       files('tools/tests/native/UiValueControlSchemaTest.cpp'),
@@ -1080,6 +1109,10 @@ if build_engine or get_option('build_native_tests')
       install: false,
     )
     test('openq4-ui-vector', openq4_ui_vector_test, timeout: 30)
+    foreach scope : ['machinegun', 'railgun', 'nailgun']
+      test('openq4-ui-scope-paint-' + scope, openq4_ui_vector_test,
+        args: [meson.project_source_root() / ('content/baseoq4/pak0/guis/weapons/' + scope + '_scope.q4ui')], timeout: 30)
+    endforeach
     executable(
       'openq4-retained-ui-benchmark',
       files('tools/tests/native/RetainedUiBenchmark.cpp'),

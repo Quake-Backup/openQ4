@@ -295,6 +295,7 @@ public:
 	virtual void			ProjectileLaunched	( idProjectile* projectile ) { }
 
 	int						GetZoomFov			( void ) const;
+	void					UpdateRetainedScope( void );
 	idUserInterface *		GetZoomGui			( void ) const;
 	float					GetZoomTime			( void ) const;
 	bool					CanZoom				( void ) const;
@@ -363,6 +364,7 @@ protected:
 	int						brassEjectDelay;
 
 	int						zoomFov;
+	idStr					zoomGuiRequested;
 	idUserInterface *		zoomGui;
 	float					zoomTime;
 };

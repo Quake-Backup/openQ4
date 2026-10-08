@@ -31,6 +31,9 @@ class State {
 public:
 	bool Reset(const DocumentModel& model, std::string& error);
 	bool Set(const StateValues& changes, std::string& error, bool hostSources = false);
+	// Whether Set(changes) would do more than accept the batch: a value
+	// differs, a presentation write awaits evaluation, or the batch is invalid.
+	bool WouldChange(const StateValues& changes, bool hostSources = false) const;
 	// Event entry refreshes pending application and current host values in one
 	// evaluation; neither batch can expose an invalid intermediate binding.
 	bool SetCombined(const StateValues& application, const StateValues& hostSources, std::string& error);
@@ -48,19 +51,21 @@ public:
 	const PropertyValues& Properties() const { return properties; }
 	const std::map<std::string,bool>& Enabled() const { return enabled; }
 	const std::map<std::string,ControlReadback>& ControlValues() const { return controlValues; }
-	const std::map<std::string,StateDeclaration>& Declarations() const { return declarations; }
+	const std::map<std::string,StateDeclaration>& Declarations() const { return *declarations; }
 	std::uint64_t Revision() const { return revision; }
 private:
 	bool Evaluate(const StateValues& candidate, PropertyValues& props, std::map<std::string,bool>& controls,
 		StatePresentationSnapshot& output, std::map<std::string,ControlReadback>& readbacks, std::string& error) const;
-	std::map<std::string,StateDeclaration> declarations;
-	std::vector<Binding> bindings;
-	std::map<std::string,PresentationVariable> presentationDeclarations;
+	// The document's declarations and bindings are fixed after Reset and
+	// shared by copies: a transactional copy duplicates only live values.
+	std::shared_ptr<const std::map<std::string,StateDeclaration>> declarations = std::make_shared<const std::map<std::string,StateDeclaration>>();
+	std::shared_ptr<const std::vector<Binding>> bindings = std::make_shared<const std::vector<Binding>>();
+	std::shared_ptr<const std::map<std::string,PresentationVariable>> presentationDeclarations = std::make_shared<const std::map<std::string,PresentationVariable>>();
 	StatePresentationSnapshot presentation;
 	StateValues variables;
 	PropertyValues properties;
 	std::map<std::string,bool> enabled;
-	std::map<std::string,Control> controlDeclarations;
+	std::shared_ptr<const std::map<std::string,Control>> controlDeclarations = std::make_shared<const std::map<std::string,Control>>();
 	std::map<std::string,ControlReadback> controlValues;
 	std::uint64_t revision = 0;
 	bool presentationDirty = false;

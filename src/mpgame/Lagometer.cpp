@@ -2,6 +2,7 @@
 #pragma hdrstop
 
 #include "Game_local.h"
+#include "../game/gamesys/HudPrimitives.h"
 
 #define LAGO_TOP	380
 #define	LAGO_LEFT	10
@@ -27,6 +28,7 @@ void idLagometer::Draw()
 	const idVec4 colorWhite(1.0f, 1.0f, 1.0f, 1.0f);
 
 	const idMaterial *whiteMaterial = declManager->FindMaterial("_white");
+	rvHudPrimitives presentation;
 
 	for (int x=0; x<LAGOMETER_HISTORY; x++)
 	{
@@ -34,18 +36,16 @@ void idLagometer::Draw()
 
 		if (aheadOfServer[i] > 0)
 		{
-			renderSystem->SetColor(colorGreen);
-			renderSystem->DrawStretchPic(LAGO_LEFT + x, LAGO_TOP + 10 - aheadOfServer[i], 1, aheadOfServer[i], 0, 0, 0, 0, whiteMaterial);
+			presentation.Rect(LAGO_LEFT+x,LAGO_TOP+10-aheadOfServer[i],1,aheadOfServer[i],colorGreen,whiteMaterial);
 		}
 		else if (aheadOfServer[i] < 0)
 		{
-			renderSystem->SetColor(colorYellow);
-			renderSystem->DrawStretchPic(LAGO_LEFT + x, LAGO_TOP + 10, 1, -aheadOfServer[i], 0, 0, 0, 0, whiteMaterial);
+			presentation.Rect(LAGO_LEFT+x,LAGO_TOP+10,1,-aheadOfServer[i],colorYellow,whiteMaterial);
 		}
 
-		renderSystem->SetColor(colorYellow);
-		renderSystem->DrawStretchPic(LAGO_LEFT + x, LAGO_TOP + LAGO_HEIGHT - dupeUserCmds[i], 1, dupeUserCmds[i], 0, 0, 0, 0, whiteMaterial);
+		presentation.Rect(LAGO_LEFT+x,LAGO_TOP+LAGO_HEIGHT-dupeUserCmds[i],1,dupeUserCmds[i],colorYellow,whiteMaterial);
 	}
+	presentation.Draw("native/lagometer");
 }
 
 void idLagometer::Update(int ahead, int dupe)
@@ -56,4 +56,4 @@ void idLagometer::Update(int ahead, int dupe)
 									floorf( (float)ahead / net_clientLagOMeterResolution.GetInteger() ));
 
 	dupeUserCmds[frameIndex] = 2 * Min( 6, dupe );
-} 
+}

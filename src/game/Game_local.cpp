@@ -5654,7 +5654,7 @@ The image an objective's screenshot names. Objective entities give a bare
 name that the stock materials and Event_CamShot keep under gfx/objectives/.
 ================
 */
-static idStr Game_RetainedObjectiveShot( const char *shot ) {
+idStr Game_RetainedObjectiveShot( const char *shot ) {
 	idStr image = shot != NULL ? shot : "";
 	if ( image.Length() == 0 ) {
 		return image;

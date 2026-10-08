@@ -304,7 +304,7 @@ def mod_manifest(runtime: Path) -> str:
 def run(args, scenario: str) -> dict:
     output = (args.output / scenario).resolve()
     overrides_files = OVERRIDES.get(scenario, {})
-    game_dir = FALLBACK_MOD if overrides_files else 'baseoq4'
+    game_dir = FALLBACK_MOD if overrides_files else getattr(args, 'game_dir', 'baseoq4')
     game = output / 'save' / game_dir
     game.mkdir(parents=True)
     level, stages = SCENARIOS[scenario]
@@ -340,7 +340,8 @@ def run(args, scenario: str) -> dict:
         for key, value in {'com_gameMode': 'MP', 'net_serverDedicated': '0', 'net_LANServer': '1', 'si_pure': '0',
                            'si_maxPlayers': '4', 'si_gameType': 'DM', 'bot_minPlayers': '0', 'ui_autoJoin': '1',
                            'ui_spectate': 'Play', 'net_allowCheats': '1'}.items():
-            command += ['+set', key, value]
+            if key not in SCENARIO_CVARS.get(scenario, {}):
+                command += ['+set', key, value]
         command += ['+set', 'g_autoExecAfterMapLoad', cfg.name, '+set', 'g_autoExecAfterMapLoadDelayMs', '3000',
                     '+spawnServer', level[3:]]
     elif level:

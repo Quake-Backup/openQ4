@@ -33,6 +33,7 @@ If you have questions concerning this license or the applicable additional terms
 //
 
 #include "Rectangle.h"
+#include "retained/Hud.h"
 
 const int VIRTUAL_WIDTH = 640;
 const int VIRTUAL_HEIGHT = 480;
@@ -100,6 +101,8 @@ public:
 
 	void				EnableClipping(bool b) { enableClipping = b; };
 	void				SetFont( int num );
+	void BeginHudCapture(std::vector<openq4::ui::HudPrimitive>& output) { hudCapture = &output; }
+	void EndHudCapture() { hudCapture = nullptr; }
 
 	void				SetOverStrike(bool b) { overStrikeMode = b; }
 
@@ -141,6 +144,11 @@ public:
 	static idVec4 colorNone;
 
 private:
+	std::vector<openq4::ui::HudPrimitive>* hudCapture = nullptr;
+	idVec4 hudColour = idVec4(1,1,1,1);
+	bool hudGlyph = false;
+	void SetDrawColor(const idVec4& colour);
+	bool CaptureHud(const idDrawVert* vertices, const idMaterial* material);
 	struct embeddedIcon_t {
 		char				code[4];
 		const idMaterial	*material;

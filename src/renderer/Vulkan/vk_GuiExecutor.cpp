@@ -130,9 +130,11 @@ void VK_VertexCache_Shutdown( void ) {
 Executor state
 ====================
 */
-// world views stream all visible geometry through the rings each frame
-// (the vertex cache is CPU-backed); sized for q4dm2-scale 3D views
-static const int VK_VERTEX_RING_BYTES = 32 * 1024 * 1024;
+// World geometry and output-resolution vector UI share this frame-local ring.
+// A locked 4K optic uses about 43 MiB after coverage/paint consolidation. World
+// geometry, stencil volumes and composition passes need their own headroom;
+// keep them together instead of dropping late HUD/mask or shadow submissions.
+static const int VK_VERTEX_RING_BYTES = 96 * 1024 * 1024;
 static const int VK_INDEX_RING_BYTES = 8 * 1024 * 1024;
 static const int VK_GPU_SKINNING_WORKGROUP_SIZE = 64;
 static const int VK_GPU_SKINNING_MEMO_SIZE = 2048; // power of two

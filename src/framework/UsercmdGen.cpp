@@ -41,6 +41,8 @@ static const float MOUSE_CPI_INCHES_PER_CM = 2.5399999618530273f;
 static const float MOUSE_CPI_VIEW_SCALE = 45.45454545454546f;
 static const int MOUSE_FILTER_SAMPLES = 32;
 static const float JOYSTICK_AXIS_LOOK_SCALE = 1.0f / 127.0f;
+static idCVar ui_weaponWheelOffset( "ui_weaponWheelOffset", "27", CVAR_GUI | CVAR_ARCHIVE | CVAR_INTEGER,
+	"weapon wheel horizontal offset in percent of viewport width; 0 centers, 27 preserves the original position", -40, 40 );
 static idCVar in_weaponWheelSensitivity( "in_weaponWheelSensitivity", "4.0", CVAR_SYSTEM | CVAR_ARCHIVE | CVAR_FLOAT, "controller weapon wheel cursor sensitivity (pixels per look degree)", 0.25f, 16.0f );
 
 /*
@@ -1112,8 +1114,7 @@ void idUsercmdGenLocal::JoystickMove( void ) {
 		joystickLookSensitivity = 1.0f;
 	}
 	joystickLookSensitivity = idMath::ClampFloat( 0.1f, 4.0f, joystickLookSensitivity ) * GetZoomLookSensitivityScale();
-	const bool weaponWheel = ( cmd.buttons & BUTTON_WEAPONWHEEL ) != 0 &&
-		idStr::Icmp( cvarSystem->GetCVarString( "com_activeGameModule" ), "game_sp" ) == 0;
+	const bool weaponWheel = ( cmd.buttons & BUTTON_WEAPONWHEEL ) != 0;
 	if ( weaponWheel ) {
 		// Wheel navigation has its own sensitivity and must not inherit slow
 		// aiming, zoom or run modifiers. These deltas use the unscaled input tic.

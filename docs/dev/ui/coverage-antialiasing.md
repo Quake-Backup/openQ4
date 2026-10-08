@@ -144,10 +144,15 @@ python tools/ui/capture_legacy_baseline.py --assets $assets --mode mp --renderer
 ## Remaining quality work
 
 This implementation addresses native path edge coverage. Isolated group
-composition, masks, image/radial/conic paints, additional stroke features,
+composition, masks, image/conic paints, additional stroke features,
 font rendering and the production component/artwork corpus remain incomplete.
 Separate paint operations still compose independently; this does not provide
 an isolated layer or shared coverage between independently painted shapes.
+
+The scope increment adds continuous radial/diamond paints; see
+[vector paths](vector-paths.md). Full-coverage rows merge through aligned
+interior tiles before adaptive paint subdivision, keeping scope gradients
+inside the normal geometry budget through 4K.
 
 The subsequent [performance checkpoint](runtime-performance.md) removes redundant
 compilation during opacity/whole-pixel changes and patches tessellation to double

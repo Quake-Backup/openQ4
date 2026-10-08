@@ -217,10 +217,10 @@ int main() {
     idPlayer mouse;mouse.usercmd.mx=10;mouse.usercmd.my=-20;mouse.usercmd.angles[YAW]=ANGLE2SHORT(-100);
     mouse.UpdateWeaponWheelCursor();assert(mouse.weaponWheelCursor.x==7 && mouse.weaponWheelCursor.y==-14);
     idPlayer wrap;wrap.weaponWheelLastCmdAngles[YAW]=1;wrap.usercmd.angles[YAW]=ANGLE2SHORT(359);wrap.UpdateWeaponWheelCursor();assert(std::fabs(wrap.weaponWheelCursor.x-8)<.1f);
-    // Normal aiming keeps its sensitivity; the MP module is untouched.
+    // Normal aiming keeps its sensitivity in either module.
     for(const char* module:{"game_sp","game_mp"}) {
         vars.values["com_activeGameModule"]=module;vars.values["in_joystickLookSensitivity"]="0.5";
-        idUsercmdGenLocal gen;gen.cmd.buttons=std::string(module)=="game_mp"?BUTTON_WEAPONWHEEL:0;
+        idUsercmdGenLocal gen;gen.cmd.buttons=0;
         gen.joystickAxis[AXIS_ROLL]=1;gen.joystickAxis[AXIS_SIDE]=127;common->seconds=1.0f/60;
         gen.JoystickMove();assert(std::fabs(gen.viewangles[YAW]+140.0f*.5f/60)<.001f);
     }
@@ -232,7 +232,7 @@ int main() {
 def main():
     weapon = read(GAME / "src/game/Weapon.cpp")
     shotgun = read(GAME / "src/game/weapon/WeaponShotgun.cpp")
-    player = read(GAME / "src/game/Player.cpp")
+    player = read(GAME / "src/game/gamesys/WeaponWheel.inl")
     session = read(ROOT / "src/framework/Session.cpp")
     guards, guard_tests = [], []
     for path in sorted((GAME / "src/game/weapon").glob("*.cpp")):

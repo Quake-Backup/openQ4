@@ -1787,3 +1787,54 @@ float idSoundEmitterLocal::CurrentAmplitude()
 	}
 	return sampleAmplitude;
 }
+
+/*
+========================
+idSoundEmitterLocal::AmplitudeHistory
+
+Read the cached PCM envelope at the playback cursor. Querying a history must
+not rewind the channel's pitch/slow-motion clock or decode audio on the UI
+thread. Separate logical channels and emitters keep radio and talkers isolated.
+========================
+*/
+void idSoundEmitterLocal::AmplitudeHistory( s_channelType channel, float *peaks, int count )
+{
+	if( peaks == NULL || count <= 0 ) {
+		return;
+	}
+	for( int i = 0; i < count; ++i ) {
+		peaks[i] = 0.0f;
+	}
+	const int now = soundWorld->GetSoundTime();
+	for( int c = 0; c < channels.Num(); ++c ) {
+		idSoundChannel *chan = channels[c];
+		if( chan == NULL || chan->soundShader == NULL || chan->endTime == 1 ||
+			( channel != SCHANNEL_ANY && chan->logicalChannel != channel ) ||
+			now < chan->startTime || SoundChannelHasCompleted( chan, now ) || chan->leadinSample == NULL ) {
+			continue;
+		}
+		const int cursor = idMath::FtoiFast( SoundChannelPlaybackTimeMsec( chan, now ) );
+		const int leadinLength = chan->leadinSample->LengthInMsec();
+		// A finished one-shot must go quiet even during the completion grace period.
+		if( cursor >= leadinLength && chan->loopingSample == NULL ) {
+			continue;
+		}
+		for( int i = 0; i < count; ++i ) {
+			int offset = cursor - ( count - 1 - i ) * 1000 / 60;
+			if( offset < 0 ) {
+				continue;
+			}
+			const idSoundSample *sample = chan->leadinSample;
+			if( offset >= leadinLength ) {
+				sample = chan->loopingSample;
+				if( sample == NULL || sample->LengthInMsec() <= 0 ) {
+					continue;
+				}
+				offset = ( offset - leadinLength ) % sample->LengthInMsec();
+			}
+			if( !sample->IsDefault() ) {
+				peaks[i] = Max( peaks[i], sample->GetAmplitude( offset ) );
+			}
+		}
+	}
+}

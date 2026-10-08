@@ -216,7 +216,7 @@ public:
 		from = source.from.Resolve(options.widthDp,options.heightDp);
 		direction = source.to.Resolve(options.widthDp,options.heightDp)-from;
 		length2 = Dot(direction,direction);
-		if (source.type == PaintType::Linear) {
+		if (source.type == PaintType::Linear || CurvedGradient()) {
 			Require(Finite(from) && Finite(direction) && length2 > 1e-20,"gradient endpoints coincide or are invalid");
 			Require(source.stops.size() >= 2 && source.stops.front().at == 0 && source.stops.back().at == 1,"gradient requires endpoint stops at zero and one");
 			double previous = -1;
@@ -227,9 +227,19 @@ public:
 			}
 		} else Validate(source.colour);
 	}
-	double Parameter(VectorPoint point) const { return Dot(inverse.Apply(point)-from,direction)/length2; }
+	double Parameter(VectorPoint point) const {
+		const auto delta = inverse.Apply(point)-from;
+		if (source.type == PaintType::Radial) return Length(delta)/std::sqrt(length2);
+		if (source.type == PaintType::Diamond) return (std::abs(delta.x)+std::abs(delta.y))/std::sqrt(length2);
+		if (source.type == PaintType::Conic) {
+			const double turn = (std::atan2(delta.y,delta.x)-std::atan2(direction.y,direction.x))/(2*3.14159265358979323846);
+			return turn-std::floor(turn);
+		}
+		return Dot(delta,direction)/length2;
+	}
+	bool CurvedGradient() const { return source.type == PaintType::Radial || source.type == PaintType::Diamond || source.type == PaintType::Conic; }
 	VectorColour Colour(VectorPoint point) const {
-		if (source.type != PaintType::Linear) return Premultiply(source.colour);
+		if (source.type == PaintType::None || source.type == PaintType::Solid) return Premultiply(source.colour);
 		const double t = std::clamp(Parameter(point),0.0,1.0);
 		for (size_t i = 1; i < source.stops.size(); ++i) if (t <= source.stops[i].at) {
 			const auto& a = source.stops[i-1]; const auto& b = source.stops[i];
@@ -238,6 +248,15 @@ public:
 		return Premultiply(source.stops.back().colour);
 	}
 	void Shape(const std::vector<VectorPoint>& shape, VectorMesh& output, const VectorOptions& options, double coverage = 1) const {
+		if (CurvedGradient()) {
+			// Coverage rectangles can span the entire aperture. Subdivide in
+			// output pixels where needed so colours interpolate smoothly at any DPI,
+			// without concentric alpha seams or a bitmap mask.
+			if (shape.size() == 4 && shape[0].y == shape[1].y && shape[1].x == shape[2].x && shape[2].y == shape[3].y && shape[3].x == shape[0].x)
+				CurvedRectangle(shape[0],shape[2],output,options,coverage);
+			else for (size_t i = 2; i < shape.size(); ++i) CurvedTriangle(shape[0],shape[i-1],shape[i],output,options,coverage);
+			return;
+		}
 		if (source.type != PaintType::Linear) { Polygon(shape,output,options,coverage); return; }
 		// Split at every stop plane. A triangle spanning several stops cannot
 		// reproduce them by interpolating only the triangle's corner colours.
@@ -257,6 +276,57 @@ public:
 		}
 	}
 private:
+	void CurvedRectangle(VectorPoint low, VectorPoint high, VectorMesh& output, const VectorOptions& options, double coverage) const {
+		const VectorPoint b{high.x,low.y}, d{low.x,high.y};
+		const double width = high.x-low.x, height = high.y-low.y;
+		if (std::max(width,height) <= 5.5 || (CurvedTriangleIsAccurate(low,b,high) && CurvedTriangleIsAccurate(low,high,d))) {
+			Polygon({low,b,high,d},output,options,coverage); return;
+		}
+		// Coverage commonly emits wide one-pixel rows. Split rectangles before
+		// triangulating, avoiding a tree of almost-flat sliver triangles.
+		if (width >= height) {
+			const double x = (low.x+high.x)*.5;
+			CurvedRectangle(low,{x,high.y},output,options,coverage); CurvedRectangle({x,low.y},high,output,options,coverage);
+		} else {
+			const double y = (low.y+high.y)*.5;
+			CurvedRectangle(low,{high.x,y},output,options,coverage); CurvedRectangle({low.x,y},high,output,options,coverage);
+		}
+	}
+	bool CurvedTriangleIsAccurate(VectorPoint a, VectorPoint b, VectorPoint c) const {
+		const auto ca = Colour(a), cb = Colour(b), cc = Colour(c);
+		const auto near = [](VectorColour x, VectorColour y) {
+			return std::max({std::abs(x.r-y.r),std::abs(x.g-y.g),std::abs(x.b-y.b),std::abs(x.a-y.a)}) <= 1.0/255;
+		};
+		const auto ab = (a+b)*.5, bc = (b+c)*.5, ac = (a+c)*.5, center = (a+b+c)*(1.0/3);
+		if (!near(Colour(ab),Blend(ca,cb,.5)) || !near(Colour(bc),Blend(cb,cc,.5)) || !near(Colour(ac),Blend(ca,cc,.5)) ||
+			!near(Colour(center),Blend(Blend(ca,cb,.5),cc,1.0/3))) return false;
+		// Keep narrow stops from disappearing between equal endpoint colours.
+		double low = 1e30, high = -1e30;
+		for (const auto point : {a,b,c,ab,bc,ac,center}) { const double t = Parameter(point); low = std::min(low,t); high = std::max(high,t); }
+		const auto within = [](double value, double a, double b, double c) {
+			return value >= std::min({a,b,c})-1.0/255 && value <= std::max({a,b,c})+1.0/255;
+		};
+		for (const auto& stop : source.stops) if (stop.at > low+1e-9 && stop.at < high-1e-9) {
+			const auto color = Premultiply(stop.colour);
+			if (!within(color.r,ca.r,cb.r,cc.r) || !within(color.g,ca.g,cb.g,cc.g) ||
+				!within(color.b,ca.b,cb.b,cc.b) || !within(color.a,ca.a,cb.a,cc.a)) return false;
+		}
+		return true;
+	}
+	void CurvedTriangle(VectorPoint a, VectorPoint b, VectorPoint c, VectorMesh& output, const VectorOptions& options, double coverage, unsigned depth = 0) const {
+		const double ab = Dot(b-a,b-a), bc = Dot(c-b,c-b), ca = Dot(a-c,a-c);
+		if (std::max({ab,bc,ca}) <= 64 || depth == 32 || CurvedTriangleIsAccurate(a,b,c)) { Polygon({a,b,c},output,options,coverage); return; }
+		if (ab >= bc && ab >= ca) {
+			const auto mid = (a+b)*.5;
+			CurvedTriangle(a,mid,c,output,options,coverage,depth+1); CurvedTriangle(mid,b,c,output,options,coverage,depth+1);
+		} else if (bc >= ca) {
+			const auto mid = (b+c)*.5;
+			CurvedTriangle(a,b,mid,output,options,coverage,depth+1); CurvedTriangle(a,mid,c,output,options,coverage,depth+1);
+		} else {
+			const auto mid = (c+a)*.5;
+			CurvedTriangle(a,b,mid,output,options,coverage,depth+1); CurvedTriangle(mid,b,c,output,options,coverage,depth+1);
+		}
+	}
 	static void Validate(VectorColour c) {
 		for (double value : {c.r,c.g,c.b,c.a}) Require(std::isfinite(value) && value >= 0 && value <= 1,"paint colour must be finite normalized RGBA");
 	}
@@ -348,7 +418,7 @@ public:
 		while (index < events.size()) {
 			const int row = events[index].y;
 			current.clear();
-			auto emit = [&](int left, int right, double coverage) {
+			auto emitRectangle = [&](int left, int right, double coverage) {
 				if (left >= right || coverage == 0) return;
 				const auto found = std::lower_bound(previous.begin(),previous.end(),std::make_pair(left,right),
 					[](const Run& run, const std::pair<int,int>& key) { return std::make_pair(run.left,run.right) < key; });
@@ -358,6 +428,17 @@ public:
 				} else {
 					Require(rectangles.size() < options.maximumVertices/4,"coverage exceeds output rectangle budget");
 					current.push_back({left,right,rectangles.size()}); rectangles.push_back({left,row,right,row+1,coverage});
+				}
+			};
+			auto emit = [&](int left, int right, double coverage) {
+				if (coverage != 1 || !paint.CurvedGradient()) { emitRectangle(left,right,coverage); return; }
+				// Curved paint needs interior colour samples. Align full-coverage
+				// runs to tiles so successive rows merge despite a curved outer
+				// boundary. Otherwise every slightly different row becomes its
+				// own gradient strip and consumes vertices proportional to DPI.
+				while (left < right) {
+					const int next = std::min(right,(static_cast<int>(std::floor(left/32.0))+1)*32);
+					emitRectangle(left,next,coverage); left = next;
 				}
 			};
 			double sum = 0, pendingCoverage = 0;

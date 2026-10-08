@@ -2,6 +2,7 @@
 #include "Runtime.h"
 #include "State.h"
 #include "VectorElement.h"
+#include "HudElement.h"
 #include "ValueControlView.h"
 #include "ScrollbarView.h"
 #include "TextRun.h"
@@ -195,6 +196,36 @@ void Clip(std::vector<Vertex>& polygon, std::vector<Vertex>& output, int axis, f
 	polygon.swap(output);
 }
 
+// Clip against the half-plane a*x + b*y + c >= 0 (an edge of a convex clip).
+void ClipHalfPlane(std::vector<Vertex>& polygon, std::vector<Vertex>& output, float a, float b, float c) {
+	if (polygon.empty()) return;
+	output.clear();
+	auto distance = [&](const Vertex& v) { return a*v.x + b*v.y + c; };
+	Vertex previous = polygon.back();
+	float previousDistance = distance(previous);
+	for (const Vertex& current : polygon) {
+		const float d = distance(current);
+		if ((d >= 0) != (previousDistance >= 0)) {
+			output.push_back(Interpolate(previous, current, previousDistance / (previousDistance - d)));
+		}
+		if (d >= 0) output.push_back(current);
+		previous = current;
+		previousDistance = d;
+	}
+	polygon.swap(output);
+}
+
+// A convex clip region in output pixels, ordered so every edge keeps the
+// region where a*x + b*y + c >= 0 (clockwise as seen on screen).
+struct ClipPolygon {
+	static constexpr int Capacity = 16;
+	std::array<Rml::Vector2f,Capacity> points{};
+	int count = 0;
+	bool Same(const ClipPolygon& other) const {
+		return count == other.count && std::memcmp(points.data(),other.points.data(),sizeof(Rml::Vector2f)*count) == 0;
+	}
+};
+
 struct Geometry {
 	std::vector<Rml::Vertex> vertices;
 	std::vector<int> indices;
@@ -207,13 +238,15 @@ struct Geometry {
 		Rml::Vector2f translation;
 		Rml::Matrix4f transform = Rml::Matrix4f::Identity();
 		std::array<float,4> clip{};
+		ClipPolygon polygon;
 		Rml::TextureHandle texture = 0;
 		std::uintptr_t multiply = 0;
 		bool hasTransform = false, clipping = false;
 		bool Matches(const Submission& other) const {
 			return std::memcmp(&translation,&other.translation,sizeof(translation)) == 0 && hasTransform == other.hasTransform &&
 				(!hasTransform || std::memcmp(&transform,&other.transform,sizeof(transform)) == 0) && clipping == other.clipping &&
-				(!clipping || std::memcmp(clip.data(),other.clip.data(),sizeof(clip)) == 0) && texture == other.texture && multiply == other.multiply;
+				(!clipping || (std::memcmp(clip.data(),other.clip.data(),sizeof(clip)) == 0 && polygon.Same(other.polygon))) &&
+				texture == other.texture && multiply == other.multiply;
 		}
 		std::vector<Vertex> vertices; // Transformed, or clipped with indices.
 		std::vector<int> indices;
@@ -288,12 +321,13 @@ public:
 		Geometry::Submission inputs;
 		inputs.translation = translation; inputs.hasTransform = hasTransform; inputs.clipping = clipping; inputs.texture = texture;
 		if (hasTransform) inputs.transform = transform;
-		if (clipping) inputs.clip = {left,top,right,bottom};
+		if (clipping) { inputs.clip = {left,top,right,bottom}; if (clipMaskEnabled) inputs.polygon = clipPolygon; }
 		if (texture == MultiplyTexture) inputs.multiply = stack.empty() ? host.MultiplyMaterial() : 0;
 		if (!geometry.submission || !geometry.submission->Matches(inputs)) {
 			if (!geometry.submission) geometry.submission = std::make_unique<Geometry::Submission>();
 			auto& output = *geometry.submission;
-			output.translation = inputs.translation; output.transform = inputs.transform; output.clip = inputs.clip; output.texture = inputs.texture; output.multiply = inputs.multiply;
+			output.translation = inputs.translation; output.transform = inputs.transform; output.clip = inputs.clip; output.polygon = inputs.polygon;
+			output.texture = inputs.texture; output.multiply = inputs.multiply;
 			output.hasTransform = inputs.hasTransform; output.clipping = inputs.clipping;
 			Prepare(geometry,output,translation,left,top,right,bottom);
 			++geometry.revision;
@@ -327,7 +361,16 @@ public:
 		}
 		// Whole geometry outside the clip draws nothing; inside, it needs no cut.
 		if (clipping && (maxX <= left || minX >= right || maxY <= top || minY >= bottom)) return;
-		const bool inside = !clipping || (minX >= left && maxX <= right && minY >= top && maxY <= bottom);
+		const ClipPolygon& polygonClip = output.polygon;
+		const bool edges = clipping && polygonClip.count >= 3;
+		bool inside = !clipping || (minX >= left && maxX <= right && minY >= top && maxY <= bottom);
+		if (inside && edges) {
+			for (int e = 0; e < polygonClip.count && inside; ++e) {
+				const auto& a = polygonClip.points[e]; const auto& b = polygonClip.points[(e+1) % polygonClip.count];
+				const float na = a.y-b.y, nb = b.x-a.x, nc = -(na*a.x + nb*a.y);
+				for (const auto& vertex : vertices) if (na*vertex.x + nb*vertex.y + nc < 0) { inside = false; break; }
+			}
+		}
 		if (texture == MultiplyTexture) {
 			// Multiply vertices carry the factor each pixel's destination takes.
 			// That is exact only against the caller's own target: an isolated
@@ -354,6 +397,11 @@ public:
 			Clip(polygon, scratch, 0, right, false);
 			Clip(polygon, scratch, 1, top, true);
 			Clip(polygon, scratch, 1, bottom, false);
+			for (int e = 0; edges && e < polygonClip.count && polygon.size() >= 3; ++e) {
+				const auto& a = polygonClip.points[e]; const auto& b = polygonClip.points[(e+1) % polygonClip.count];
+				const float na = a.y-b.y, nb = b.x-a.x;
+				ClipHalfPlane(polygon, scratch, na, nb, -(na*a.x + nb*a.y));
+			}
 			if (polygon.size() < 3) continue;
 			const int base = static_cast<int>(clipped.size());
 			clipped.insert(clipped.end(), polygon.begin(), polygon.end());
@@ -377,20 +425,61 @@ public:
 	void SetScissorRegion(Rml::Rectanglei region) override { scissor = region; }
 	// Under a transform RmlUi clips overflow with the clipping box's geometry
 	// instead of a scissor. Translate and scale keep that box axis-aligned, so
-	// the rectangle clip in RenderGeometry applies it exactly. Shapes a
-	// rectangle cannot represent (rotation, rounded corners, inverse masks)
-	// clip to their bounds instead and are counted.
-	void EnableClipMask(bool enable) override { clipMaskEnabled = enable; }
+	// the rectangle clip in RenderGeometry applies it exactly. Rotation and
+	// shear turn it into a convex quadrilateral, which RenderGeometry clips to
+	// edge by edge (the stock HUD's sheared gauge fills, section 14.3). Shapes
+	// a convex outline cannot represent (rounded corners, inverse masks) clip
+	// to their bounds instead and are counted.
+	void EnableClipMask(bool enable) override { clipMaskEnabled = enable; if (!enable) clipPolygon.count = 0; }
+	// Andrew's monotone chain hull of a small point set, ordered so the region
+	// lies where a*x + b*y + c >= 0 for every edge (clockwise on screen).
+	static bool ConvexOutline(std::vector<Rml::Vector2f> points, ClipPolygon& outline) {
+		std::sort(points.begin(),points.end(),[](const auto& a, const auto& b) { return a.x < b.x || (a.x == b.x && a.y < b.y); });
+		points.erase(std::unique(points.begin(),points.end(),[](const auto& a, const auto& b) {
+			return std::abs(a.x-b.x) < 1e-4f && std::abs(a.y-b.y) < 1e-4f; }),points.end());
+		if (points.size() < 3) return false;
+		const auto cross = [](const Rml::Vector2f& o, const Rml::Vector2f& a, const Rml::Vector2f& b) {
+			return double(a.x-o.x)*double(b.y-o.y) - double(a.y-o.y)*double(b.x-o.x); };
+		std::vector<Rml::Vector2f> hull(points.size()*2);
+		size_t k = 0;
+		for (size_t i = 0; i < points.size(); ++i) {
+			while (k >= 2 && cross(hull[k-2],hull[k-1],points[i]) <= 0) --k;
+			hull[k++] = points[i];
+		}
+		for (size_t i = points.size()-1, lower = k+1; i-- > 0;) {
+			while (k >= lower && cross(hull[k-2],hull[k-1],points[i]) <= 0) --k;
+			hull[k++] = points[i];
+		}
+		hull.resize(k-1);
+		if (hull.size() < 3 || hull.size() > ClipPolygon::Capacity) return false;
+		outline.count = static_cast<int>(hull.size());
+		std::copy(hull.begin(),hull.end(),outline.points.begin());
+		return true;
+	}
+	// Intersect two convex outlines (Sutherland-Hodgman keeps convexity).
+	static void Intersect(ClipPolygon& subject, const ClipPolygon& clip) {
+		std::vector<Vertex> polygon, scratch;
+		for (int i = 0; i < subject.count; ++i) polygon.push_back({subject.points[i].x,subject.points[i].y,0,0,0,0,0,0});
+		for (int e = 0; e < clip.count && polygon.size() >= 3; ++e) {
+			const auto& a = clip.points[e]; const auto& b = clip.points[(e+1) % clip.count];
+			const float na = a.y-b.y, nb = b.x-a.x;
+			ClipHalfPlane(polygon,scratch,na,nb,-(na*a.x + nb*a.y));
+		}
+		std::vector<Rml::Vector2f> points;
+		for (const auto& vertex : polygon) points.push_back({vertex.x,vertex.y});
+		if (!ConvexOutline(points,subject)) subject.count = 0;
+	}
 	void RenderToClipMask(Rml::ClipMaskOperation operation, Rml::CompiledGeometryHandle handle, Rml::Vector2f translation) override {
 		if (!handle) return;
 		if (operation == Rml::ClipMaskOperation::SetInverse) {
-			clipMask = {-OpenClip,-OpenClip,OpenClip,OpenClip}; ++statistics.clipMaskFallbacks; return;
+			clipMask = {-OpenClip,-OpenClip,OpenClip,OpenClip}; clipPolygon.count = 0; ++statistics.clipMaskFallbacks; return;
 		}
 		const Geometry& geometry = *reinterpret_cast<const Geometry*>(handle);
 		ClipRectangle bounds{OpenClip,OpenClip,-OpenClip,-OpenClip};
 		std::vector<Rml::Vector2f> points;
 		points.reserve(geometry.vertices.size());
-		bool exact = true;
+		bool exact = true, convex = false;
+		ClipPolygon outline;
 		for (const auto& source : geometry.vertices) {
 			const Rml::Vector4f p(source.position.x + translation.x, source.position.y + translation.y, 0, 1);
 			const auto transformed = hasTransform ? transform * p : p;
@@ -411,10 +500,40 @@ public:
 			}
 			const double box = double(bounds.right-bounds.left)*double(bounds.bottom-bounds.top);
 			exact = std::abs(area-box) <= std::max(.5, box*1e-4);
+			if (!exact && ConvexOutline(points,outline)) {
+				// The triangles must cover their convex outline exactly.
+				double hull = 0;
+				for (int i = 0; i < outline.count; ++i) {
+					const auto& a = outline.points[i]; const auto& b = outline.points[(i+1) % outline.count];
+					hull += double(a.x)*double(b.y) - double(b.x)*double(a.y);
+				}
+				convex = std::abs(std::abs(hull)/2-area) <= std::max(.5, area*1e-4);
+			}
 		}
-		++(exact ? statistics.clipMasks : statistics.clipMaskFallbacks);
-		clipMask = operation == Rml::ClipMaskOperation::Set ? bounds : ClipRectangle{std::max(clipMask.left,bounds.left),
+		++(exact || convex ? statistics.clipMasks : statistics.clipMaskFallbacks);
+		// The rectangle bounds every clip; a convex outline also cuts by edge.
+		const bool intersect = operation != Rml::ClipMaskOperation::Set;
+		const ClipPolygon previous = clipPolygon;
+		const ClipRectangle previousBounds = clipMask;
+		clipMask = !intersect ? bounds : ClipRectangle{std::max(clipMask.left,bounds.left),
 			std::max(clipMask.top,bounds.top),std::min(clipMask.right,bounds.right),std::min(clipMask.bottom,bounds.bottom)};
+		if (convex) {
+			if (intersect && previous.count >= 3) { clipPolygon = previous; Intersect(clipPolygon,outline); }
+			else if (intersect) {
+				// Against an axis-aligned rectangle clip, start from that rectangle.
+				// Open bounds stay finite here, so edge equations cannot overflow.
+				const float l = std::clamp(previousBounds.left,-1e6f,1e6f), tp = std::clamp(previousBounds.top,-1e6f,1e6f);
+				const float r = std::clamp(previousBounds.right,-1e6f,1e6f), bt = std::clamp(previousBounds.bottom,-1e6f,1e6f);
+				ClipPolygon box;
+				box.count = 4;
+				box.points = {Rml::Vector2f{l,tp},{r,tp},{r,bt},{l,bt}};
+				Intersect(outline,box);
+				clipPolygon = outline;
+			}
+			else clipPolygon = outline;
+			if (clipPolygon.count < 3) clipMask = {};
+		} else if (!intersect) clipPolygon.count = 0;
+		// An axis-aligned Intersect keeps the earlier outline; the bounds cut it.
 	}
 	void SetTransform(const Rml::Matrix4f* value) override {
 		hasTransform = value != nullptr;
@@ -632,6 +751,7 @@ private:
 	bool scissorEnabled = false, hasTransform = false, clipMaskEnabled = false;
 	Rml::Rectanglei scissor;
 	ClipRectangle clipMask;
+	ClipPolygon clipPolygon;  // count 0 while the mask is a plain rectangle
 	Rml::Matrix4f transform;
 	int viewportWidth = 0, viewportHeight = 0;
 	std::uint64_t viewportGeneration = 0;
@@ -812,6 +932,7 @@ struct Services {
 	LayerPool& layers;
 	std::vector<std::unique_ptr<Backend>> backends;
 	Rml::ElementInstancerGeneric<VectorElement> vectorInstancer;
+	Rml::ElementInstancerGeneric<HudElement> hudInstancer;
 	std::unique_ptr<VectorMaskInstancer> maskInstancer;
 	bool initialized = false;
 	Backend* AcquireBackend() {
@@ -844,6 +965,7 @@ struct Services {
 		maskInstancer = std::make_unique<VectorMaskInstancer>();
 		Rml::Factory::RegisterElementInstancer("q4-vector",&vectorInstancer);
 		Rml::Factory::RegisterElementInstancer("q4-node",&vectorInstancer);
+		Rml::Factory::RegisterElementInstancer("q4-hud",&hudInstancer);
 		Rml::Factory::RegisterDecoratorInstancer("q4-mask",maskInstancer.get());
 		return true;
 	}
@@ -879,7 +1001,11 @@ Host::~Host() = default;
 float Viewport::DpRatio() const {
 	// A view-height canvas follows the view like the HUD's center screen; the
 	// 4:3 stock composition always fills the height and widens with the aspect.
-	if (canvasHeight > 0 && std::isfinite(canvasHeight) && height > 0) return static_cast<float>(height) / canvasHeight;
+	if (canvasHeight > 0 && std::isfinite(canvasHeight) && height > 0) {
+		const float scale = static_cast<float>(height) / canvasHeight;
+		return canvasMinWidth > 0 && std::isfinite(canvasMinWidth) && width > 0 ?
+			std::min(scale,static_cast<float>(width) / canvasMinWidth) : scale;
+	}
 	return Positive(displayScale) * std::clamp(Positive(userScale), .75f, 2.f) * std::min(Positive(fitScale), 1.f);
 }
 void Viewport::FitToMinimum(float widthDp, float heightDp) {
@@ -914,6 +1040,7 @@ struct Runtime::Impl {
 	std::string contextName, sourcePath;
 	Rml::Context* context = nullptr;
 	Rml::ElementDocument* document = nullptr;
+	HudElement* hud = nullptr;
 	std::unique_ptr<Document> canonical;
 	Motion motion;
 	State state;
@@ -938,11 +1065,17 @@ struct Runtime::Impl {
 	// takes it, or it lapses.
 	std::string pendingFocus;
 	std::map<PropertyKey,std::string> applied;
-	// ApplyMotion's last applied input for each motion value, by position, and
-	// the state revision and text ratio it was formatted under.
-	struct AppliedInput { PropertyKey key; Value value; };
+	// ApplyMotion's last applied input for each motion value, by position,
+	// whether a binding owns it, and the state revision and text ratio it was
+	// formatted under.
+	struct AppliedInput { PropertyKey key; Value value; bool bound = false; };
 	std::vector<AppliedInput> appliedInputs;
 	std::uint64_t appliedInputRevision = 0;
+	// The motion stamp of the last pass that applied every value (0: none
+	// yet, or a pass left a value for a later one).
+	std::uint64_t appliedMotionRevision = 0;
+	// Each motion value's position in appliedInputs (keys are fixed per document).
+	std::map<PropertyKey,size_t> inputIndexes;
 	float appliedInputTextRatio = 0;
 	// Canonical ids by one breadth-first walk from the document, in
 	// GetElementById's own order and first match, so eligibility resolves
@@ -1112,8 +1245,15 @@ struct Runtime::Impl {
 			}
 			changes[id] = std::move(value);
 		}
-		State candidate = state;
-		if (error.empty() && candidate.Set(changes,error,true) && ValidModals(candidate,motion,error)) state = std::move(candidate);
+		if (error.empty()) {
+			// A large document's state is costly to copy: copy it only when a
+			// source changed. Unchanged sources leave the state as it was.
+			if (!state.WouldChange(changes,true)) ValidModals(state,motion,error);
+			else {
+				State candidate = state;
+				if (candidate.Set(changes,error,true) && ValidModals(candidate,motion,error)) state = std::move(candidate);
+			}
+		}
 		if (!error.empty() && error != stateError) host.Log(true,error);
 		stateError = std::move(error); ApplyControlBindings();
 	}
@@ -1299,6 +1439,10 @@ struct Runtime::Impl {
             if(!owner->alive || owner->retiring || owner->identity!=stamp)return false;
         }
 		SyncModals();
+		// A presentation-only document (a HUD) has nothing to focus, scroll or hit.
+		if (controls.empty() && !scrollView.HasScrollbars() && !interaction.HasAuthoredModals()) {
+			inputAllowed.clear(); interaction.SetBounds({},freshLayout); Feedback(time); return true;
+		}
 		inputAllowed.clear(); IndexElements(); CollectInputEligibility(canonical->Model().root); elementIndex.clear();
         // Publish scrollbar metrics and projected bounds as one eligibility update.
         // Restored focus must never be tested against this instance's old bounds.
@@ -1339,22 +1483,40 @@ struct Runtime::Impl {
 			document->SetProperty("font-size",defaultCss); applied[{"","font-size"}]=defaultCss;
 		}
 		// Motion holds every authored property, nearly all static. An input
-		// already applied under this state revision and text ratio formats to
-		// the CSS already applied, so only a changed one is formatted again.
-		// Text is translated every time and a backdrop pairs two values.
-		if (appliedInputRevision != state.Revision() || appliedInputTextRatio != viewport.TextRatio()) {
-			appliedInputs.clear(); appliedInputRevision = state.Revision(); appliedInputTextRatio = viewport.TextRatio();
+		// already applied under this text ratio formats to the CSS already
+		// applied, so only a changed one is formatted again; a new state
+		// revision can change only the properties bindings own. Text is
+		// translated every time and a backdrop pairs two values.
+		if (appliedInputTextRatio != viewport.TextRatio()) {
+			appliedInputs.clear(); appliedInputTextRatio = viewport.TextRatio();
 		}
-		if (appliedInputs.size() < motion.Values().size()) appliedInputs.resize(motion.Values().size());
-		size_t inputIndex = 0;
-		for (const auto& [key,animated] : motion.Values()) {
-			auto& input = appliedInputs[inputIndex++];
+		const bool stateChanged = appliedInputRevision != state.Revision();
+		appliedInputRevision = state.Revision();
+		// A pass reads the motion values, the state bindings own, the text
+		// ratio and the language, which a reload replaces with the document.
+		// While none has changed since a complete pass, there is nothing to
+		// apply: a settled screen walks none of its authored values.
+		std::vector<PropertyKey> changedKeys;
+		const bool partial = motion.TakeChanged(changedKeys);
+		if (!stateChanged && appliedInputs.size() >= motion.Values().size() && appliedMotionRevision != 0 &&
+			appliedMotionRevision == motion.Revision()) return current();
+		const auto passRevision = motion.Revision();
+		// The incremental pass serves frames. An input-time refresh (a
+		// constrained popup is open) stays a complete pass, translating its
+		// text again through the host it validates the popup against.
+		const bool incremental = !expected && partial && appliedMotionRevision != 0 &&
+			appliedInputs.size() >= motion.Values().size() && inputIndexes.size() == motion.Values().size();
+		appliedMotionRevision = 0;
+		bool complete = true;
+		// One input: formats it only when it changed, then applies it.
+		const auto apply = [&](AppliedInput& input, const PropertyKey& key, const Value& animated) -> bool {
 			const bool backdrop = key.second == "backdrop-blur" || key.second == "backdrop-saturate";
-			if (!backdrop && animated.type != ValueType::Text && input.key == key && input.value.type == animated.type &&
+			if (!backdrop && animated.type != ValueType::Text && input.key == key && !(stateChanged && input.bound) && input.value.type == animated.type &&
 				std::memcmp(input.value.data.data(),animated.data.data(),sizeof(animated.data)) == 0 &&
-				input.value.unit == animated.unit && input.value.text == animated.text) continue;
+				input.value.unit == animated.unit && input.value.text == animated.text) return true;
 			const auto bound = state.Properties().find(key);
-			const auto& value = bound == state.Properties().end() ? animated : bound->second;
+			const bool owned = bound != state.Properties().end();
+			const auto& value = owned ? bound->second : animated;
 			const bool opacity = key.second == "opacity";
 			std::string string;
 			if (value.type==ValueType::Length && (value.unit=="dp" || value.unit=="px") &&
@@ -1374,13 +1536,13 @@ struct Runtime::Impl {
 				value.type == ValueType::Text ? host.Translate(value.text) : value.Css();
 			if(!current())return false;
 			auto previous = applied.find(key);
-			if (previous != applied.end() && previous->second == string) { input = {key,animated}; continue; }
+			if (previous != applied.end() && previous->second == string) { input = {key,animated,owned}; return true; }
 			// Fit and alignment are authored once and folded into the decorator.
 			if (key.second == "image-fit" || key.second == "image-align-x" || key.second == "image-align-y" || key.second == "image-blend") {
-				applied[key] = string; input = {key,animated}; continue;
+				applied[key] = string; input = {key,animated,owned}; return true;
 			}
 			auto* element = document->GetElementById(key.first);
-			if (!element) continue;
+			if (!element) { complete = false; return true; }
 			if (value.type == ValueType::Text) element->SetInnerRML(Rml::StringUtilities::EncodeRml(string));
 			else if (value.type == ValueType::Image) {
 				const auto* node = canonical->Model().FindNode(key.first);
@@ -1388,8 +1550,37 @@ struct Runtime::Impl {
 			}
 			else if (!element->SetProperty(opacity ? "filter" : backdrop ? "backdrop-filter" : key.second,string)) host.Log(true,"Canonical property rejected: "+key.first+"."+key.second);
 			if(!current())return false;
-			applied[key] = string; input = {key,animated};
+			applied[key] = string; input = {key,animated,owned};
+			return true;
+		};
+		if (incremental) {
+			// openQ4: after a complete pass, a frame applies only the values
+			// motion wrote since and, when the state changed, the properties
+			// bindings own: a HUD's running trace or a changed readout walks
+			// those, not every authored value.
+			if (stateChanged) for (const auto& [key,value] : state.Properties()) changedKeys.push_back(key);
+			std::sort(changedKeys.begin(),changedKeys.end());
+			changedKeys.erase(std::unique(changedKeys.begin(),changedKeys.end()),changedKeys.end());
+			Stats().motionInputsScanned += changedKeys.size();
+			for (const auto& key : changedKeys) {
+				const auto index = inputIndexes.find(key);
+				const auto animated = motion.Values().find(key);
+				if (index == inputIndexes.end() || animated == motion.Values().end()) continue;
+				if (!apply(appliedInputs[index->second],key,animated->second)) return false;
+			}
+			if (complete) appliedMotionRevision = passRevision;
+			return current();
 		}
+		Stats().motionInputsScanned += motion.Values().size();
+		if (appliedInputs.size() < motion.Values().size()) appliedInputs.resize(motion.Values().size());
+		const bool indexing = inputIndexes.size() != motion.Values().size();
+		if (indexing) inputIndexes.clear();
+		size_t inputIndex = 0;
+		for (const auto& [key,animated] : motion.Values()) {
+			if (indexing) inputIndexes.emplace(key,inputIndex);
+			if (!apply(appliedInputs[inputIndex++],key,animated)) return false;
+		}
+		if (complete) appliedMotionRevision = passRevision;
         return current();
 	}
 };
@@ -1457,6 +1648,7 @@ std::unique_ptr<Runtime::PreparedDocument> Runtime::PrepareDocument(RuntimeCanva
             !std::isfinite(options.viewport.textScale) || options.viewport.textScale<=0 ||
             !std::isfinite(options.viewport.fitScale) || options.viewport.fitScale<=0 ||
             !std::isfinite(options.viewport.canvasHeight) || options.viewport.canvasHeight<0 ||
+            !std::isfinite(options.viewport.canvasMinWidth) || options.viewport.canvasMinWidth<0 ||
             !std::isfinite(options.viewport.pixelDensityX) || options.viewport.pixelDensityX<=0 ||
             !std::isfinite(options.viewport.pixelDensityY) || options.viewport.pixelDensityY<=0 ||
             !std::isfinite(options.viewport.originX) || !std::isfinite(options.viewport.originY))return {};
@@ -1544,7 +1736,8 @@ void Runtime::Shutdown() {
 	}
 	impl->context = nullptr;
 	impl->document = nullptr;
-	impl->canonical.reset(); impl->applied.clear(); impl->appliedInputs.clear(); impl->motion.Reset({});
+	impl->hud = nullptr;
+	impl->canonical.reset(); impl->applied.clear(); impl->appliedInputs.clear(); impl->inputIndexes.clear(); impl->motion.Reset({});
 	impl->state = {}; impl->appliedStateRevision = 0; impl->stateError.clear();
 	impl->interaction.Reset({}); impl->controls.clear(); impl->pointerPresent = impl->pointerNavigation = false;
 	impl->pendingFocus.clear();
@@ -1559,11 +1752,12 @@ void Runtime::CloseDocument() {
     AbortPreparedDocument();
 
 	impl->sourcePath.clear();
+	impl->hud = nullptr;
 	impl->valueView.Reset();
 	impl->scrollView.Reset();impl->scrollLayoutDirty=impl->preserveRestoredScroll=false;
 	impl->focusLayoutId.clear();impl->focusLayout.clear();impl->focusLayoutVisible=false;
 	impl->numberView.Reset();
-	impl->canonical.reset(); impl->applied.clear(); impl->appliedInputs.clear(); impl->motion.Reset({});
+	impl->canonical.reset(); impl->applied.clear(); impl->appliedInputs.clear(); impl->inputIndexes.clear(); impl->motion.Reset({});
 	impl->state = {}; impl->appliedStateRevision = 0; impl->stateError.clear();
 	impl->interaction.Reset({}); impl->controls.clear(); impl->pointerPresent = impl->pointerNavigation = false;
 	impl->pendingFocus.clear();
@@ -1625,6 +1819,21 @@ bool Runtime::LoadDocument(const std::string& source, const std::string& sourceP
 	impl->ReadStateSources(); impl->Feedback(impl->time);
 	impl->ApplyMotion();
 	return true;
+}
+bool Runtime::SetHudPresentation(const std::vector<HudPrimitive>& items,const Viewport& viewport,std::string& error) {
+	if (!Mutate() || !impl->canonical || !impl->document || impl->canonical->Model().id != "openq4.hud-artwork") {
+		error="HUD presentation requires its canonical artwork catalog"; return false;
+	}
+	ContextClock clock(*impl->services,impl->time,impl->strictPreparation?&impl->preparationFailed:nullptr);
+	if (!impl->hud) {
+		auto child=Rml::Factory::InstanceElement(impl->document,"q4-hud","q4-hud",{});
+		if (!child) { error="Could not create retained HUD presentation"; return false; }
+		impl->hud=static_cast<HudElement*>(child.get());
+		impl->hud->SetProperty("position","absolute"); impl->hud->SetProperty("left","0px"); impl->hud->SetProperty("top","0px");
+		impl->hud->SetProperty("width","100%"); impl->hud->SetProperty("height","100%");
+		impl->document->AppendChild(std::move(child));
+	}
+	return impl->hud->Prepare(items,impl->canonical->Model().root,viewport.width,viewport.height,impl->Stats(),error);
 }
 bool Runtime::PlayTimeline(const std::string& id, double seconds) {
     if(!Mutate())return false;
@@ -1933,7 +2142,7 @@ bool Runtime::RestoreSnapshot(const std::string& snapshot, std::string& error, d
 		// Publish its checked adoption before any state or presentation changes.
 		if (!impl->interaction.Adopt(std::move(interaction),error)) return false;
 		impl->state = std::move(state); impl->motion = std::move(motion);
-		impl->time = now; impl->pointerPresent = impl->pointerNavigation = false; impl->applied.clear(); impl->appliedInputs.clear();
+		impl->time = now; impl->pointerPresent = impl->pointerNavigation = false; impl->applied.clear(); impl->appliedInputs.clear(); impl->inputIndexes.clear();
 		impl->pendingFocus.clear();
         impl->preserveRestoredScroll=widgets.version==3;
 		// The restored modals are open already: their saved scroll offsets stand.
@@ -1991,7 +2200,14 @@ bool Runtime::RunEvent(const std::string& name, double seconds, EventEffects& ef
 	// Timelines that ended by this event's time complete before its program,
 	// and any the program completes at once (reduced motion) after it. All of
 	// it commits with the event, and their writes are published with its own.
-	Motion motion = impl->motion; motion.Advance(now);
+	// openQ4: the live motion samples this time in place, undoably, so the
+	// transactional copies below share its values until the program writes
+	// one. A rejected event rolls the sample back once those copies are gone.
+	struct Undo {
+		Motion& motion; Motion::Checkpoint saved; bool armed = true;
+		~Undo() { if (armed) motion.Rollback(std::move(saved)); }
+	} undo{impl->motion,impl->motion.AdvanceUndoable(now)};
+	Motion motion = impl->motion;
 	StateValues before, after;
 	std::string focus;
 	impl->RunCompletions(state,motion,now,before,&focus);
@@ -2003,6 +2219,7 @@ bool Runtime::RunEvent(const std::string& name, double seconds, EventEffects& ef
 	EventEffects published{std::move(before),std::move(candidate.actions)};
 	for (auto& [key,value] : candidate.stateChanges) published.stateChanges[key] = std::move(value);
 	for (auto& [key,value] : after) published.stateChanges[key] = std::move(value);
+	undo.armed = false;
 	impl->state = std::move(candidate.state); impl->motion = std::move(candidate.motion); impl->time = now;
 	impl->stateError.clear(); impl->ApplyControlBindings(); impl->UpdateInteraction(now);
 	if (!focus.empty()) { impl->RequestFocus(focus); impl->Feedback(now); }

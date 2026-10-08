@@ -25,12 +25,12 @@ bool SameCompilation(const std::array<double,12>& current, const std::array<doub
 }
 void VectorGeometry::Configure(const std::vector<VectorPath>& source, Host& owner, RuntimeStatistics& measurements) {
 	paths = source; host = &owner; statistics = &measurements;
-	compiled.clear(); compiledBlends.clear(); geometry.clear(); geometryBlends.clear(); valid = false; previousOpacity = -1;
+	cache.clear(); valid = false;
 	hitGeometry.clear(); hitPrepared = hitValid = hitArea = false;
 }
 void VectorGeometry::CopyArtworkFrom(const VectorGeometry& source) {
 	paths = source.paths; host = source.host; statistics = source.statistics; multiply = {};
-	compiled.clear(); compiledBlends.clear(); geometry.clear(); geometryBlends.clear(); valid = false; previousOpacity = -1;
+	cache.clear(); valid = false;
 	hitGeometry.clear(); hitPrepared = hitValid = hitArea = false;
 }
 void VectorElement::CopyArtworkFrom(const VectorElement& source) {
@@ -136,12 +136,30 @@ void VectorGeometry::Render(Rml::Element& element, bool inheritOpacity) {
 	const VectorPixelBounds cachedBounds{lower(bounds.left-offsetX),lower(bounds.top-offsetY),upper(bounds.right-offsetX),upper(bounds.bottom-offsetY)};
 	options.pixelBounds = cachedBounds;
 	const double opacity = inheritOpacity ? std::clamp(static_cast<double>(element.GetComputedValues().opacity()),0.0,1.0) : 1;
-	const std::array<double,12> signature{options.widthDp,options.heightDp,options.transform.a,options.transform.b,
+	std::array<double,12> signature{options.widthDp,options.heightDp,options.transform.a,options.transform.b,
 		options.transform.c,options.transform.d,options.transform.tx,options.transform.ty,
 		static_cast<double>(cachedBounds.left),static_cast<double>(cachedBounds.top),static_cast<double>(cachedBounds.right),static_cast<double>(cachedBounds.bottom)};
-	const bool rebuild = !valid || !SameCompilation(signature,previous);
+	// An element that moved by translation alone since its last render (a
+	// scrolling trace, a sliding group) would compile for a new sub-pixel phase
+	// every frame. While it moves it compiles at quarter-pixel phases, keeps
+	// the last few, and places the remaining fraction at submission. A resting
+	// element compiles at its exact phase.
+	bool moving = false;
+	if (valid) {
+		moving = !SameCompilation(signature,previous);
+		for (size_t i = 0; moving && i < signature.size(); ++i) if (i != 6 && i != 7 && signature[i] != previous[i]) moving = false;
+	}
+	previous = signature; valid = true;
+	double residualX = 0, residualY = 0;
+	if (moving) {
+		const double phaseX = std::floor(options.transform.tx*4)/4, phaseY = std::floor(options.transform.ty*4)/4;
+		residualX = options.transform.tx-phaseX; residualY = options.transform.ty-phaseY;
+		options.transform.tx = signature[6] = phaseX; options.transform.ty = signature[7] = phaseY;
+	}
+	auto entry = std::find_if(cache.begin(),cache.end(),[&](const Compilation& item) { return SameCompilation(signature,item.signature); });
+	const bool rebuild = entry == cache.end();
 	if (rebuild) {
-		compiled.clear(); compiledBlends.clear(); previous = signature; valid = true;
+		Compilation fresh; fresh.signature = signature;
 		for (const auto& path : paths) {
 			VectorMesh result; std::string error;
 			const auto start = std::chrono::steady_clock::now();
@@ -149,15 +167,22 @@ void VectorGeometry::Render(Rml::Element& element, bool inheritOpacity) {
 			statistics->vectorCompileMilliseconds += std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count();
 			++statistics->vectorPathsCompiled;
 			if (!success) { host->Log(true,"Vector "+element.GetId()+"/"+error); continue; }
-			if (!result.indices.empty()) { compiled.push_back(std::move(result)); compiledBlends.push_back(path.blend); }
+			if (!result.indices.empty()) { fresh.meshes.push_back(std::move(result)); fresh.blends.push_back(path.blend); }
 		}
-	} else ++statistics->vectorCacheHits;
-	for (const auto& mesh : compiled) statistics->visibleVectorCacheBytes += mesh.vertices.capacity()*sizeof(VectorVertex)+mesh.indices.capacity()*sizeof(int);
-	if (rebuild || opacity != previousOpacity) {
-		geometry.clear(); geometryBlends.clear(); previousOpacity = opacity;
-		for (size_t index = 0; index < compiled.size(); ++index) {
-			const auto& cached = compiled[index];
-			const auto blend = compiledBlends[index];
+		cache.insert(cache.begin(),std::move(fresh));
+		cache.resize(std::min<size_t>(cache.size(),moving ? 8 : 1));
+		entry = cache.begin();
+	} else {
+		++statistics->vectorCacheHits;
+		if (entry != cache.begin()) { std::rotate(cache.begin(),entry,entry+1); entry = cache.begin(); }
+		if (!moving) cache.resize(1);
+	}
+	for (const auto& mesh : entry->meshes) statistics->visibleVectorCacheBytes += mesh.vertices.capacity()*sizeof(VectorVertex)+mesh.indices.capacity()*sizeof(int);
+	if (opacity != entry->opacity) {
+		entry->geometry.clear(); entry->opacity = opacity;
+		for (size_t index = 0; index < entry->meshes.size(); ++index) {
+			const auto& cached = entry->meshes[index];
+			const auto blend = entry->blends[index];
 			const auto upload = std::chrono::steady_clock::now();
 			Rml::Mesh mesh;
 			mesh.vertices.reserve(cached.vertices.size());
@@ -176,19 +201,20 @@ void VectorGeometry::Render(Rml::Element& element, bool inheritOpacity) {
 				mesh.vertices.push_back({{static_cast<float>(v.x),static_cast<float>(v.y)},colour,{0,0}});
 			}
 			mesh.indices.assign(cached.indices.begin(),cached.indices.end());
-			geometry.push_back(manager->MakeGeometry(std::move(mesh)));
-			geometryBlends.push_back(blend);
+			entry->geometry.push_back(manager->MakeGeometry(std::move(mesh)));
 			++statistics->vectorUploads;
 			statistics->vectorUploadMilliseconds += std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-upload).count();
 		}
 	}
+	const auto& geometry = entry->geometry;
+	const auto& geometryBlends = entry->blends;
 	if (!multiply && std::find(geometryBlends.begin(),geometryBlends.end(),PathBlend::Multiply) != geometryBlends.end())
 		multiply = manager->LoadTexture(std::string("material:")+MultiplySource);
 	// Geometry is already in output pixels. Submit through the render manager
 	// to retain its clipping/lifetime/order contract without a second transform.
 	manager->SetTransform(nullptr);
 	for (size_t index = 0; index < geometry.size(); ++index) {
-		const Rml::Vector2f translation{static_cast<float>(offsetX),static_cast<float>(offsetY)};
+		const Rml::Vector2f translation{static_cast<float>(offsetX+residualX),static_cast<float>(offsetY+residualY)};
 		if (geometryBlends[index] == PathBlend::Multiply) geometry[index].Render(translation,multiply);
 		else geometry[index].Render(translation);
 	}

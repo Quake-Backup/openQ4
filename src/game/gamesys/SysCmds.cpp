@@ -3255,6 +3255,21 @@ without having to line up a real shot.  An amount picks the tier; the named
 arguments ask for the other lanes.
 ==================
 */
+static void Cmd_TestWeaponScope_f( const idCmdArgs &args ) {
+	idPlayer *player = gameLocal.GetLocalPlayer();
+	if ( !gameLocal.CheatsOk() || !player || !player->weapon ) return;
+	idUserInterface *gui = player->weapon->GetZoomGui();
+	gameLocal.Printf( "WEAPON_SCOPE gui=%s\n", gui ? gui->Name() : "none" );
+	if ( args.Argc() == 2 ) {
+		if ( !idStr::Icmpn( args.Argv( 1 ), "weapon_", 7 ) ) {
+			player->SelectWeapon( player->GetWeaponIndex( args.Argv( 1 ) ), true );
+			return;
+		}
+		const idEventDef *event = idEventDef::FindEvent( atoi( args.Argv( 1 ) ) ? "<zoomin>" : "<zoomout>" );
+		if ( event ) player->ProcessEvent( event );
+	}
+}
+
 static void Cmd_TestHitMarker_f( const idCmdArgs &args ) {
 	int		damage = HITMARKER_DAMAGE_UNKNOWN;
 	int		flags = 0;
@@ -4176,6 +4191,8 @@ void Cmd_SetPMCVars_f ( const idCmdArgs &args ) {
 	}
 }
 
+#include "AudioGraphDebug.inl"
+
 void Cmd_FadeSound_f( const idCmdArgs &args )	{
 // jmarshall: eval is this needed?
 	//if( args.Argc() < 2)	{
@@ -4252,6 +4269,16 @@ void Cmd_FillBots_f(const idCmdArgs& args)
 	}
 }
 // jmarshall end
+
+static void Cmd_TestStatusBar_f( const idCmdArgs &args ) {
+	idPlayer *player = gameLocal.GetLocalPlayer();
+	if ( player ) player->DebugStatusBar( args );
+}
+
+static void Cmd_TestWeaponWheel_f( const idCmdArgs &args ) {
+	idPlayer *player = gameLocal.GetLocalPlayer();
+	if ( player ) player->DebugWeaponWheel( args );
+}
 
 /*
 =================
@@ -4336,6 +4363,7 @@ void idGameLocal::InitConsoleCommands( void ) {
 	cmdSystem->AddCommand( "testClassicLight",	Cmd_TestClassicLight_f,		CMD_FL_GAME|CMD_FL_CHEAT,	"raises the classic dynamic lights in front of the player" );
 	cmdSystem->AddCommand( "testDeath",				Cmd_TestDeath_f,			CMD_FL_GAME|CMD_FL_CHEAT,	"tests death" );
 	cmdSystem->AddCommand( "testHitMarker",		Cmd_TestHitMarker_f,		CMD_FL_GAME|CMD_FL_CHEAT,	"tests the crosshair hit marker" );
+	cmdSystem->AddCommand( "testWeaponScope", Cmd_TestWeaponScope_f, CMD_FL_GAME|CMD_FL_CHEAT, "report the current scope and optionally set its zoom state", idCmdSystem::ArgCompletion_Boolean );
 	cmdSystem->AddCommand( "testSave",				Cmd_TestSave_f,				CMD_FL_GAME|CMD_FL_CHEAT,	"writes out a test savegame" );
 	cmdSystem->AddCommand( "testModel",				idTestModel::TestModel_f,			CMD_FL_GAME|CMD_FL_CHEAT,	"tests a model", idTestModel::ArgCompletion_TestModel );
 	cmdSystem->AddCommand( "testSkin",				idTestModel::TestSkin_f,			CMD_FL_GAME|CMD_FL_CHEAT,	"tests a skin on an existing testModel", idCmdSystem::ArgCompletion_Decl<DECL_SKIN> );
@@ -4457,6 +4485,9 @@ void idGameLocal::InitConsoleCommands( void ) {
 
 // jshepard: fade music in / out
 	cmdSystem->AddCommand( "fadeSound",				Cmd_FadeSound_f,			CMD_FL_GAME|CMD_FL_CHEAT,	"fades all sound by X decibles over Y seconds" );
+	cmdSystem->AddCommand( "testRadioChatter", Cmd_TestRadioChatter_f, CMD_FL_GAME|CMD_FL_CHEAT, "plays or probes the radio HUD audio graph", idCmdSystem::ArgCompletion_SoundName );
+	cmdSystem->AddCommand( "testStatusBar", Cmd_TestStatusBar_f, CMD_FL_GAME|CMD_FL_CHEAT, "status bar: probe or stats <health> <armor>" );
+	cmdSystem->AddCommand( "testWeaponWheel", Cmd_TestWeaponWheel_f, CMD_FL_GAME|CMD_FL_CHEAT, "weapon wheel: open, slot N, release, cancel, family marine|strogg, probe" );
 
 // mekberg: added.
 	cmdSystem->AddCommand( "setPMCVars",			Cmd_SetPMCVars_f,			CMD_FL_GAME,				"Resets player movement cvars" );

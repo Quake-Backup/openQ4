@@ -20,7 +20,8 @@ source contracts that keep the gate complete:
 * every retained document path in the session is reached only behind the gate;
 * the retained documents request only session verbs the adapter allowlists
   and the session handles, and they are up to date with their generator;
-* no game or legacy content names a retained document.
+* no legacy content names a retained document; the shared, separately tested
+  scope router is the only game-code selection of retained scope documents.
 
 Renderer output, physical input and in-game presentation are qualified by the
 engine captures in docs/dev/ui/retained-screens.md, not by this test.
@@ -2629,11 +2630,14 @@ def main() -> int:
                 assert action['arguments']['command'] in value_allowlist and action['arguments']['value'] == {'input': 'value'}, relative
             else:
                 assert action['operation'] == 'session.menu' and action['arguments']['command'] in allowlist, relative
-    # No game or legacy content names a retained document.
+    # Only the scoped, preference-gated optical overlay adapter in game code
+    # may choose retained documents. Legacy content never names one.
     for folder in (ROOT / 'content', ROOT / 'src/game', ROOT / 'src/mpgame'):
         if not folder.exists():
             continue
         for path in folder.rglob('*'):
+            if path == ROOT / 'src/game/gamesys/RetainedScope.h':
+                continue
             if path.suffix.lower() in {'.gui', '.def', '.cfg', '.script', '.mtr', '.cpp', '.h'} and path.is_file():
                 assert '.q4ui' not in path.read_text(encoding='utf-8', errors='replace'), f'{path} names a retained document'
 

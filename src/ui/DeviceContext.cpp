@@ -1966,6 +1966,24 @@ static ID_INLINE void openQ4_SetGuiDrawVert( idDrawVert &vert, float x, float y,
 	vert.color2[0] = vert.color2[1] = vert.color2[2] = vert.color2[3] = 255;
 }
 
+void idDeviceContext::SetDrawColor(const idVec4& colour) {
+	hudColour = colour;
+	renderSystem->SetColor(colour);
+}
+bool idDeviceContext::CaptureHud(const idDrawVert* vertices, const idMaterial* material) {
+	if (!hudCapture) return false;
+	if (!material || hudColour.w <= 0) return true;
+	openq4::ui::HudPrimitive item;
+	item.material = material->GetName(); item.glyph = hudGlyph;
+	for (int i=0;i<4;++i) {
+		item.quad[2*i] = vertices[i].xyz.x; item.quad[2*i+1] = vertices[i].xyz.y;
+		item.colour[i] = hudColour[i];
+	}
+	item.uv = {vertices[0].st.x,vertices[0].st.y,vertices[2].st.x,vertices[2].st.y};
+	hudCapture->push_back(std::move(item));
+	return true;
+}
+
 void idDeviceContext::DrawStretchPic(float x, float y, float w, float h, float s1, float t1, float s2, float t2, const idMaterial *shader) {
 	idDrawVert verts[4];
 	glIndex_t indexes[6];
@@ -1987,6 +2005,7 @@ void idDeviceContext::DrawStretchPic(float x, float y, float w, float h, float s
 		}
 	}
 
+	if (CaptureHud(verts,shader)) return;
 	renderSystem->DrawStretchPic( &verts[0], &indexes[0], 4, 6, shader, hasTransform, 0.0f, 0.0f, static_cast<float>( VIRTUAL_WIDTH ), static_cast<float>( VIRTUAL_HEIGHT ) );
 	
 }
@@ -1994,7 +2013,7 @@ void idDeviceContext::DrawStretchPic(float x, float y, float w, float h, float s
 
 void idDeviceContext::DrawMaterial(float x, float y, float w, float h, const idMaterial *mat, const idVec4 &color, float scalex, float scaley) {
 
-	renderSystem->SetColor(color);
+	SetDrawColor(color);
 
 	float	s0, s1, t0, t1;
 // 
@@ -2041,7 +2060,7 @@ void idDeviceContext::DrawMaterial(float x, float y, float w, float h, const idM
 
 void idDeviceContext::DrawMaterialRotated(float x, float y, float w, float h, const idMaterial *mat, const idVec4 &color, float scalex, float scaley, float angle) {
 	
-	renderSystem->SetColor(color);
+	SetDrawColor(color);
 
 	float	s0, s1, t0, t1;
 	// 
@@ -2136,6 +2155,7 @@ void idDeviceContext::DrawStretchPicRotated(float x, float y, float w, float h, 
 	}
 
 
+	if (CaptureHud(verts,shader)) return;
 	renderSystem->DrawStretchPic( &verts[0], &indexes[0], 4, 6, shader, ident || angle != 0.0f, 0.0f, 0.0f, static_cast<float>( VIRTUAL_WIDTH ), static_cast<float>( VIRTUAL_HEIGHT ) );
 }
 
@@ -2145,7 +2165,7 @@ void idDeviceContext::DrawFilledRect( float x, float y, float w, float h, const 
 		return;
 	}
 
-	renderSystem->SetColor(color);
+	SetDrawColor(color);
 	
 	if (ClippedCoords(&x, &y, &w, &h, NULL, NULL, NULL, NULL)) {
 		return;
@@ -2162,7 +2182,7 @@ void idDeviceContext::DrawRect( float x, float y, float w, float h, float size, 
 		return;
 	}
 
-	renderSystem->SetColor(color);
+	SetDrawColor(color);
 	
 	if (ClippedCoords(&x, &y, &w, &h, NULL, NULL, NULL, NULL)) {
 		return;
@@ -2181,7 +2201,7 @@ void idDeviceContext::DrawMaterialRect( float x, float y, float w, float h, floa
 		return;
 	}
 
-	renderSystem->SetColor(color);
+	SetDrawColor(color);
 	DrawMaterial( x, y, size, h, mat, color );
 	DrawMaterial( x + w - size, y, size, h, mat, color );
 	DrawMaterial( x, y, w, size, mat, color );
@@ -2194,7 +2214,7 @@ void idDeviceContext::SetCursor(int n) {
 }
 
 void idDeviceContext::DrawCursor(float *x, float *y, float size) {
-	renderSystem->SetColor(colorWhite);
+	SetDrawColor(colorWhite);
 	// Keep GUI cursor state in virtual coordinates; only transform local draw coords.
 	float drawX = *x;
 	float drawY = *y;
@@ -2238,7 +2258,9 @@ void idDeviceContext::PaintGlyph( float x, float y, float scale, const fontInfo_
 	if ( clipIndex >= 0 ) {
 		clipRects[clipIndex].w += clipRightPad;
 	}
+	const bool previousGlyph = hudGlyph; hudGlyph = true;
 	PaintChar( x, y, width, glyph->height, scale, s, glyph->t, s2, glyph->t2, hShader );
+	hudGlyph = previousGlyph;
 	if ( clipIndex >= 0 ) {
 		clipRects[clipIndex].w -= clipRightPad;
 	}
@@ -2355,7 +2377,7 @@ int idDeviceContext::DrawText(float x, float y, float scale, idVec4 color, const
 		}
 	}
 
-	renderSystem->SetColor( currentColor );
+	SetDrawColor( currentColor );
 
 	const unsigned char *s = reinterpret_cast<const unsigned char *>( text );
 	int len = idLib::SizeToInt( strlen( text ), "idDeviceContext::DrawText" );
@@ -2396,7 +2418,7 @@ int idDeviceContext::DrawText(float x, float y, float scale, idVec4 color, const
 						DrawKeyBindingIcon( keyNum, x, y, scale, currentColor, bindingHeightRatio );
 						x += bindingWidth;
 						SetFontByScale( scale );
-						renderSystem->SetColor( currentColor );
+						SetDrawColor( currentColor );
 					} else {
 						char iconCode[4];
 						if ( !openQ4_ExtractIconCode( reinterpret_cast<const char *>( payload ), iconCode ) ) {
@@ -2419,12 +2441,12 @@ int idDeviceContext::DrawText(float x, float y, float scale, idVec4 color, const
 						case '+':
 							drawTextColorAdjust += Q4_TEXT_BRIGHTNESS_STEP;
 							currentColor = idVec4( drawTextColor.x + drawTextColorAdjust, drawTextColor.y + drawTextColorAdjust, drawTextColor.z + drawTextColorAdjust, color.w );
-							renderSystem->SetColor( currentColor );
+							SetDrawColor( currentColor );
 							break;
 						case '-':
 							drawTextColorAdjust -= Q4_TEXT_BRIGHTNESS_STEP;
 							currentColor = idVec4( drawTextColor.x + drawTextColorAdjust, drawTextColor.y + drawTextColorAdjust, drawTextColor.z + drawTextColorAdjust, color.w );
-							renderSystem->SetColor( currentColor );
+							SetDrawColor( currentColor );
 							break;
 						case '0':
 						case 'R':
@@ -2432,7 +2454,7 @@ int idDeviceContext::DrawText(float x, float y, float scale, idVec4 color, const
 							drawTextColor = color;
 							drawTextColorAdjust = 0.0f;
 							currentColor = color;
-							renderSystem->SetColor( currentColor );
+							SetDrawColor( currentColor );
 							break;
 						case '1': case '2': case '3': case '4': case '5':
 						case '6': case '7': case '8': case '9': case ':':
@@ -2440,14 +2462,14 @@ int idDeviceContext::DrawText(float x, float y, float scale, idVec4 color, const
 							drawTextColor[3] = color[3];
 							drawTextColorAdjust = 0.0f;
 							currentColor = drawTextColor;
-							renderSystem->SetColor( currentColor );
+							SetDrawColor( currentColor );
 							break;
 						case 'C':
 						case 'c':
 							if ( payloadLength >= 5 ) {
 								openQ4_ApplyRgbTextEscapeColor( drawTextColor, currentColor, payload );
 								drawTextColorAdjust = 0.0f;
-								renderSystem->SetColor( currentColor );
+								SetDrawColor( currentColor );
 							}
 							break;
 						default:
@@ -2479,9 +2501,9 @@ int idDeviceContext::DrawText(float x, float y, float scale, idVec4 color, const
 
 		if ( style == Q4_TEXT_STYLE_SHADOW ) {
 			idVec4 shadowColor( 0.0f, 0.0f, 0.0f, currentColor[3] );
-			renderSystem->SetColor( shadowColor );
+			SetDrawColor( shadowColor );
 			PaintGlyph( drawX + Q4_TEXT_STYLE_OFFSET, drawY + Q4_TEXT_STYLE_OFFSET, scaledFont.renderScale, scaledFont.font, glyph, glyphMaterial );
-			renderSystem->SetColor( currentColor );
+			SetDrawColor( currentColor );
 		} else if ( style == Q4_TEXT_STYLE_OUTLINE ) {
 			const bool darkOutline = currentColor[0] >= Q4_TEXT_OUTLINE_DARK_THRESHOLD || currentColor[1] >= Q4_TEXT_OUTLINE_DARK_THRESHOLD || currentColor[2] >= Q4_TEXT_OUTLINE_DARK_THRESHOLD;
 			idVec4 outlineColor = darkOutline ? idVec4( 0.0f, 0.0f, 0.0f, currentColor[3] ) : idVec4( 1.0f, 1.0f, 1.0f, currentColor[3] );
@@ -2491,11 +2513,11 @@ int idDeviceContext::DrawText(float x, float y, float scale, idVec4 color, const
 				{ -Q4_TEXT_STYLE_OFFSET, -Q4_TEXT_STYLE_OFFSET },
 				{ Q4_TEXT_STYLE_OFFSET, -Q4_TEXT_STYLE_OFFSET }
 			};
-			renderSystem->SetColor( outlineColor );
+			SetDrawColor( outlineColor );
 			for ( int i = 0; i < 4; ++i ) {
 				PaintGlyph( drawX + offsets[i][0], drawY + offsets[i][1], scaledFont.renderScale, scaledFont.font, glyph, glyphMaterial );
 			}
-			renderSystem->SetColor( currentColor );
+			SetDrawColor( currentColor );
 		}
 
 		PaintGlyph( drawX, drawY, scaledFont.renderScale, scaledFont.font, glyph, glyphMaterial );
@@ -2920,7 +2942,7 @@ int idDeviceContext::DrawText( const char *text, float textScale, int textAlign,
 
 	if ( !( text && *text ) ) {
 		if ( openQ4_ShouldDrawEmptyTextCursor( calcOnly, cursor ) ) {
-			renderSystem->SetColor( color );
+			SetDrawColor( color );
 			DrawEditCursor( rectDraw.x, rectDraw.y + lineSkip, textScale );
 		}
 		return visibleCellCount;
@@ -3085,7 +3107,7 @@ int idDeviceContext::DrawText( const char *text, float textScale, int textAlign,
 	}
 
 	if ( openQ4_ShouldDrawFinalTextCursor( cursor ) ) {
-		renderSystem->SetColor( color );
+		SetDrawColor( color );
 		DrawEditCursor( rectDraw.x, rectDraw.y + lineSkip, textScale );
 	}
 

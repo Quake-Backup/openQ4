@@ -10,6 +10,7 @@
 #include "Behavior.h"
 #include "Interaction.h"
 #include "DocumentEdit.h"
+#include "Hud.h"
 
 namespace openq4::ui {
 
@@ -29,6 +30,7 @@ struct Viewport {
 	// positive, one canvas height of dp spans the physical height, replacing
 	// display density and user scale. Typography keeps its own text scale.
 	float canvasHeight = 0;
+	float canvasMinWidth = 0;
 	float DpRatio() const;
 	float TextRatio() const;
 	void FitToMinimum(float widthDp, float heightDp);
@@ -94,6 +96,9 @@ struct RuntimeStatistics {
 	std::uint64_t clipMasks = 0, clipMaskFallbacks = 0;
 	// Shared service residency, sampled by Statistics(); idle backends are reused.
 	std::uint64_t activeContexts = 0, residentBackends = 0;
+	// Authored property values the frame's presentation passes walked: none
+	// while nothing they read has changed since the last complete pass.
+	std::uint64_t motionInputsScanned = 0;
 };
 
 class Host {
@@ -194,6 +199,9 @@ public:
 	// Integration-spike entry point, not the canonical editor serialization.
 	bool LoadMarkup(const std::string& markup, const std::string& sourcePath);
 	bool LoadDocument(const std::string& source, const std::string& sourcePath, std::vector<Diagnostic>& diagnostics);
+	// The HUD bridge supplies presentation data to an explicit artwork catalog.
+	// This does not edit authored nodes or grant any input/command authority.
+	bool SetHudPresentation(const std::vector<HudPrimitive>& items, const Viewport&, std::string& error);
 	bool SetState(const StateValues& changes, std::string& error, double monotonicSeconds);
 	StateValues GetState(bool includeHostSources = true) const;
 	std::optional<Value> PresentedValue(const std::string& node, const std::string& property) const;

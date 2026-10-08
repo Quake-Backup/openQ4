@@ -33,7 +33,7 @@ bool ValidProperty(const std::string& name, const Value& value) {
 			{"image-align-x",{"left","center","right"}}, {"image-align-y",{"top","center","bottom"}},
 			{"overflow",{"visible","hidden","auto","scroll"}}, {"text-align",{"left","center","right"}},
 			{"white-space",{"normal","pre","nowrap","pre-wrap","pre-line"}},
-			{"word-break",{"normal","break-all","break-word"}},
+			{"word-break",{"normal","break-all","break-word"}}, {"text-overflow",{"clip","ellipsis"}},
 			{"flex-direction",{"row","row-reverse","column","column-reverse"}},
 			{"flex-wrap",{"nowrap","wrap","wrap-reverse"}},
 			{"justify-content",{"flex-start","flex-end","center","space-between","space-around","space-evenly"}},
@@ -230,8 +230,9 @@ public:
 		if (root.isMember("editor")) Require(root["editor"].isObject(),root["editor"],"/editor","Editor metadata must be an object");
 		if (root.isMember("canvas")) {
 			// A view-height canvas: the document's dp scale follows the view's height.
-			Fields(root["canvas"],"/canvas",{"height","extensions"});
+			Fields(root["canvas"],"/canvas",{"height","minWidth","extensions"});
 			model.canvasHeight = Numeric(root["canvas"]["height"],"/canvas/height",240,4320);
+			if (root["canvas"].isMember("minWidth")) model.canvasMinWidth = Numeric(root["canvas"]["minWidth"],"/canvas/minWidth",240,7680);
 		}
 		if (root.isMember("tokens")) {
 			Require(root["tokens"].isObject(),root["tokens"],"/tokens","Expected a token object");
@@ -804,9 +805,9 @@ private:
 		else if (type == "solid") {
 			Fields(value,path,{"type","color","extensions"});
 			result.type = PaintType::Solid; result.colour = Colour(value["color"],path+"/color");
-		} else if (type == "linear") {
+		} else if (type == "linear" || type == "radial" || type == "diamond" || type == "conic") {
 			Fields(value,path,{"type","from","to","stops","extensions"});
-			result.type = PaintType::Linear;
+			result.type = type == "radial" ? PaintType::Radial : type == "diamond" ? PaintType::Diamond : type == "conic" ? PaintType::Conic : PaintType::Linear;
 			result.from = Point(value["from"],path+"/from"); result.to = Point(value["to"],path+"/to");
 			Require(value["stops"].isArray() && value["stops"].size() >= 2 && value["stops"].size() <= 256,value["stops"],path+"/stops","Gradient requires 2..256 stops");
 			double previous = -1;
@@ -818,7 +819,7 @@ private:
 				previous = at; result.stops.push_back({at,Colour(stop["color"],p+"/color")});
 			}
 			Require(result.stops.front().at == 0 && result.stops.back().at == 1,value["stops"],path+"/stops","Gradient requires stops at both zero and one");
-		} else Require(false,value["type"],path+"/type","Unsupported paint type; expected none, solid or linear");
+		} else Require(false,value["type"],path+"/type","Unsupported paint type; expected none, solid, linear, radial or diamond");
 		return result;
 	}
 	VectorPath ReadPath(const Json::Value& value, const std::string& path, bool mask = false) {

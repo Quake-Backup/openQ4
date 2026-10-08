@@ -56,6 +56,10 @@ bool idEditWindow::ParseInternalVar( const char *_name, idParser *src ) {
 		numeric = src->ParseBool();
 		return true;
 	}
+	if ( idStr::Icmp( _name, "numericNegative" ) == 0 ) {
+		numericNegative = src->ParseBool();
+		return true;
+	}
 	if ( idStr::Icmp( _name, "wrap" ) == 0) {
 		wrap = src->ParseBool();
 		return true;
@@ -103,6 +107,7 @@ idWinVar *idEditWindow::GetWinVarByName( const char *_name, bool fixup, drawWin_
 void idEditWindow::CommonInit() {
 	maxChars = 128;
 	numeric = false;
+	numericNegative = false;
 	paintOffset = 0;
 	cursorPos = 0;
 	cursorLine = 0;
@@ -308,7 +313,8 @@ const char *idEditWindow::HandleEvent(const sysEvent_t *event, bool *updateVisua
 		}
 
 		if ( numeric ) {
-			if ( ( key < '0' || key > '9' ) && key != '.' ) {
+			const bool leadingMinus = numericNegative && key == '-' && cursorPos == 0 && buffer[0] != '-';
+			if ( ( key < '0' || key > '9' ) && key != '.' && !leadingMinus ) {
 	       		return "";
 			}
 		}
@@ -690,6 +696,13 @@ idEditWindow::UpdateCvar
 ============
 */
 void idEditWindow::UpdateCvar( bool read, bool force ) {
+	// A signed field needs an editable prefix before the first digit. Do not
+	// round-trip '-' through the integer CVar (which canonicalizes it to 0).
+	// Leaving the field restores the last valid value in the ordinary read.
+	if ( !force && numeric && numericNegative && ( flags & WIN_FOCUS ) != 0 &&
+		 ( text.Length() == 0 || idStr::Cmp( text, "-" ) == 0 ) ) {
+		return;
+	}
 	if ( force || liveUpdate ) {
 		if ( cvar ) {
 			if ( read ) {

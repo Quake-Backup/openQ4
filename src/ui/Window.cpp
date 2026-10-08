@@ -33,6 +33,7 @@ If you have questions concerning this license or the applicable additional terms
 #include "Window.h"
 #include "LegacyGuiImport.h"
 #include "UserInterfaceLocal.h"
+#include "AudioGraph.h"
 #include "../framework/Session.h"
 #include "EditWindow.h"
 #include "ChoiceWindow.h"
@@ -1643,6 +1644,9 @@ void idWindow::DrawBackground(const idRectangle &drawRect) {
 	}
 
 	if ( background && matColor.w() ) {
+		if ( DrawPlaybackGraph( dc, gui, GetName(), background, drawRect, matColor ) ) {
+			return;
+		}
 		if ( ShouldDrawCinematicUnderlay( background, drawRect ) ) {
 			DrawCinematicUnderlay( dc );
 		} else if ( ShouldDrawSplashUnderlay( background, drawRect ) ) {

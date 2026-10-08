@@ -231,6 +231,9 @@ struct DocumentModel {
 	// (title, pause, loading) lays its 4:3 canvas out at this height and scales
 	// with the view's height; zero keeps display-density layout.
 	double canvasHeight = 0;
+	// Optional minimum width: narrow views fit the center screen to the width
+	// and expose more vertical space instead of clipping the authored canvas.
+	double canvasMinWidth = 0;
 	const Node* FindNode(const std::string& id) const;
 	// Resolve a compiled descriptor against one supplied state snapshot.
 	// No side effects; failure preserves the caller's invocation unchanged.

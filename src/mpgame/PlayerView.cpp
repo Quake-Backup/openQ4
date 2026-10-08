@@ -7,6 +7,7 @@
 #pragma hdrstop
 
 #include "Game_local.h"
+#include "../game/gamesys/RetainedViewEffects.inl"
 
 #if defined(_XENON) && (defined(_PROFILE) || defined(_DEBUG))
 #include "../sys/xenon/ProfilingSupport.h"
@@ -162,6 +163,7 @@ idPlayerView::Restore
 ==============
 */
 void idPlayerView::Restore( idRestoreGame *savefile ) {
+	ResetRetainedViewEffects();
 	int i;
 	screenBlob_t *blob;
 
@@ -250,6 +252,7 @@ idPlayerView::ClearEffects
 ==============
 */
 void idPlayerView::ClearEffects() {
+	ResetRetainedViewEffects();
 	lastDamageTime = MS2SEC( gameLocal.time - 99999 );
 
 	dvFinishTime = ( gameLocal.time - 99999 );
@@ -642,6 +645,8 @@ void idPlayerView::SingleView( idUserInterface *hud, const renderView_t *view, i
 
 	// draw screen blobs
 	if ( !pm_thirdPerson.GetBool() && !g_skipViewEffects.GetBool() ) {
+		// Soften the scene before damage indicators, HUD and wheel artwork.
+		DrawRetainedViewEffects( true );
 		for ( int i = 0 ; i < MAX_SCREEN_BLOBS ; i++ ) {
 			screenBlob_t	*blob = &screenBlobs[i];
 			if ( blob->finishTime <= gameLocal.time ) {
@@ -784,6 +789,7 @@ assumes: color.w is 0 or 1
 =================
 */
 void idPlayerView::Fade( idVec4 color, int time ) {
+	RetainedRecoveryFade( color, time );
 
 	if ( !fadeTime ) {
 		fadeFromColor.Set( 0.0f, 0.0f, 0.0f, 1.0f - color[ 3 ] );
@@ -1136,6 +1142,8 @@ void idPlayerView::RenderPlayerView( idUserInterface *hud ) {
 // openQ4 BEGIN
 		LiquidOverlay( eyeLiquidContents );
 // openQ4 END
+
+		DrawRetainedViewEffects();
 
 		// Now draw GUI's.
 		if ( !guiRendered ) {

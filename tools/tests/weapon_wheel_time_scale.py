@@ -60,7 +60,7 @@ def main() -> None:
         "engine effective time-scale composition",
     )
 
-    player = read(GAME_ROOT / "src/game/Player.cpp")
+    player = read(GAME_ROOT / "src/game/Player.cpp") + read(GAME_ROOT / "src/game/gamesys/WeaponWheel.inl")
     if re.search(r"SetCVar(?:Float|String|Integer)\s*\(\s*\"timescale\"", player):
         raise AssertionError("The weapon wheel must not write the public timescale CVar")
     if "weaponWheelBaseTimescale" in player or "weaponWheelBaseTimescale" in read(

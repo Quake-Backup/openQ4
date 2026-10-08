@@ -7,6 +7,7 @@
 #pragma hdrstop
 
 #include "Game_local.h"
+#include "../game/gamesys/HudPrimitives.h"
 
 #include "ai/AI.h"
 #include "ai/AI_Manager.h"
@@ -479,6 +480,10 @@ nextWeaponCombo_t weaponComboChart[12] = {
 };
 #endif
 // RAVEN END
+
+#include "../game/gamesys/WeaponWheelLegacy.inl"
+#include "../game/gamesys/WeaponWheel.inl"
+#include "../game/gamesys/RetainedStatusBar.inl"
 
 const idVec4 marineHitscanTint( 0.69f, 1.0f, 0.4f, 1.0f );
 const idVec4 stroggHitscanTint( 1.0f, 0.5f, 0.0f, 1.0f );
@@ -1401,6 +1406,8 @@ idPlayer::idPlayer
 ==============
 */
 idPlayer::idPlayer() {
+	InitWeaponWheel();
+	InitStatusBar();
 	memset( &usercmd, 0, sizeof( usercmd ) );
 	vrButtonCrouch = false;
 
@@ -1913,6 +1920,7 @@ idPlayer::Init
 ==============
 */
 void idPlayer::Init( void ) {
+	ResetWeaponWheel( true );
 	const char			*value;
 	const idDict		*userInfo = GetUserInfo();
 
@@ -2551,6 +2559,8 @@ Release any resources used by the player.
 ==============
 */
 idPlayer::~idPlayer() {
+	FreeWeaponWheelGui();
+	FreeStatusBar();
 	if( gameLocal.mpGame.GetGameState() ) {
 		gameLocal.mpGame.GetGameState()->ClientDisconnect( this );
 	}
@@ -2865,6 +2875,7 @@ idPlayer::Restore
 ===========
 */
 void idPlayer::Restore( idRestoreGame *savefile ) {
+	FreeStatusBar();
 	assert( !IsFakeClient() );
 
 	int	  i;
@@ -3213,6 +3224,7 @@ void idPlayer::Restore( idRestoreGame *savefile ) {
 	declManager->FindType( DECL_ENTITYDEF, "dmg_shellshock", false, false );
 	declManager->FindType( DECL_ENTITYDEF, "dmg_shellshock_nohl", false, false );
 // RAVEN END
+	ResetWeaponWheel( true );
 }
 
 /*
@@ -4261,6 +4273,7 @@ void idPlayer::UpdateHudStats( idUserInterface *_hud ) {
 
 void idPlayer::DrawInput()
 {
+	rvHudPrimitives presentation;
 	idVec4 highlightColor(1.0f, 0.0f, 0.0f, 0.8f);
 	sscanf( hud_inputColor.GetString(), "%f %f %f", &highlightColor.x, &highlightColor.y, &highlightColor.z );
 
@@ -4270,32 +4283,26 @@ void idPlayer::DrawInput()
 	sscanf( hud_inputPosition.GetString(), "%f %f", &inputPos.x, &inputPos.y );
 
 	const idMaterial *centerMaterial = declManager->FindMaterial("gfx/guis/showinput/hud_showinput_center");
-	renderSystem->SetColor( normalColor );
-	renderSystem->DrawStretchPic(inputPos.x + 10, inputPos.y + 10, 10.0f, 10.0f, 0.0, 0.0, 1.0f, 1.0f, centerMaterial );
+	presentation.Rect(inputPos.x + 10, inputPos.y + 10, 10.0f, 10.0f, normalColor, centerMaterial);
 
 	const idMaterial *forwardMaterial = declManager->FindMaterial("gfx/guis/showinput/hud_showinput_forward");
-	renderSystem->SetColor( (usercmd.forwardmove == 127) ? highlightColor : normalColor );
-	renderSystem->DrawStretchPic(inputPos.x + 10, inputPos.y, 10.0f, 10.0f, 0.0, 0.0, 1.0f, 1.0f, forwardMaterial );
+	presentation.Rect(inputPos.x + 10, inputPos.y, 10.0f, 10.0f, (usercmd.forwardmove == 127) ? highlightColor : normalColor, forwardMaterial);
 
 	const idMaterial *backMaterial = declManager->FindMaterial("gfx/guis/showinput/hud_showinput_back");
-	renderSystem->SetColor( (usercmd.forwardmove == -127) ? highlightColor : normalColor );
-	renderSystem->DrawStretchPic(inputPos.x + 10, inputPos.y + 20, 10.0f, 10.0f, 0.0, 0.0, 1.0f, 1.0f, backMaterial );
+	presentation.Rect(inputPos.x + 10, inputPos.y + 20, 10.0f, 10.0f, (usercmd.forwardmove == -127) ? highlightColor : normalColor, backMaterial);
 
 	const idMaterial *leftMaterial = declManager->FindMaterial("gfx/guis/showinput/hud_showinput_moveleft");
-	renderSystem->SetColor( (usercmd.rightmove == -127) ? highlightColor : normalColor );
-	renderSystem->DrawStretchPic(inputPos.x, inputPos.y + 10, 10.0f, 10.0f, 0.0, 0.0, 1.0f, 1.0f, leftMaterial );
+	presentation.Rect(inputPos.x, inputPos.y + 10, 10.0f, 10.0f, (usercmd.rightmove == -127) ? highlightColor : normalColor, leftMaterial);
 
 	const idMaterial *rightMaterial = declManager->FindMaterial("gfx/guis/showinput/hud_showinput_moveright");
-	renderSystem->SetColor( (usercmd.rightmove == 127) ? highlightColor : normalColor );
-	renderSystem->DrawStretchPic(inputPos.x + 20, inputPos.y + 10, 10.0f, 10.0f, 0.0, 0.0, 1.0f, 1.0f, rightMaterial );
+	presentation.Rect(inputPos.x + 20, inputPos.y + 10, 10.0f, 10.0f, (usercmd.rightmove == 127) ? highlightColor : normalColor, rightMaterial);
 
 	const idMaterial *upMaterial = declManager->FindMaterial("gfx/guis/showinput/hud_showinput_moveup");
-	renderSystem->SetColor( physicsObj.IsJumping() ? highlightColor : normalColor );
-	renderSystem->DrawStretchPic(inputPos.x + 36, inputPos.y, 14.0f, 14.0f, 0.0, 0.0, 1.0f, 1.0f, upMaterial );
+	presentation.Rect(inputPos.x + 36, inputPos.y, 14.0f, 14.0f, physicsObj.IsJumping() ? highlightColor : normalColor, upMaterial);
 
 	const idMaterial *downMaterial = declManager->FindMaterial("gfx/guis/showinput/hud_showinput_movedown");
-	renderSystem->SetColor( physicsObj.IsCrouching() ? highlightColor : normalColor );
-	renderSystem->DrawStretchPic(inputPos.x + 36, inputPos.y + 17, 14.0f, 14.0f, 0.0, 0.0, 1.0f, 1.0f, downMaterial );
+	presentation.Rect(inputPos.x + 36, inputPos.y + 17, 14.0f, 14.0f, physicsObj.IsCrouching() ? highlightColor : normalColor, downMaterial);
+	presentation.Draw("native/movement-input");
 }
 
 /*
@@ -4399,28 +4406,41 @@ void idPlayer::UpdateHudPowerUps( idUserInterface *_hud ) {
 
 	_hud->HandleNamedEvent( "clearPowerups" );
 
+	bool flag = false;
 	for ( i = 0, index = 0; i < POWERUP_MAX; i++ ) {
 		// Do we have this powerup?
 		if ( !(inventory.powerups & ( 1 << i ) ) ) {
 			continue;
 		}
-			
+
 		if ( inventory.powerupEndTime[i] > gameLocal.time || inventory.powerupEndTime[i] == -1 ) {
-			// If there is still time remaining on the powerup then update the hud		
+			// If there is still time remaining on the powerup then update the hud
 			// for flags, set the powerup_flag_* variables, which give us a special pulsing flag display
 			if( i == POWERUP_CTF_MARINEFLAG || i == POWERUP_CTF_STROGGFLAG || i == POWERUP_CTF_ONEFLAG ) {
 				_hud->SetStateInt( "powerup_flag_visible", 1 );
-			} else {
+				flag = true;
+			} else if ( index < 5 ) {
 				_hud->SetStateString ( va("powerup%d_icon", index ), GetPowerupDef(i)->dict.GetString ( "inv_icon" ) );
 				_hud->SetStateString ( va("powerup%d_time", index ), inventory.powerupEndTime[i] == -1 ? "" : va( "%d" , (int)MS2SEC(inventory.powerupEndTime[i] - gameLocal.time) + 1 ) );
 				_hud->SetStateInt ( va( "powerup%d_visible", index ), 1 );
+				// openQ4: the Remastered countdown ring's remaining share, in 60ths
+				const int duration = SEC2MS( GetPowerupDef(i)->dict.GetFloat( "time", "30" ) );
+				_hud->SetStateFloat( va( "oq4_powerup%d_left", index ), inventory.powerupEndTime[i] == -1 || duration <= 0 ? 1.0f :
+					idMath::ClampFloat( 0.0f, 1.0f, ceilf( 60.0f * (float)( inventory.powerupEndTime[i] - gameLocal.time ) / (float)duration ) / 60.0f ) );
 				index++;
 			}
 
 			continue;
 		}
 	}
-	
+	// openQ4: the slots past the last powerup, and the flag, hide explicitly;
+	// the Remastered HUD never sees the stock script's clearPowerups writes.
+	for ( ; index < 5; index++ ) {
+		_hud->SetStateInt( va( "powerup%d_visible", index ), 0 );
+	}
+	if ( !flag ) {
+		_hud->SetStateInt( "powerup_flag_visible", 0 );
+	}
 }
 
 /*
@@ -4627,6 +4647,7 @@ void idPlayer::UpdateZoomGuiViewState( void ) {
 	// the weapon's last authoritative simulation axis.
 	const idMat3 &presentedViewAxis = renderView != NULL ? renderView->viewaxis : firstPersonViewAxis;
 	weapon->GetZoomGui()->SetStateFloat( "playerYaw", presentedViewAxis.ToAngles().yaw );
+	weapon->GetZoomGui()->StateChanged( gameLocal.time );
 }
 
 /*
@@ -4669,6 +4690,10 @@ idPlayer::DrawHUD
 */
 void idPlayer::DrawHUD( idUserInterface *_hud ) {
 	idUserInterface * cursor = idPlayer::cursor;
+	if ( _hud ) {
+		_hud->SetStateInt( "radio_audio_emitter", GetSoundEmitter() );
+		_hud->SetStateInt( "radio_audio_channel", SND_CHANNEL_RADIO );
+	}
  
 	if ( gameLocal.GetLocalPlayer() ) {
 		if ( team != gameLocal.GetLocalPlayer()->hudTeam && _hud ) {
@@ -4892,7 +4917,7 @@ void idPlayer::DrawHUD( idUserInterface *_hud ) {
 				// TODO: Find a way to get bracket text from gui to hud
 			}
 		}		
-	 	_hud->Redraw( gameLocal.realClientTime );
+		DrawHudWithStatusBar( _hud );
 	}
 
 	if ( gameLocal.isMultiplayer ) {
@@ -4913,6 +4938,7 @@ void idPlayer::DrawHUD( idUserInterface *_hud ) {
 			overlayHudTime = 0;
 		}
 	}
+	DrawWeaponWheel();
 }
 
 /*
@@ -7166,6 +7192,11 @@ idPlayer::Weapon_Combat
 ===============
 */
 void idPlayer::Weapon_Combat( void ) {
+	if ( weaponWheelActive || ( usercmd.buttons & BUTTON_WEAPONWHEEL ) != 0 ) {
+		pfl.weaponFired = false; pfl.attackHeld = false;
+		if ( weapon ) weapon->EndAttack();
+		return;
+	}
 	
  	if ( influenceActive || !weaponEnabled || gameLocal.inCinematic || privateCameraView ) {
 		return;
@@ -8953,6 +8984,11 @@ idPlayer::UpdateViewAngles
 ================
 */
 void idPlayer::UpdateViewAngles( void ) {
+	if ( ( weaponWheelActive || ( usercmd.buttons & BUTTON_WEAPONWHEEL ) != 0 ) && !spectating && health > 0 &&
+		 !( vrSystem != NULL && vrSystem->IsActive() && gameLocal.GetLocalPlayer() == this ) ) {
+		UpdateDeltaViewAngles( viewAngles );
+		return;
+	}
 	int i;
 	idAngles delta;
 
@@ -10186,6 +10222,7 @@ idPlayer::HandleESC
 ==============
 */
 bool idPlayer::HandleESC( void ) {
+	ResetWeaponWheel( true );
 
 // jdischler: Straight from the top, cinematic skipping on xenon is OFFICIALLY OUT.  Too many problems with it and not enough time to properly address them.
 #ifndef _XENON
@@ -10273,6 +10310,7 @@ void idPlayer::EvaluateControls( void ) {
 	}
 	scoreBoardOpen		= ( ( usercmd.buttons & BUTTON_SCORES ) != 0 || forceScoreBoard );
 
+	UpdateWeaponWheel();
 	oldFlags = usercmd.flags;
 
 	AdjustSpeed();
@@ -11064,6 +11102,7 @@ void idPlayer::Think( void ) {
 	usercmd = gameLocal.usercmds[ IsFakeClient() ? MAX_CLIENTS : entityNumber ];
 	buttonMask &= usercmd.buttons;
 	usercmd.buttons &= ~buttonMask;
+	ApplyWeaponWheelInputMask();
 
 	// openQ4: attack lockout.  Quake Live freezes weapons while a round is
 	// being set up or has just been decided; this is the equivalent of its
@@ -11122,6 +11161,8 @@ void idPlayer::Think( void ) {
 		usercmd.upmove = 0;
 	}
 	
+	if ( gameLocal.isNewFrame ) UpdateWeaponWheel();
+
 	// zooming
 	bool zoom = (usercmd.buttons & BUTTON_ZOOM) && CanZoom();
 	if ( zoom != zoomed ) {
@@ -14177,6 +14218,7 @@ void idPlayer::LocalClientPredictionThink( void ) {
 
 	buttonMask &= usercmd.buttons;
 	usercmd.buttons &= ~buttonMask;
+	ApplyWeaponWheelInputMask();
 
 	// Spectators use attack to cycle cameras, including the offline demo viewer.
 	// Their inactive weapon state must not consume that camera command.
@@ -14205,6 +14247,8 @@ void idPlayer::LocalClientPredictionThink( void ) {
 		forceScoreBoard = false;
 	}
 	scoreBoardOpen = ( ( usercmd.buttons & BUTTON_SCORES ) != 0 || forceScoreBoard );
+
+	if ( gameLocal.isNewFrame ) UpdateWeaponWheel();
 
 	// zooming
 	bool zoom = (usercmd.buttons & BUTTON_ZOOM) && CanZoom();
@@ -14418,6 +14462,7 @@ void idPlayer::NonLocalClientPredictionThink( void ) {
 
 	buttonMask &= usercmd.buttons;
 	usercmd.buttons &= ~buttonMask;
+	ApplyWeaponWheelInputMask();
 
 	//jshepard: added this to make sure clients can see other clients and the host switching weapons
 	if ( !spectating && idealWeapon != currentWeapon )	{
@@ -14445,6 +14490,8 @@ void idPlayer::NonLocalClientPredictionThink( void ) {
 		forceScoreBoard = false;
 	}
 	scoreBoardOpen = ( ( usercmd.buttons & BUTTON_SCORES ) != 0 || forceScoreBoard );
+
+	if ( gameLocal.isNewFrame ) UpdateWeaponWheel();
 
 	// zooming
 	bool zoom = (usercmd.buttons & BUTTON_ZOOM) && CanZoom();

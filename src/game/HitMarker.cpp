@@ -9,6 +9,7 @@
 #pragma hdrstop
 
 #include "Game_local.h"
+#include "gamesys/HudPrimitives.h"
 
 /*
 ===============================================================================
@@ -303,12 +304,11 @@ device context winds a quad, so a front sided material is not culled away.
 ================
 */
 static void HitMarkerDrawMark( const idVec2 &direction, float radius, float halfLength, float halfWidth,
-							   float xScale, float yScale, const idMaterial *material ) {
+							   float xScale, float yScale, const idMaterial *material, const idVec4& color, rvHudPrimitives& presentation ) {
 	const idVec2	perpendicular( -direction.y, direction.x );
 	const idVec2	center = direction * ( radius + halfLength );
 	const idVec2	along = direction * halfLength;
 	const idVec2	across = perpendicular * halfWidth;
-	const idVec2	uv( 0.0f, 0.0f );
 	idVec2			corners[ 4 ];
 	int				i;
 
@@ -322,8 +322,7 @@ static void HitMarkerDrawMark( const idVec2 &direction, float radius, float half
 		corners[ i ].y = HITMARKER_CENTER_Y + corners[ i ].y * yScale;
 	}
 
-	renderSystem->DrawStretchTri( corners[ 0 ], corners[ 3 ], corners[ 2 ], uv, uv, uv, material );
-	renderSystem->DrawStretchTri( corners[ 0 ], corners[ 2 ], corners[ 1 ], uv, uv, uv, material );
+	presentation.Quad(corners,idVec4(0,0,0,0),color,material);
 }
 
 /*
@@ -479,18 +478,18 @@ void rvHitMarker::Draw( void ) {
 
 	HitMarkerAspect( xScale, yScale );
 
+	rvHudPrimitives presentation;
 	// sheath first, then the coloured core over it
 	for ( pass = 0; pass < 2; pass++ ) {
 		const float inflate = ( pass == 0 ) ? HITMARKER_OUTLINE_INFLATE * scale : 0.0f;
 
-		renderSystem->SetColor( ( pass == 0 ) ? outline : color );
 
 		for ( i = 0; i < 4; i++ ) {
 			HitMarkerDrawMark( hitMarkerDirections[ i ], radius - inflate,
 							   halfLength + inflate, halfWidth + inflate,
-							   xScale, yScale, hitMarkerMaterial );
+							   xScale, yScale, hitMarkerMaterial, (pass == 0) ? outline : color, presentation );
 		}
 	}
 
-	renderSystem->SetColor( colorWhite );
+	presentation.Draw("native/hit-marker");
 }

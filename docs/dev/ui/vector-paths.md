@@ -68,7 +68,7 @@ Round joins/caps adapt to output density. Explicit zero-length strokes support
 round/square caps; move-only contours do not produce dots. Butt caps stop at their
 endpoints. Stroke inside/outside alignment, dashes and variable width remain open.
 
-Paint supports `{"type":"none"}`, solid color and linear gradients. Solid paint
+Paint supports `{"type":"none"}`, solid color and linear, radial, diamond and conic gradients. Solid paint
 is `{"type":"solid","color":<typed color or color token>}`. A gradient is:
 
 ```json
@@ -84,9 +84,20 @@ is `{"type":"solid","color":<typed color or color token>}`. A gradient is:
 ```
 
 Gradients contain 2–256 strictly increasing stops, including 0 and 1, and clamp
-outside their endpoint interval. Equal-position hard stops, radial/conic/image
-paints and paint transforms remain open. Coincident resolved endpoints produce
-a path diagnostic rather than undefined color.
+outside their endpoint interval. For `radial` and `diamond`, `from` is the
+center and the Euclidean distance from `from` to `to` is the radius. Radial
+paint uses Euclidean distance; diamond paint uses `abs(dx)+abs(dy)` for the
+rail scope's 45-degree light. Both use one continuous coverage shape and
+adaptively subdivide interpolation until sampled premultiplied color error
+is below one 8-bit color step (1/255) while preserving intervening color extrema, or edges span at most eight pixels;
+they never stack separately antialiased translucent rings.
+Equal-position hard stops, image paints and paint transforms remain open.
+Coincident resolved endpoints produce a path diagnostic rather than undefined color.
+
+For `conic`, `from` is the center and `to` gives the zero-angle direction.
+Stops map one clockwise turn in the UI's downward-positive Y coordinates;
+the angle wraps from 1 to 0. Matching endpoint colors keep the seam continuous.
+It shares radial paint's adaptive interpolation and coverage budgets.
 
 Linear gradients split triangles at every stop plane. Middle stops survive even
 when no original vertex lies there. Colors interpolate as premultiplied sRGB;

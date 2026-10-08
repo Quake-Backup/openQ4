@@ -1,22 +1,75 @@
 // Copyright (C) 2026 DarkMatter Productions. GPL-3.0-or-later.
 #include "Motion.h"
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <set>
 
 namespace openq4::ui {
 namespace {
+// Shared by every Motion and its copies, so no two writes share a stamp.
+std::atomic<std::uint64_t> motionRevisions{0};
+bool SameValue(const Value& a, const Value& b) {
+	return a.type == b.type && a.data == b.data && a.unit == b.unit && a.text == b.text;
+}
 void BaseValues(const Node& node, PropertyValues& values) {
 	for (const auto& [name,value] : node.properties) values[{node.id,name}] = value;
 	for (const auto& child : node.children) BaseValues(child,values);
 }
 }
 void Motion::Reset(const DocumentModel& model) {
-	timelines.clear(); playing.clear(); base.clear(); completed.clear();
-	for (const auto& timeline : model.timelines) timelines.emplace(timeline.id,timeline);
-	BaseValues(model.root,base);
-	values = base;
-	clock = 0;
+	playing.clear(); completed.clear();
+	auto loaded = std::make_shared<std::map<std::string, Timeline>>();
+	for (const auto& timeline : model.timelines) loaded->emplace(timeline.id,timeline);
+	auto authored = std::make_shared<PropertyValues>();
+	BaseValues(model.root,*authored);
+	values = std::make_shared<PropertyValues>(*authored);
+	timelines = std::move(loaded); base = std::move(authored);
+	clock = 0; sampled = false;
+	changedKeys.clear(); changedAll = true;
+	Touch();
+}
+void Motion::Touch() { revision = ++motionRevisions; }
+const PropertyValues& Motion::Values() const {
+	static const PropertyValues none; // a moved-from Motion holds none
+	return values ? *values : none;
+}
+PropertyValues& Motion::Writable() {
+	if (!values) values = std::make_shared<PropertyValues>(*base);
+	else if (values.use_count() > 1) values = std::make_shared<PropertyValues>(*values);
+	return *values;
+}
+void Motion::Changed(const PropertyKey& key) {
+	// A frame writes the few values its playing tracks own; past this many the
+	// next reader re-reads every value instead.
+	if (changedAll || changedKeys.size() >= 512) { changedAll = true; changedKeys.clear(); return; }
+	changedKeys.push_back(key);
+}
+Motion::Checkpoint Motion::AdvanceUndoable(double seconds) {
+	Checkpoint saved;
+	saved.playing = playing; saved.changedKeys = changedKeys; saved.completed = completed;
+	saved.revision = revision; saved.clock = clock; saved.sampledClock = sampledClock;
+	saved.changedAll = changedAll; saved.sampled = sampled;
+	// A sample writes only the values its playing tracks own.
+	for (const auto& [key,item] : playing) saved.previous.emplace(key,Values().at(key));
+	Advance(seconds);
+	return saved;
+}
+void Motion::Rollback(Checkpoint&& saved) {
+	if (!saved.previous.empty()) {
+		auto& live = Writable();
+		for (auto& [key,value] : saved.previous) live[key] = std::move(value);
+	}
+	playing = std::move(saved.playing); changedKeys = std::move(saved.changedKeys); completed = std::move(saved.completed);
+	revision = saved.revision; clock = saved.clock; sampledClock = saved.sampledClock;
+	changedAll = saved.changedAll; sampled = saved.sampled;
+}
+bool Motion::TakeChanged(std::vector<PropertyKey>& keys) {
+	keys.clear();
+	const bool partial = !changedAll;
+	if (partial) keys.swap(changedKeys);
+	changedKeys.clear(); changedAll = false;
+	return partial;
 }
 Value Motion::Sample(const Track& track, double milliseconds) {
 	if (milliseconds <= track.keys.front().atMs) return track.keys.front().value;
@@ -29,20 +82,24 @@ Value Motion::Sample(const Track& track, double milliseconds) {
 }
 void Motion::Advance(double seconds) {
 	if (std::isfinite(seconds)) clock = std::max(clock,seconds);
+	if (sampled && sampledClock == clock) return;
+	sampled = true; sampledClock = clock;
+	if (!playing.empty()) Touch();
 	std::vector<std::string> finished;
 	for (auto it = playing.begin(); it != playing.end();) {
 		auto& item = it->second;
 		const double elapsedMs = std::max(0.0,((item.paused ? item.pauseAt : clock)-item.start)*1000);
 		const bool done = item.iterations != 0 && elapsedMs >= item.durationMs*item.iterations;
 		if (elapsedMs >= item.durationMs) item.track.keys.front().value = item.repeatStart;
-		values[it->first] = Sample(item.track,done ? item.durationMs : std::fmod(elapsedMs,item.durationMs));
+		Writable()[it->first] = Sample(item.track,done ? item.durationMs : std::fmod(elapsedMs,item.durationMs));
+		Changed(it->first);
 		if (done) { finished.push_back(item.owner); it = playing.erase(it); } else ++it;
 	}
 	for (const auto& owner : finished) if (!IsPlaying(owner)) NoteCompleted(owner);
 }
 void Motion::NoteCompleted(const std::string& id) {
-	const auto found = timelines.find(id);
-	if (found == timelines.end() || found->second.complete.empty()) return;
+	const auto found = timelines->find(id);
+	if (found == timelines->end() || found->second.complete.empty()) return;
 	if (std::find(completed.begin(),completed.end(),id) == completed.end()) completed.push_back(id);
 }
 std::vector<std::string> Motion::TakeCompleted() {
@@ -51,8 +108,8 @@ std::vector<std::string> Motion::TakeCompleted() {
 	return result;
 }
 bool Motion::Play(const std::string& id, double seconds) {
-	const auto found = timelines.find(id);
-	if (found == timelines.end()) return false;
+	const auto found = timelines->find(id);
+	if (found == timelines->end()) return false;
 	Advance(seconds);
 	const auto& timeline = found->second;
 	for (const auto& track : timeline.tracks) {
@@ -60,11 +117,12 @@ bool Motion::Play(const std::string& id, double seconds) {
 		Playing item{id,track,track.keys.front().value,clock,timeline.durationMs,0,timeline.iterations,false,timeline.essential};
 		// Retarget from the value sampled at this exact clock, not the previous
 		// frame or the authored beginning. The newest play owns this property.
-		item.track.keys.front().value = values.at(key);
+		item.track.keys.front().value = Values().at(key);
 		if (reducedMotion && !item.essential) {
 			item.iterations = 1;
 			if (track.property != "opacity") {
-				values[key] = track.keys.back().value;
+				Writable()[key] = track.keys.back().value;
+				Changed(key);
 				playing.erase(key);
 				continue;
 			}
@@ -72,12 +130,13 @@ bool Motion::Play(const std::string& id, double seconds) {
 			item.reduced = true;
 			// Reduced motion is one bounded opacity interpolation. Discard
 			// stagger/key oscillations as well as decorative spatial motion.
-			item.track.keys = {{0,values.at(key),{}},{item.durationMs,track.keys.back().value,{}}};
+			item.track.keys = {{0,Values().at(key),{}},{item.durationMs,track.keys.back().value,{}}};
 		}
 		playing[key] = std::move(item);
 	}
 	// Reduced motion can jump every track to its end: the timeline is complete.
 	if (!IsPlaying(id)) NoteCompleted(id);
+	Touch();
 	return true;
 }
 void Motion::Pause(const std::string& id, double seconds) {
@@ -92,27 +151,33 @@ void Motion::Cancel(const std::string& id, CancelPolicy policy, double seconds) 
 	Advance(seconds);
 	for (auto it = playing.begin(); it != playing.end();) {
 		if (it->second.owner != id) { ++it; continue; }
-		if (policy == CancelPolicy::RestoreBase) values[it->first] = base.at(it->first);
+		// A value already at its base needs no write (nor a copy of shared values).
+		if (policy == CancelPolicy::RestoreBase && !SameValue(Values().at(it->first),base->at(it->first))) {
+			Writable()[it->first] = base->at(it->first); Changed(it->first);
+		}
 		it = playing.erase(it);
+		Touch();
 	}
 }
 void Motion::SetReducedMotion(bool enabled, double seconds) {
 	Advance(seconds);
 	if (reducedMotion == enabled) return;
 	reducedMotion = enabled;
+	Touch();
 	if (!enabled) return; // Never resurrect cancelled decorative movement.
 	std::vector<std::string> jumped;
 	for (auto it = playing.begin(); it != playing.end();) {
 		auto& item = it->second;
 		if (item.essential) { ++it; continue; }
 		if (it->first.second != "opacity") {
-			values[it->first] = item.track.keys.back().value;
+			Writable()[it->first] = item.track.keys.back().value;
+			Changed(it->first);
 			jumped.push_back(item.owner);
 			it = playing.erase(it); continue;
 		}
 		const double remaining = item.durationMs-std::fmod(std::max(0.0,((item.paused ? item.pauseAt : clock)-item.start)*1000),item.durationMs);
 		item.durationMs = std::min(80.0,remaining);
-		item.track.keys = {{0,values.at(it->first),{}},{item.durationMs,item.track.keys.back().value,{}}};
+		item.track.keys = {{0,Values().at(it->first),{}},{item.durationMs,item.track.keys.back().value,{}}};
 		item.start = clock; item.pauseAt = clock; item.iterations = 1;
 		item.reduced = true;
 		++it;
@@ -125,8 +190,8 @@ bool Motion::IsPlaying(const std::string& id) const {
 }
 PropertyValues Motion::Scrub(const std::string& id, double milliseconds) const {
 	PropertyValues result;
-	auto found = timelines.find(id);
-	if (found == timelines.end() || !std::isfinite(milliseconds)) return result;
+	auto found = timelines->find(id);
+	if (found == timelines->end() || !std::isfinite(milliseconds)) return result;
 	for (const auto& track : found->second.tracks) result[{track.node,track.property}] = Sample(track,std::clamp(milliseconds,0.0,found->second.durationMs));
 	return result;
 }
@@ -135,8 +200,8 @@ MotionSnapshot Motion::Capture(double seconds) const {
 	candidate.Advance(seconds);
 	MotionSnapshot result;
 	result.reducedMotion = candidate.reducedMotion;
-	for (const auto& [key,value] : candidate.values) {
-		const auto& original = base.at(key);
+	for (const auto& [key,value] : candidate.Values()) {
+		const auto& original = base->at(key);
 		if (value.type != original.type || value.data != original.data || value.unit != original.unit || value.text != original.text)
 			result.values.emplace(key,value);
 	}
@@ -152,12 +217,15 @@ MotionSnapshot Motion::Capture(double seconds) const {
 bool Motion::WriteValues(const PropertyValues& changes, std::string& error) {
 	error.clear();
 	for (const auto& [key,value] : changes) {
-		const auto original = base.find(key);
-		if (original == base.end() || value.type != original->second.type || value.unit != original->second.unit || !ValidProperty(key.second,value)) {
+		const auto original = base->find(key);
+		if (original == base->end() || value.type != original->second.type || value.unit != original->second.unit || !ValidProperty(key.second,value)) {
 			error = "Invalid presentation property '"+key.first+"."+key.second+"'"; return false;
 		}
 	}
-	for (const auto& [key,value] : changes) values[key] = value;
+	auto& live = Writable();
+	for (const auto& [key,value] : changes) { live[key] = value; Changed(key); }
+	sampled = false; // A playing track writes again on its next sample.
+	Touch();
 	return true;
 }
 bool Motion::Restore(const MotionSnapshot& snapshot, double seconds, std::string& error, bool allowStaticValues) {
@@ -166,20 +234,21 @@ bool Motion::Restore(const MotionSnapshot& snapshot, double seconds, std::string
 	if (!std::isfinite(seconds) || seconds < 0) return reject("Invalid restored presentation time");
 	Motion candidate = *this;
 	// Restore never replays a program: completions of the replaced playback go.
-	candidate.values = base; candidate.playing.clear(); candidate.completed.clear(); candidate.clock = seconds;
+	candidate.values = std::make_shared<PropertyValues>(*base); candidate.playing.clear(); candidate.completed.clear(); candidate.clock = seconds;
+	candidate.sampled = false;
 	candidate.reducedMotion = snapshot.reducedMotion;
 	std::set<PropertyKey> animated;
-	for (const auto& [id,timeline] : timelines) for (const auto& track : timeline.tracks) animated.emplace(track.node,track.property);
+	for (const auto& [id,timeline] : *timelines) for (const auto& track : timeline.tracks) animated.emplace(track.node,track.property);
 	for (const auto& [key,value] : snapshot.values) {
-		const auto original = base.find(key);
-		if ((!allowStaticValues && !animated.contains(key)) || original == base.end() ||
+		const auto original = base->find(key);
+		if ((!allowStaticValues && !animated.contains(key)) || original == base->end() ||
 			value.type != original->second.type || value.unit != original->second.unit || !ValidProperty(key.second,value))
 			return reject("Invalid restored presentation property");
-		candidate.values[key] = value;
+		(*candidate.values)[key] = value;
 	}
 	for (const auto& saved : snapshot.playing) {
-		const auto timeline = timelines.find(saved.owner);
-		if (timeline == timelines.end()) return reject("Unknown restored timeline");
+		const auto timeline = timelines->find(saved.owner);
+		if (timeline == timelines->end()) return reject("Unknown restored timeline");
 		const auto& authored = timeline->second;
 		if (snapshot.reducedMotion && !authored.essential && !saved.reduced) return reject("Restored playback conflicts with reduced motion");
 		const auto track = std::find_if(authored.tracks.begin(),authored.tracks.end(),[&](const Track& t) {
@@ -202,6 +271,8 @@ bool Motion::Restore(const MotionSnapshot& snapshot, double seconds, std::string
 	}
 	candidate.Advance(seconds);
 	*this = std::move(candidate);
+	changedKeys.clear(); changedAll = true;
+	Touch();
 	return true;
 }
 } // namespace openq4::ui

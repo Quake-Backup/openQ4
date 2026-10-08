@@ -8,6 +8,7 @@ The auto-skip cinematics, corpse cleanup, and corpse sink controls are also avai
 
 | Setting | Default | Scope | What it does |
 |---|---:|---|---|
+| `ui_weaponWheelOffset` | `27` | SP and MP client | Horizontal wheel offset as a percentage of screen width from center, −40 to +40. `0` centers it; `27` preserves the usual right-side position. Also in Game Options > Controller, beside wheel sensitivity. |
 | `g_skill` | `1` | Single-player | Difficulty, `0` Private to `4` Warlord. A saved game brings back its own; change it mid-campaign with [Difficulty](#difficulty). |
 | `g_autoSkipCinematics` | `0` | SP and MP game code | Automatically skips cinematics as soon as they begin. Disabled by default. |
 | `g_corpseRemoveDelaySP` | `0` | Single-player | Controls how long SP corpses remain before disappearing. `0` uses stock timing, `-1` disables corpse removal. |
@@ -342,3 +343,32 @@ seta g_corpseRemoveDelayMP -1
 - If music does not respond to `s_musicVolume`, test on a map or menu that is actively playing music rather than general ambience or voice-over audio.
 - If damage numbers never appear, check `g_hitFeedback` on the server: at `0` or `1` the amount never reaches you. They are also multiplayer only, and they only cover damage dealt to players.
 - If damage numbers appear for opponents but not team mates, that is `hud_damageNumbers 1` working as intended. Set it to `2` to include team and self damage.
+
+## Gameplay Status Bar
+
+The new UI (`ui_retained 1`, the default) shows a centered ammo, health and armor
+bar, with Marine and Strogg artwork matching the campaign. Multiplayer shows
+total ammo in the current weapon's color. Armor reaching zero leaves the other
+gauges in place.
+
+With the Remastered HUD layout (the default) the whole HUD follows your screen:
+the status bar stays centered on the bottom edge, the radio sits in the top-right
+corner, objective notices use the top corners, and multiplayer's kill feed,
+standing, timer and chat keep to the edges. Vehicles get the same centered status
+bar with an Exit prompt naming your jump key, the objectives display lists every
+objective with the completed ones below, and the scoreboard adds your place, ping
+bars and the Tourney bracket.
+
+Console settings are saved automatically:
+
+| Setting | Default | Range | Effect |
+| --- | --- | --- | --- |
+| `ui_hudLayout` | `1` | `0`–`1` | `1` Remastered layout, `0` Classic (the original Quake 4 positions) |
+| `ui_hudWidth` | `1` | `0`–`2` | How far edge HUD items spread on wide screens: `0` 16:9, `1` 21:9, `2` the full width |
+| `ui_hudScale` | `1` | `0.5`–`2` | HUD size, independent of menu size |
+| `ui_hudSafeInset` | `0` | `0`–`10` | Distance inward, as a percentage of the viewport |
+
+For example, `ui_hudScale 1.25` enlarges the HUD by 25%. On narrow screens the
+status bar's size is limited to keep every gauge visible. `ui_retained 0`
+restores the stock interface; the stock HUD also appears automatically if a new
+one cannot load.

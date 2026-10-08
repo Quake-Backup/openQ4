@@ -34,7 +34,7 @@ struct PathCommand {
 enum class FillRule { NonZero, EvenOdd };
 struct VectorColour { double r = 1, g = 1, b = 1, a = 1; };
 struct GradientStop { double at = 0; VectorColour colour; };
-enum class PaintType { None, Solid, Linear };
+enum class PaintType { None, Solid, Linear, Radial, Diamond, Conic };
 struct VectorPaint {
 	PaintType type = PaintType::None;
 	VectorColour colour;

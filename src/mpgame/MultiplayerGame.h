@@ -17,6 +17,7 @@
 #include "mp/GameTypeIds.h"
 #include "mp/Buying.h"
 #include "mp/HitFeedback.h"
+#include "../game/gamesys/HudLines.h"
 #include "mp/match/MatchRules.h"
 #include "mp/match/MatchSeries.h"
 #include "mp/match/MatchSeriesRecovery.h"
@@ -1359,6 +1360,22 @@ private:
 	// chat buffer
 	idStr			chatHistory;
 
+	// openQ4: the Remastered kill feed and chat lines, timed like the stock
+	// ones and published to the multiplayer HUD as fields (ui-visual-design.md 14.9)
+	rvHudLines		remasteredKills;
+	rvHudLines		remasteredChat;
+	// the transmit displays last sent to the HUD (-1 unknown; the talker's client)
+	int				hudTransmitSelf;
+	int				hudTransmitOther;
+	// the Remastered HUD's flag, clock-warning and match states last announced
+	// (oq4_flags, oq4_clockWarn, oq4_state start and stop its looping motion)
+	int				hudFlagStates[ 3 ];
+	int				hudClockWarn;
+	int				hudMatchState;
+	void			ResetRemasteredHudAnnouncements( void );
+
+	void			PublishRemasteredHud( idUserInterface *_mphud, idPlayer *localPlayer );
+
 	// rcon buffer
 	idStr			rconHistory;
 
@@ -1415,6 +1432,8 @@ private:
 
 	void			UpdateDMScoreboard( idUserInterface *scoreBoard );
 	void			UpdateTeamScoreboard( idUserInterface *scoreBoard );
+	// openQ4: the Remastered scoreboard's rows as fields (ui-visual-design.md 14.14)
+	void			PublishRemasteredScoreboard( idUserInterface *scoreBoard );
 	void			UpdateSummaryBoard( idUserInterface *scoreBoard );
 	bool			UpdateManagedSummaryResult( idUserInterface *gui, bool announce );
 

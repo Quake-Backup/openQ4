@@ -1,0 +1,79 @@
+# Native weapon wheels
+
+The old SP wheel drew hardcoded wedges, bitmap icons and bitmap text directly
+from `Player.cpp`; it never checked `ui_retained`. The MP module had no wheel
+implementation. The retained path now loads editable `.q4ui` vector documents
+and publishes the local player's inventory, selection, weapon name, clip and
+reserve. Stock UI keeps the classic renderer.
+
+## Placement
+
+`ui_weaponWheelOffset` is an archived integer in **percentage points of full
+viewport width measured from center**, from −40 to +40. The default `27`
+preserves the original position at 77% of a widescreen view. `0` centers the
+wheel; `-27` mirrors the default to the left. Settings > Game > Controller
+contains **Wheel offset (0=center)** beside wheel sensitivity.
+The label is localized in all twelve supported languages.
+
+On narrow views, the native ring scales uniformly and its center clamps
+inside the view. This affects only presentation, never the saved preference.
+Marine, Strogg, multiplayer and Classic use the same setting.
+
+## Runtime
+
+- Marine and Strogg have separate vector documents and family colors. The
+  eleven stock slots and thirteen Awakening slots keep fixed positions.
+  MP uses Marine framing, the gauntlet and team selection colors.
+- Owned slots show vector symbols and live ammunition; unavailable slots
+  remain outlines. Eight reserve cells, the previous-weapon notch and a
+  selected hub connect the ring to the existing HUD language.
+- Mouse and controller selection share four-degree boundary hysteresis.
+  Release uses the existing weapon impulse, including MP's reliable message
+  and prediction acknowledgement. Empty ammunition refuses the switch;
+  cancellation keeps the current weapon. A short stationary tap selects the
+  previous weapon. MP keeps movement and normal simulation speed; SP keeps
+  the existing transient slowdown.
+- Both modules soften the complete scene with an 8 dp separable Gaussian and
+  subtle 0.94 saturation, eased with the wheel blend. This pass runs before
+  damage indicators, HUD and wheel artwork, so their vectors and labels stay
+  sharp. Closing removes the filter pass entirely; the existing opaque-backing
+  option disables soft focus. Classic keeps its previous depth-blur treatment.
+- Native open/close and selection timelines support reduced motion. Classic
+  remains available with `ui_retained 0`. Presentation state is transient and
+  is reset on initialization/restoration/cancellation.
+
+Authoring: `tools/ui/build_retained_weapon_wheel.py`, with independently
+reconstructed first-party symbols carried from the design atlas into
+`tools/ui/weapon_wheel_icons.json`. No extracted retail art or external code
+was added. `src/game/gamesys/WeaponWheel.inl` and `WeaponWheelState.h` keep
+selection, live state and ownership identical across SP/MP; the legacy draw
+helpers remain isolated in `WeaponWheelLegacy.inl`.
+
+## Verification and remaining scope
+
+`tools/ui/capture_weapon_wheels.py` launches hidden, windowed gameplay with
+host mouse/controller input disabled, executes semantic cheat-protected
+`testWeaponWheel` commands, and uses the engine's `screenshot` command. It
+checks release/equip, cancellation, persistent placement, the native gate,
+and MP simulation speed. Evidence is retained under `.tmp/weapon-wheel/`.
+The native screen suite exercises all four documents, narrow/wide/4K layouts,
+inventory/ammo bindings, transitions and reduced motion. Existing sensitivity
+and transient time-scale harnesses follow the shared implementation.
+
+The final Windows checks build and stage successfully. The native screen suite
+passes 64,704,897 checks, including scene-only focus, full-view coverage and no
+filter pass after release. OpenGL gameplay covers Marine, Strogg and multiplayer
+at 1280×720; Vulkan covers multiplayer at 1920×540 and Strogg at 540×960, with
+focus enabled/disabled, offset changes, equip/refusal/cancel and Classic fallback.
+Reports and engine screenshots are in `focus-gl/`, `focus-vulkan-wide/` and
+`focus-vulkan-portrait/` under `.tmp/weapon-wheel/`. The Game options capture
+checks the localized label, active control, signed value and zero readback;
+config write/reload preserves a nondefault offset. Reduced motion caps the
+shared wheel/focus blend at 80 ms. Existing stock multiplayer missing-AAS and
+non-precached-declaration warnings remain unrelated to these UI changes.
+
+This increment replaces the runtime weapon-wheel bypass. It does not accept
+the full section 14.6 product requirement: quick chat, touch controls,
+the complete transmission/static and rune-to-Latin choreography, editor
+round trips and non-Windows/GLES/VR qualification remain open. Awakening
+multiplayer remains outside the project's supported scope.

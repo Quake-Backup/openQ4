@@ -47,6 +47,7 @@ If you have questions concerning this license or the applicable additional terms
 #include "SimpleWindow.h"
 #include "../framework/Session.h"
 #include "RetainedUI.h"
+#include "RetainedHud.h"
 #include <limits>
 
 extern idCVar r_skipGuiShaders;		// 1 = don't render any gui elements on surfaces
@@ -650,6 +651,12 @@ static void SetStateRectangleComponents( idUserInterfaceLocal *gui, const char *
 }
 
 bool idUserInterfaceLocal::GetPresentationValue( const char *name, idStr &value ) const {
+	if (name && !idStr::Icmp(name,"__retained::hudDrawSucceeded")) {
+		value = retainedHud && retainedHud->DrawSucceeded() ? "1" : "0"; return true;
+	}
+	if (name && !idStr::Icmp(name,"__remastered::active")) {
+		value = RemasteredActive() ? "1" : "0"; return true;
+	}
 	idWinVar *variable = FindPresentationVariable( desktop, name );
 	if ( variable == NULL ) {
 		return false;
@@ -743,6 +750,7 @@ bool idUserInterfaceLocal::GetTextInputState( idRectangle &area, float &cursorOf
 
 void idUserInterfaceManagerLocal::Init() {
 	RetainedUI_Init();
+	cmdSystem->AddCommand("ui_hudTest",[](const idCmdArgs& args) { uiManagerLocal.HudTest(args); },CMD_FL_SYSTEM|CMD_FL_CHEAT,"inspect or drive HUD GUI state without device input");
 	cmdSystem->AddCommand("ui_observeLegacy",UI_ObserveLegacy,CMD_FL_SYSTEM,"observe exact legacy parse/fixup/alpha decisions without activation");
 	cmdSystem->AddCommand("chatHistory", idChatWindow::History_f, CMD_FL_SYSTEM, "browse open chat: up, down, top, bottom, status");
 	screenRect = idRectangle(0, 0, 640, 480);
@@ -750,6 +758,8 @@ void idUserInterfaceManagerLocal::Init() {
 }
 
 void idUserInterfaceManagerLocal::Shutdown() {
+	ClearHudPrimitives();
+	cmdSystem->RemoveCommand("ui_hudTest");
 	cmdSystem->RemoveCommand("chatHistory");
 	cmdSystem->RemoveCommand("ui_observeLegacy");
 	idChatWindow::Reset();
@@ -793,6 +803,8 @@ void idUserInterfaceManagerLocal::SetAspectCorrection( bool enabled ) {
 }
 
 void idUserInterfaceManagerLocal::BeginLevelLoad() {
+	ClearHudPrimitives();
+	idRetainedHud::Precache();
 	int c = guis.Num();
 	for ( int i = 0; i < c; i++ ) {
 		if ( !guis[ i ]->IsMenuGui() ) {
@@ -1046,6 +1058,8 @@ void idUserInterfaceManagerLocal::RunAlwaysThinkGUIs( int time ) {
 */
 
 idUserInterfaceLocal::idUserInterfaceLocal( bool managed ) : idUserInterfaceManaged( managed ) {
+	retainedHud = NULL;
+	remastered = NULL;
 	chatWindow = NULL;
 	cursorX = cursorY = 0.0;
 	desktop = NULL;
@@ -1063,6 +1077,8 @@ idUserInterfaceLocal::idUserInterfaceLocal( bool managed ) : idUserInterfaceMana
 }
 
 idUserInterfaceLocal::~idUserInterfaceLocal() {
+	delete retainedHud;
+	delete remastered;
 	delete desktop;
 	desktop = NULL;
 }
@@ -1087,6 +1103,8 @@ void idUserInterfaceLocal::SetInteractive(bool interactive) {
 }
 
 bool idUserInterfaceLocal::InitFromFile( const char *qpath, bool rebuild, bool cache ) { 
+	delete retainedHud; retainedHud = NULL;
+	delete remastered; remastered = NULL;
 
 	if ( !( qpath && *qpath ) ) { 
 		return false;
@@ -1204,6 +1222,17 @@ const char *idUserInterfaceLocal::HandleEvent( const sysEvent_t *event, int _tim
 
 void idUserInterfaceLocal::HandleNamedEvent ( const char* eventName ) {
 	desktop->RunNamedEvent( eventName );
+	// The Remastered layout answers the same events as the stock windows,
+	// including those sent before its first frame, which it replays.
+	if ( !remastered ) {
+		const char *document = idRemasteredHud::DocumentFor( source.c_str() );
+		if ( document && idRemasteredHud::Enabled() ) {
+			remastered = new idRemasteredHud( document );
+		}
+	}
+	if ( remastered ) {
+		remastered->ForwardEvent( eventName );
+	}
 }
 
 void idUserInterfaceLocal::Redraw( int _time, bool useAspectCorrection ) {
@@ -1261,6 +1290,8 @@ void idUserInterfaceLocal::Redraw( int _time, bool useAspectCorrection ) {
 				lastDebugRedrawTime = _time;
 			}
 		}
+		if ( useAspectCorrection && DrawRemasteredHud( _time ) ) return;
+		if ( useAspectCorrection && DrawRetainedHud() ) return;
 		uiManagerLocal.dc.PushClipRect( uiManagerLocal.screenRect );
 		desktop->Redraw( 0, 0 );
 		uiManagerLocal.dc.PopClipRect();
@@ -1284,6 +1315,9 @@ const idDict &idUserInterfaceLocal::State() const {
 
 void idUserInterfaceLocal::DeleteStateVar( const char *varName ) {
 	state.Delete( varName );
+	if ( remastered ) {
+		remastered->ForwardDelete( varName );
+	}
 }
 
 void idUserInterfaceLocal::SetStateString( const char *varName, const char *value ) {
@@ -1297,6 +1331,9 @@ void idUserInterfaceLocal::SetStateString( const char *varName, const char *valu
 		}
 	}
 	state.Set( varName, value );
+	if ( remastered ) {
+		remastered->ForwardState( varName, state.GetString( varName ) );
+	}
 }
 
 void idUserInterfaceLocal::SetStateBool( const char *varName, const bool value ) {
@@ -1306,6 +1343,9 @@ void idUserInterfaceLocal::SetStateBool( const char *varName, const bool value )
 		if ( oldValue != value ) {
 			common->Printf( "GUI: state %s = %d (was %d) gui=%s\n", varName, value ? 1 : 0, oldValue ? 1 : 0, source.c_str() );
 		}
+	}
+	if ( remastered ) {
+		remastered->ForwardState( varName, state.GetString( varName ) );
 	}
 }
 
@@ -1317,6 +1357,9 @@ void idUserInterfaceLocal::SetStateInt( const char *varName, const int value ) {
 			common->Printf( "GUI: state %s = %d (was %d) gui=%s\n", varName, value, oldValue, source.c_str() );
 		}
 	}
+	if ( remastered ) {
+		remastered->ForwardState( varName, state.GetString( varName ) );
+	}
 }
 
 void idUserInterfaceLocal::SetStateFloat( const char *varName, const float value ) {
@@ -1326,6 +1369,9 @@ void idUserInterfaceLocal::SetStateFloat( const char *varName, const float value
 		if ( oldValue != value ) {
 			common->Printf( "GUI: state %s = %.4f (was %.4f) gui=%s\n", varName, value, oldValue, source.c_str() );
 		}
+	}
+	if ( remastered ) {
+		remastered->ForwardState( varName, state.GetString( varName ) );
 	}
 }
 
@@ -1615,6 +1661,9 @@ bool idUserInterfaceLocal::ReadFromSaveGame( idFile *savefile ) {
 			source.c_str() );
 		return false;
 	}
+	// The Remastered peer rejoins the restored dictionary at its next draw.
+	delete remastered;
+	remastered = NULL;
 
 	int num = 0;
 	idStr key;

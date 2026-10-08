@@ -162,6 +162,10 @@ static void PopupCallbackLifetimes(){
             if(mode==5)Check(!live->OpenChoicePopup("choice",2),"reentrant input refuses exact busy runtime");
             if(mode==4||mode==6)throw std::runtime_error("layout callback failure");
         };
+        // A settled presentation applies nothing; a timeline played since the
+        // last frame leaves it stale, so the input-time refresh reapplies it
+        // through the counted host.
+        Check(live->PlayTimeline("choice-feedback",2) && !called,"a played timeline leaves the presentation stale without host work");
         {EditCall call;live->MenuAction(MenuInput::Accept,true,2);Check(called,"input-time public Rml layout invokes counted original host");
          Check(editCallDepth==1&&RegisteredView(view),"view deletion remains deferred through complete outer service call");
          Check(host.calls==callsAtCallback,"input refresh stops after callback invalidates owner or throws");}

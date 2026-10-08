@@ -9,6 +9,48 @@ adds partial evidence for `FLOW-024`, `FLOW-047`, `FLOW-048`, `ART-030` and
 `REN-014` in the [requirement register](product-requirements.md); the
 remaining screen migrations and the final gates stay open.
 
+## 7 October 2026: retained scopes and view effects
+
+`tools/ui/build_retained_scopes.py` builds the machinegun, railgun and nailgun
+overlays from the atlas's authored paths and visual specification 14.13. Optical
+centers use the same fit-to-width-or-height canvas, preserving circular and
+diamond geometry; outer veils/haze fill every exposed band. Continuous radial
+and diamond paints replace stepped concentric bands. No retail bitmap mask is
+added. Rail ammo cells and motion, yaw compasses and nailgun target lock events
+remain driven by game state and presentation timelines.
+
+All three scopes use a 13.5 dp Gaussian backdrop with a 38 u aperture feather
+and 0.86 saturation outside the sight. The crisp center retains its isotropic
+circle or diamond. A single full-view gradient supplies each feather mask
+without redundant circular coverage edges. The nailgun uses one graded glow
+throughout acquisition; its resting tint stays within one 8-bit channel value of
+the stock measurement, and its locked tint is exact. Native 4K counts are
+318,360 / 350,176 / 651,816 vertices for machinegun / railgun / nailgun, and
+690,300 for a locked nailgun. Vulkan's shared vertex ring grows from 32 to
+96 MiB per frame slot to leave room for the world and stencil shadows beneath
+these high-resolution optics; index and uniform ring allocations are unchanged.
+
+The shared `src/game/gamesys/RetainedScope.h` selects only the three shipped
+scope paths behind `ui_retained`, for SP, MP and vehicle weapons. Differently
+named scopes and mods' replacements keep their own GUI. Missing/invalid retained
+documents keep the stock instance. A gate change transfers state into a unique
+replacement and releases the old unique instance. Save restore consumes its
+serialized GUI first, then resets only the transient selection cache. Named lock
+state is restored; both player and vehicle presentation publish state before draw.
+
+`RetainedViewEffects.inl`, shared by SP/MP, draws the MCC recovery and death
+presentation below the readable HUD. It follows the original `mcc_2` treatment
+fades, then consumes the sequence after the white fade following bed exit.
+Death smoothly drains color over 1800 ms, with soft peripheral shading and a
+brief restrained afterimage; original camera, respawn and black-fade timing are
+unchanged. Transient UI state resets on restore, respawn and disabling the
+retained interface.
+
+`tools/ui/capture_retained_scopes.py --assets <Quake 4> --output .tmp/<dir>
+--size WxH` takes the five scope-state captures. For overlay captures,
+`ui_testGuiInGame 1` draws the loaded scene behind `testGUI`; its default
+remains the black inspection background.
+
 ## One gate
 
 `ui_retained` is the only switch for these screens. It is on by default and
@@ -36,8 +78,9 @@ its pages hands off to a stock page any more
 `tools/tests/ui_retained_gate.py` holds the gate: it checks the CVar defaults,
 that every retained document path in the session is reached only behind the
 gate, that the documents are current with their generator and request only
-allowlisted session verbs, that no game or legacy content names a retained
-document, and it compiles the production session code against counted doubles
+allowlisted session verbs, that no legacy content names a retained document and
+only the shared scope router selects one in game code, and it compiles the
+production session code against counted doubles
 to show that nothing retained loads while the gate is 0 and that every
 fallback below presents the stock screen.
 

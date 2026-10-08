@@ -652,6 +652,9 @@ public:
 	const char*				GetArenaPowerupString		( void );
 
 	// Helper methods to retrieving dictionaries
+	void                    DebugWeaponWheel( const idCmdArgs &args );
+	void                    DebugStatusBar( const idCmdArgs &args );
+	float                   GetWeaponWheelBlend() const;
 	const idDeclEntityDef*	GetWeaponDef				( int weaponIndex );
 	const idDeclEntityDef*	GetPowerupDef				( int powerupIndex );
 	static const char*		GetPowerupDefName			( int powerup );
@@ -1033,6 +1036,8 @@ private:
 	// full screen guis track mouse movements directly
 	int						oldMouseX;
 	int						oldMouseY;
+#include "../game/gamesys/WeaponWheelState.h"
+#include "../game/gamesys/StatusBarState.h"
 
 	bool					tipUp;
 	bool					objectiveUp;

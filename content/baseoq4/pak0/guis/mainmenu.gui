@@ -16430,8 +16430,10 @@ windowDef Desktop
 			set "set_game_controller_deadzone_hover::visible" "1" ;
 			set "set_game_controller_look_sensitivity::visible" "1" ;
 			set "set_game_controller_wheel_sensitivity::visible" "1" ;
+			set "set_game_wheel_offset::visible" "1" ;
 			set "set_game_controller_look_sensitivity_hover::visible" "1" ;
 			set "set_game_controller_wheel_sensitivity_hover::visible" "1" ;
+			set "set_game_wheel_offset_hover::visible" "1" ;
 			set "set_game_controller_look_curve::visible" "1" ;
 			set "set_game_controller_look_curve_hover::visible" "1" ;
 			set "set_game_controller_invert::visible" "1" ;
@@ -16553,6 +16555,7 @@ windowDef Desktop
 			set "set_game_controller_deadzone::noevents" "0" ;
 			set "set_game_controller_look_sensitivity::noevents" "0" ;
 			set "set_game_controller_wheel_sensitivity::noevents" "0" ;
+			set "set_game_wheel_offset::noevents" "0" ;
 			set "set_game_controller_look_curve::noevents" "0" ;
 			set "set_game_controller_invert::noevents" "0" ;
 			set "set_game_controller_trigger::noevents" "0" ;
@@ -16650,8 +16653,10 @@ windowDef Desktop
 			set "set_game_controller_deadzone_hover::visible" "0" ;
 			set "set_game_controller_look_sensitivity::visible" "0" ;
 			set "set_game_controller_wheel_sensitivity::visible" "0" ;
+			set "set_game_wheel_offset::visible" "0" ;
 			set "set_game_controller_look_sensitivity_hover::visible" "0" ;
 			set "set_game_controller_wheel_sensitivity_hover::visible" "0" ;
+			set "set_game_wheel_offset_hover::visible" "0" ;
 			set "set_game_controller_look_curve::visible" "0" ;
 			set "set_game_controller_look_curve_hover::visible" "0" ;
 			set "set_game_controller_invert::visible" "0" ;
@@ -16759,6 +16764,7 @@ windowDef Desktop
 			set "set_game_controller_deadzone::noevents" "1" ;
 			set "set_game_controller_look_sensitivity::noevents" "1" ;
 			set "set_game_controller_wheel_sensitivity::noevents" "1" ;
+			set "set_game_wheel_offset::noevents" "1" ;
 			set "set_game_controller_look_curve::noevents" "1" ;
 			set "set_game_controller_invert::noevents" "1" ;
 			set "set_game_controller_trigger::noevents" "1" ;

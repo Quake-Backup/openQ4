@@ -29,6 +29,7 @@ typedef struct {
 class idPlayerView {
 public:
 						idPlayerView();
+						~idPlayerView();
 
 	void				Save( idSaveGame *savefile ) const;
 	void				Restore( idRestoreGame *savefile );
@@ -79,6 +80,12 @@ public:
 // RAVEN END
 
 private:
+	void ResetRetainedViewEffects();
+	void RetainedRecoveryFade( const idVec4 &color, int duration );
+	void DrawRetainedViewEffects( bool wheelOnly = false );
+	idUserInterface *presentationFx = NULL;
+	int deathFxStart = -1, recoveryFxUntil = 0;
+	bool recoverySequence = false;
 // RAVEN BEGIN
 // AReis: Modified SingleView() signature to include renderFlags variable.
 	void				SingleView( idUserInterface *hud, const renderView_t *view, int renderFlags = RF_NORMAL );

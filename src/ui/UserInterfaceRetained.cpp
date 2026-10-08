@@ -375,6 +375,7 @@ struct idUserInterfaceRetained::Impl {
 	bool interactive = true, interactiveSet = false, unique = false, active = false;
 	bool suspended = false, pointerVisible = false, close = false, worldReported = false;
 	bool unavailable = false;
+	bool drawSucceeded = false;
 	bool initialized = false;
 	bool settingsFields = false, settingsClosePending = false;
 	std::uint64_t settingsOwner = UI_SettingsCreateOwner();
@@ -801,6 +802,9 @@ void idUserInterfaceRetained::StateChanged(int time, bool redraw) {
 
 bool idUserInterfaceRetained::GetPresentationValue(const char* name, idStr& value) const {
 	if (!name || !impl->Prepare()) return false;
+	// Read-only renderer receipt for game-owned overlays. A failed draw must
+	// leave the legacy presentation available in the very same frame.
+	if (!idStr::Icmp(name,"__retained::drawSucceeded")) { value = impl->drawSucceeded ? "1" : "0"; return true; }
 	std::string exported;
 	if (impl->RuntimeView()->GetPresentationAlias(name,exported)) { value = exported.c_str(); return true; }
 	const std::string alias(name); const auto separator = alias.find("::");
@@ -938,6 +942,7 @@ const char* idUserInterfaceRetained::Activate(bool value, int time) {
 void idUserInterfaceRetained::Trigger(int time) { HandleNamedEvent("onTrigger"); }
 void idUserInterfaceRetained::RunTimeEvents(int time) { /* Retained motion advances on the presentation clock in Frame. */ }
 void idUserInterfaceRetained::Redraw(int time, bool useAspectCorrection) {
+	impl->drawSucceeded = false;
 	if (!useAspectCorrection) {
 		if (!impl->worldReported) { impl->Error("World-surface output is not implemented for retained menu documents"); impl->worldReported = true; }
 		return;
@@ -948,12 +953,14 @@ void idUserInterfaceRetained::Redraw(int time, bool useAspectCorrection) {
 	// height instead of display density; the safety fit is irrelevant to it.
 	if (impl->document.Model().canvasHeight > 0) {
 		viewport.canvasHeight = static_cast<float>(impl->document.Model().canvasHeight); viewport.fitScale = 1;
+		viewport.canvasMinWidth = static_cast<float>(impl->document.Model().canvasMinWidth);
 	}
 	if (!impl->initialized) {
 		if (!impl->RuntimeView()->HasEvent("onInit") || impl->RunEvent("onInit")) impl->initialized = true;
 	}
 	impl->AcceptInput();
 	const bool drawn = RetainedUI_DrawViewRoot(impl->view,viewport);
+	impl->drawSucceeded = drawn;
 	// Timeline completion programs run inside the frame; publish their writes.
 	if (auto* runtime = impl->RuntimeView()) impl->PublishWrites(runtime->TakeCompletionWrites());
 	// The frame read the bound state back; settle the number fields it answers.
@@ -973,6 +980,7 @@ void idUserInterfaceRetained::DrawCursor() {
 	const CursorTransform transform(viewport);
 	const float px = impl->cursorX*transform.sx+transform.ox, py = impl->cursorY*transform.sy+transform.oy;
 	if (impl->document.Model().canvasHeight > 0) viewport.canvasHeight = static_cast<float>(impl->document.Model().canvasHeight);
+	viewport.canvasMinWidth = static_cast<float>(impl->document.Model().canvasMinWidth);
 	const float size = 20.f*viewport.DpRatio();
 	const float x = px*640.f/viewport.width, y = py*480.f/viewport.height;
 	const float dx = size*640.f/viewport.width, dy = size*480.f/viewport.height;

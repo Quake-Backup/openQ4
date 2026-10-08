@@ -1310,6 +1310,9 @@ void rvVehicle::UpdateHUD ( int position, idUserInterface* gui ) {
 	if ( localPlayer ) {
 		gui->SetStateFloat ( "playerYaw", localPlayer->firstPersonViewAxis.ToAngles ( ).yaw );
 	}
+	// openQ4: the Remastered HUD prompt names the control that leaves the
+	// vehicle (Exit on the jump key) instead of the stock bracketed line.
+	gui->SetStateString ( "oq4_key_jump", common->KeysFromBinding ( "_moveUp" ) );
 	const int speed = Max ( 0, idMath::FtoiFast ( GetPhysics()->GetLinearVelocity().Length() * 0.25f + 0.5f ) - 4 );
 	for ( int i = 0; i < MAX_RENDERENTITY_GUI; i++ ) {
 		if ( renderEntity.gui[ i ] ) {

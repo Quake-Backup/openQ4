@@ -1656,7 +1656,7 @@ void idObjective::Event_HideObjective(idEntity *e) {
 // mekberg: hide time done internally now
 		if ( v.Length() > 64.0f || gameLocal.time > triggerTime + 5000 ) {
 // RAVEN END
-			player->HideObjective ( );
+			player->HideObjective ( "oq4_closeNewObjective" );
 			PostEventMS( &EV_Remove, 0 );
 		} else {
 			PostEventMS( &EV_HideObjective, 100, player );
@@ -2106,7 +2106,7 @@ void idObjectiveComplete::Event_HideObjective( idEntity *e ) {
 // mekberg: hide time done internally now
 		if ( v.Length() > 64.0f || gameLocal.time > triggerTime + 5000 ) {
 // RAVEN END
-			player->HideObjective ( );
+			player->HideObjective ( "oq4_closeDoneObjective" );
 			PostEventMS( &EV_Remove, 0 );
 		} else {
 			PostEventMS( &EV_HideObjective, 100, player );

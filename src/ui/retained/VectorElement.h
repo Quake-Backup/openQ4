@@ -29,15 +29,23 @@ private:
 	std::array<double,6> hitSignature{};
 	bool hitPrepared = false, hitValid = false, hitArea = false;
 	std::vector<VectorPath> paths;
-	std::vector<VectorMesh> compiled;
-	std::vector<PathBlend> compiledBlends; // Parallel to compiled.
-	std::vector<Rml::Geometry> geometry;
-	std::vector<PathBlend> geometryBlends; // Parallel to geometry.
+	// One compiled form of the paths: meshes in output pixels for a
+	// signature (size, transform, sub-pixel phase, cache region), and their
+	// uploaded geometry at one opacity.
+	struct Compilation {
+		std::array<double,12> signature{};
+		std::vector<VectorMesh> meshes;
+		std::vector<PathBlend> blends; // Parallel to meshes.
+		std::vector<Rml::Geometry> geometry;
+		double opacity = -1;
+	};
+	// Most recent first. A resting element keeps one exact compilation; an
+	// element moving by translation alone keeps a few quarter-pixel phases.
+	std::vector<Compilation> cache;
 	Rml::Texture multiply;
 	Host* host = nullptr;
 	RuntimeStatistics* statistics = nullptr;
-	std::array<double,12> previous{};
-	double previousOpacity = -1;
+	std::array<double,12> previous{}; // The exact signature of the last render.
 	bool valid = false;
 };
 class VectorElement final : public Rml::Element {

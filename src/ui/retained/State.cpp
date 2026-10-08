@@ -113,7 +113,7 @@ bool DocumentModel::ResolveAction(const std::string& id, const StateValues& vari
 bool State::Evaluate(const StateValues& candidate, PropertyValues& props, std::map<std::string,bool>& controls,
 	StatePresentationSnapshot& output, std::map<std::string,ControlReadback>& readbacks, std::string& error) const {
 	output = presentation;
-	for (const auto& binding : bindings) {
+	for (const auto& binding : *bindings) {
 		try {
 			if (binding.property == "enabled") {
 				controls[binding.node] = std::get<bool>(EvaluateExpression(binding.values.front(),candidate)); continue;
@@ -136,7 +136,7 @@ bool State::Evaluate(const StateValues& candidate, PropertyValues& props, std::m
 			error = "Binding '"+binding.id+"' ("+binding.node+"."+binding.property+"): "+problem.what(); return false;
 		}
 	}
-	for (const auto& [id,declaration] : presentationDeclarations) {
+	for (const auto& [id,declaration] : *presentationDeclarations) {
 		auto& cell = output.variables.at(id);
 		if (cell.expressionDisabled || declaration.expressions.empty()) continue;
 		PresentationValue value = declaration.initial;
@@ -153,7 +153,7 @@ bool State::Evaluate(const StateValues& candidate, PropertyValues& props, std::m
 		cell.value = std::move(value);
 		cell.pending = false;
 	}
-	for (const auto& [id,control] : controlDeclarations) {
+	for (const auto& [id,control] : *controlDeclarations) {
 		ControlReadback value;
 		const auto reject = [&]() { error = "Control '"+id+"': "+error; return false; };
 		if (!control.value || !EvaluateStateExpression(*control.value,candidate,value.value,error)) {
@@ -215,13 +215,16 @@ bool State::Evaluate(const StateValues& candidate, PropertyValues& props, std::m
 }
 bool State::Reset(const DocumentModel& model, std::string& error) {
 	State candidate;
-	candidate.declarations = model.state; candidate.bindings = model.bindings;
-	candidate.presentationDeclarations = model.presentationVariables;
+	candidate.declarations = std::make_shared<const std::map<std::string,StateDeclaration>>(model.state);
+	candidate.bindings = std::make_shared<const std::vector<Binding>>(model.bindings);
+	candidate.presentationDeclarations = std::make_shared<const std::map<std::string,PresentationVariable>>(model.presentationVariables);
+	auto controls = std::make_shared<std::map<std::string,Control>>();
 	const auto collect = [&](const auto& self, const Node& node) -> void {
-		if (node.control && node.control->role != ControlRole::Button && node.control->role != ControlRole::Scrollbar) candidate.controlDeclarations.emplace(node.id,*node.control);
+		if (node.control && node.control->role != ControlRole::Button && node.control->role != ControlRole::Scrollbar) controls->emplace(node.id,*node.control);
 		for (const auto& child : node.children) self(self,child);
 	};
 	collect(collect,model.root);
+	candidate.controlDeclarations = std::move(controls);
 	for (const auto& [id,declaration] : model.presentationVariables)
 		candidate.presentation.variables[id] = {declaration.initial,false};
 	for (const auto& [id,declaration] : model.state) candidate.variables[id] = declaration.initial;
@@ -234,13 +237,24 @@ bool State::Reset(const DocumentModel& model, std::string& error) {
 bool State::Set(const StateValues& changes, std::string& error, bool hostSources) {
 	return hostSources ? SetCombined({},changes,error) : SetCombined(changes,{},error);
 }
+bool State::WouldChange(const StateValues& changes, bool hostSources) const {
+	if (presentationDirty) return true;
+	for (const auto& [id,value] : changes) {
+		const auto declaration = declarations->find(id);
+		if (declaration == declarations->end() || declaration->second.cvar.empty() == hostSources ||
+			value.index() != declaration->second.initial.index() || !ValidStateValue(value)) return true;
+		const auto current = variables.find(id);
+		if (current == variables.end() || current->second != value) return true;
+	}
+	return false;
+}
 bool State::SetCombined(const StateValues& application, const StateValues& hostSources, std::string& error) {
 	error.clear();
 	bool changed = false;
 	const auto validate = [&](const StateValues& batch, bool host) {
 		for (const auto& [id,value] : batch) {
-			auto declaration = declarations.find(id);
-			if (declaration == declarations.end()) { error = "Unknown state variable '"+id+"'"; return false; }
+			auto declaration = declarations->find(id);
+			if (declaration == declarations->end()) { error = "Unknown state variable '"+id+"'"; return false; }
 			if (declaration->second.cvar.empty() == host) { error = "State source ownership mismatch for '"+id+"'"; return false; }
 			if (value.index() != declaration->second.initial.index() || !ValidStateValue(value)) {
 				error = "Invalid state type/value for '"+id+"'"; return false;
@@ -267,7 +281,7 @@ bool State::Restore(const StateValues& application, const StateValues& hostSourc
 	const StatePresentationSnapshot* restoredPresentation) {
 	error.clear();
 	StateValues candidate;
-	for (const auto& [id,declaration] : declarations) {
+	for (const auto& [id,declaration] : *declarations) {
 		const auto& source = declaration.cvar.empty() ? application : hostSources;
 		const auto found = source.find(id);
 		if (found == source.end() || found->second.index() != declaration.initial.index() || !ValidStateValue(found->second)) {
@@ -283,13 +297,13 @@ bool State::Restore(const StateValues& application, const StateValues& hostSourc
 	// A v1 instance has no presentation table. Use declared defaults, not
 	// overrides left in the receiving live instance.
 	staged.presentation = {};
-	for (const auto& [id,declaration] : presentationDeclarations)
+	for (const auto& [id,declaration] : *presentationDeclarations)
 		staged.presentation.variables[id] = {declaration.initial,false};
 	if (restoredPresentation) {
-		if (restoredPresentation->variables.size() != presentationDeclarations.size()) { error = "Incomplete restored presentation variables"; return false; }
+		if (restoredPresentation->variables.size() != presentationDeclarations->size()) { error = "Incomplete restored presentation variables"; return false; }
 		for (const auto& [id,cell] : restoredPresentation->variables) {
-			const auto declaration = presentationDeclarations.find(id);
-			if (declaration == presentationDeclarations.end() || cell.value.type != declaration->second.initial.type || !ValidPresentationValue(cell.value) ||
+			const auto declaration = presentationDeclarations->find(id);
+			if (declaration == presentationDeclarations->end() || cell.value.type != declaration->second.initial.type || !ValidPresentationValue(cell.value) ||
 				(cell.pending && (cell.expressionDisabled || declaration->second.expressions.empty()))) {
 				error = "Invalid restored presentation variable '"+id+"'"; return false;
 			}
@@ -320,8 +334,8 @@ bool State::Restore(const StateValues& application, const StateValues& hostSourc
 bool State::WritePresentationVariable(const std::string& id, const PresentationValue& value,
 	bool overrideExpression, std::string& error) {
 	error.clear();
-	const auto declaration = presentationDeclarations.find(id);
-	if (declaration == presentationDeclarations.end() || value.type != declaration->second.initial.type || !ValidPresentationValue(value)) {
+	const auto declaration = presentationDeclarations->find(id);
+	if (declaration == presentationDeclarations->end() || value.type != declaration->second.initial.type || !ValidPresentationValue(value)) {
 		error = "Invalid presentation variable write '"+id+"'"; return false;
 	}
 	auto& cell = presentation.variables.at(id);
@@ -333,8 +347,8 @@ bool State::WritePresentationVariable(const std::string& id, const PresentationV
 bool State::OverrideProperties(const PropertyValues& values, bool overrideExpression, std::string& error) {
 	error.clear();
 	for (const auto& [key,value] : values) {
-		const auto binding = std::find_if(bindings.begin(),bindings.end(),[&](const Binding& b) { return b.node == key.first && b.property == key.second && b.property != "enabled"; });
-		if (binding == bindings.end() || value.type != binding->prototype.type || value.unit != binding->prototype.unit || !ValidProperty(key.second,value)) {
+		const auto binding = std::find_if(bindings->begin(),bindings->end(),[&](const Binding& b) { return b.node == key.first && b.property == key.second && b.property != "enabled"; });
+		if (binding == bindings->end() || value.type != binding->prototype.type || value.unit != binding->prototype.unit || !ValidProperty(key.second,value)) {
 			error = "Invalid bound presentation property '"+key.first+"."+key.second+"'"; return false;
 		}
 	}

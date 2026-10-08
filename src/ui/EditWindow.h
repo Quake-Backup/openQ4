@@ -78,6 +78,7 @@ private:
 	bool				wrap;
 	bool				readonly;
 	bool				numeric;
+	bool                numericNegative;
 	idStr				sourceFile;
 	idSliderWindow *	scroller;
 	idList<int>			breaks;

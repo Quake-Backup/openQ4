@@ -32,6 +32,8 @@ If you have questions concerning this license or the applicable additional terms
 class idWindow;
 class idWinVec4;
 class idChatWindow;
+class idRetainedHud;
+class idRemasteredHud;
 
 class idUserInterfaceLocal : public idUserInterfaceManaged {
 	friend class idUserInterfaceManagerLocal;
@@ -121,6 +123,14 @@ private:
 	idDict						state;
 	idWindow *					desktop;
 	idChatWindow *				chatWindow; // owned by desktop; transient MP presentation
+	idRetainedHud*				retainedHud; // transient presentation, never part of saved GUI framing
+	bool                        DrawRetainedHud();
+	idRemasteredHud*			remastered; // transient Remastered layout peer, never saved
+	bool                        DrawRemasteredHud( int drawTime );
+public:
+	// The Remastered layout draws this stock HUD in place of its own windows.
+	bool                        RemasteredActive() const;
+private:
 	idWindow *					bindHandler;
 
 	idStr						source;
@@ -224,4 +234,12 @@ private:
 	idList<idUserInterfaceManaged*> alwaysThinkGUIs;
 	idList<idUserInterfaceManaged*> demoGuis;
 
+public:
+	// HUD presentation (RetainedHud.cpp): the coverage bridge's generated
+	// HUDs and the ui_hudTest probe.
+	void HudTest(const idCmdArgs& args);
+	bool DrawHudPrimitives(const char* source, const idList<uiHudPrimitive_t>& items) override;
+	void ClearHudPrimitives();
+	idList<idRetainedHud*> generatedHuds;
+	idStrList generatedHudNames;
 };

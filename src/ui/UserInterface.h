@@ -126,6 +126,17 @@ public:
 };
 
 
+// Evaluated game-owned HUD geometry, in the same 640x480 submission space as
+// DrawStretchPic. The UI renderer owns presentation, never gameplay or input.
+class idMaterial;
+struct uiHudPrimitive_t {
+	idVec2 points[4];
+	idVec4 uv;
+	idVec4 color;
+	const idMaterial* material;
+	bool glyph;
+};
+
 class idUserInterfaceManager {
 public:
 	virtual						~idUserInterfaceManager( void ) {}
@@ -140,6 +151,7 @@ public:
 
 	virtual void				BeginLevelLoad( void ) = 0;
 	virtual void				EndLevelLoad( void ) = 0;
+	virtual bool DrawHudPrimitives( const char* source, const idList<uiHudPrimitive_t>& items ) { return false; }
 
 
 								// Reloads changed guis, or all guis.

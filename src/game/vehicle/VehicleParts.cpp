@@ -8,6 +8,7 @@
 
 
 #include "../Game_local.h"
+#include "../gamesys/RetainedScope.h"
 #include "../Projectile.h"
 #include "../Effect.h"
 #include "Vehicle.h"
@@ -611,6 +612,7 @@ rvVehicleWeapon::rvVehicleWeapon
 =====================
 */
 rvVehicleWeapon::rvVehicleWeapon ( void ) {
+	zoomGui = NULL;
 #ifdef _XENON
 	bestEnemy		= 0;
 #endif
@@ -631,6 +633,7 @@ rvVehicleWeapon::~rvVehicleWeapon
 =====================
 */
 rvVehicleWeapon::~rvVehicleWeapon ( void ) {
+	if ( zoomGui && zoomGui->IsUniqued() ) uiManager->DeAlloc( zoomGui );
 	if ( muzzleFlashHandle != -1 ) {
 		gameRenderWorld->FreeLightDef( muzzleFlashHandle );
 		muzzleFlashHandle = -1;
@@ -749,7 +752,9 @@ void rvVehicleWeapon::Spawn ( void ) {
 
 	// Zoom
 	zoomFov = spawnArgs.GetInt( "zoomFov", "-1" );
-	zoomGui  = uiManager->FindGui ( spawnArgs.GetString ( "gui_zoom", "" ), true );
+	zoomGui  = uiManager->FindGui ( spawnArgs.GetString ( "gui_zoom", "" ), true, true );
+	zoomGuiRequested.Clear();
+	UpdateRetainedScope();
 	zoomTime = spawnArgs.GetFloat ( "zoomTime", ".15" );
 //	wfl.zoomHideCrosshair = spawnArgs.GetBool ( "zoomHideCrosshair", "1" );
 }
@@ -797,6 +802,10 @@ void rvVehicleWeapon::StopTargetEffect ( void ) {
 rvVehicleWeapon::UpdateLock
 =====================
 */
+void rvVehicleWeapon::UpdateRetainedScope( void ) {
+	OpenQ4_UpdateScopeGui( zoomGui, zoomGuiRequested, spawnArgs );
+}
+
 void rvVehicleWeapon::UpdateLock ( void ) {
 	
 #ifdef _XENON
@@ -1177,6 +1186,7 @@ void rvVehicleWeapon::Restore ( idRestoreGame* savefile ) {
 
 	savefile->ReadInt( zoomFov );
 	savefile->ReadUserInterface( zoomGui, &spawnArgs );
+	zoomGuiRequested.Clear();
 	savefile->ReadFloat( zoomTime );
 }
 

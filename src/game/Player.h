@@ -638,6 +638,9 @@ public:
 	const char*				GetArenaPowerupString		( void );
 
 	// Helper methods to retrieving dictionaries
+	void                    DebugWeaponWheel( const idCmdArgs &args );
+	void                    DebugStatusBar( const idCmdArgs &args );
+	float                   GetWeaponWheelBlend() const;
 	const idDeclEntityDef*	GetWeaponDef				( int weaponIndex );
 	const idDeclEntityDef*	GetPowerupDef				( int powerupIndex );
 
@@ -725,7 +728,10 @@ public:
  	void					HideTip( void );
  	bool					IsTipVisible( void ) { return tipUp; };
 	void					ShowObjective( const char *obj );
- 	void					HideObjective( void );
+ 	// openQ4: `remastered` names the Remastered notice that timed out
+	// (oq4_closeNewObjective or oq4_closeDoneObjective); NULL closes both.
+	void					HideObjective( const char *remastered = NULL );
+	bool					ScrollObjectives( int delta );
 	idVec3					GetEyePosition( void ) const;
 
 	void					LocalClientPredictionThink( void );
@@ -1026,14 +1032,8 @@ private:
 	// full screen guis track mouse movements directly
 	int						oldMouseX;
 	int						oldMouseY;
-	bool					weaponWheelActive;
-	int						weaponWheelHoveredSlot;
-	int						weaponWheelLastMouseX;
-	int						weaponWheelLastMouseY;
-	int						weaponWheelLastUpdateTime;
-	float					weaponWheelBlend;
-	idVec2					weaponWheelCursor;
-	idAngles				weaponWheelLastCmdAngles;
+#include "gamesys/WeaponWheelState.h"
+#include "gamesys/StatusBarState.h"
 
 	bool					tipUp;
 	bool					objectiveUp;
@@ -1118,23 +1118,10 @@ private:
 	void					PredictionErrorDecay( void );
 
 	bool					CanZoom(void);
-	bool					CanUseWeaponWheel( void );
 
 	void					LookAtKiller( idEntity *inflictor, idEntity *attacker );
 	void					ApplyTestInput( void );
-	void					ApplyWeaponWheelInputMask( void );
-	void					ResetWeaponWheel( bool instantRestore = false );
-	void					UpdateWeaponWheel( void );
-	void					UpdateWeaponWheelEffects( void );
-	void					UpdateWeaponWheelCursor( void );
-	void					DrawWeaponWheel( void );
-	int						GetWeaponWheelSlotForWeapon( int weaponIndex ) const;
-	int						GetWeaponWheelWeaponForSlot( int slot ) const;
-	bool					HasWeaponWheelSlotWeapon( int slot ) const;
-	int						GetDefaultWeaponWheelSlot( void ) const;
-	int						GetClosestAvailableWeaponWheelSlot( float angle ) const;
-	int						GetWeaponWheelAmmoCount( int weaponIndex );
-	bool					IsWeaponWheelSlotLowAmmo( int slot );
+
 
 	void					StopFiring( void );
 	void					FireWeapon( void );

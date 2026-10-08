@@ -1251,6 +1251,9 @@ idMultiplayerGame::idMultiplayerGame() {
 	voteStartTime = 0;
 	voteLength = 0;
 	votePacked = false;
+	hudTransmitSelf = -1;
+	hudTransmitOther = -2;
+	ResetRemasteredHudAnnouncements();
 	arenaEntranceCameraResolved = false;
 	arenaEntranceCameraIsEntrance = false;
 	arenaVictorLookLatched = false;
@@ -9816,6 +9819,11 @@ void idMultiplayerGame::Clear() {
 	}
 		
 	pingUpdateTime = 0;
+	remasteredKills.Clear();
+	remasteredChat.Clear();
+	hudTransmitSelf = -1;
+	hudTransmitOther = -2;
+	ResetRemasteredHudAnnouncements();
 	vote = VOTE_NONE;
 	voteTimeOut = 0;
 	voteExecTime = 0;
@@ -10358,6 +10366,31 @@ void idMultiplayerGame::ReceiveDeathMessage( idPlayer *attacker, int attackerSco
 
 	if( hud ) {
 		hud->SetStateString ( "deathinfo", message );
+		// openQ4: the same line as fields for the Remastered kill feed's own
+		// plates (ui-visual-design.md 14.9): names, weapon, kind and teams;
+		// UpdateHud publishes the queue with the stock timing.
+		idPlayer *localPlayer = gameLocal.GetLocalPlayer();
+		idStr attackerName( attacker ? gameLocal.userInfo[ attacker->entityNumber ].GetString( "ui_name" ) : "" );
+		idStr victimName( victim ? gameLocal.userInfo[ victim->entityNumber ].GetString( "ui_name" ) : "" );
+		attackerName.RemoveEscapes();
+		victimName.RemoveEscapes();
+		const bool selfKill = !attacker || attacker == victim;
+		idDict line;
+		line.Set( "attacker", selfKill ? "" : attackerName.c_str() );
+		line.SetBool( "hasAttacker", !selfKill );
+		line.Set( "victim", victimName.c_str() );
+		line.SetInt( "weapon", methodOfDeath < MAX_WEAPONS ? methodOfDeath : -1 );
+		// 0 a weapon, 1 a suicide or the world (skull), 2 a telefrag (dm1)
+		line.SetInt( "kind", methodOfDeath == MAX_WEAPONS + 1 ? 2 : ( selfKill || methodOfDeath >= MAX_WEAPONS ) ? 1 : 0 );
+		line.SetBool( "quad", quadKill );
+		line.SetBool( "team", gameLocal.IsTeamGame() );
+		line.SetInt( "attackerTeam", attacker ? attacker->team : -1 );
+		line.SetInt( "victimTeam", victim ? victim->team : -1 );
+		line.SetBool( "you", localPlayer && ( attacker == localPlayer || victim == localPlayer ) );
+		line.SetBool( "youAttacker", localPlayer && attacker == localPlayer && !selfKill );
+		line.SetBool( "youVictim", localPlayer && victim == localPlayer );
+		line.SetBool( "teamkill", gameLocal.IsTeamGame() && attacker && victim && attacker != victim && attacker->team == victim->team );
+		remasteredKills.Add( line, gameLocal.realClientTime, gameLocal.gameType == GAME_TOURNEY ? 2 : 4 );
 		hud->HandleNamedEvent ( "addDeathLine" );
 	}
 
@@ -10441,6 +10474,122 @@ void idMultiplayerGame::UpdateScoreboard( idUserInterface *scoreBoard ) {
 	}
 
 	return;
+}
+
+/*
+================
+idMultiplayerGame::PublishRemasteredScoreboard
+
+openQ4: the Remastered scoreboard (ui-visual-design.md 14.14) reads its rows as
+fields instead of the stock list strings: panel 0 holds your team, or every
+player outside team modes, panel 1 the other team and panel 2 the spectators.
+Each row carries its name, clan, score, kills, deaths, minutes connected, ping
+and a flags word (1 you, 2 dead, 4 bot, 8 eliminated, 16 ready shown, 32 ready,
+64 muted, 128 flag carrier). The stock GUI ignores all of them.
+================
+*/
+static idStr OQ4_HudOrdinal( int place );
+
+void idMultiplayerGame::PublishRemasteredScoreboard( idUserInterface *scoreBoard ) {
+	idPlayer *player = gameLocal.GetLocalPlayer();
+	if ( scoreBoard == NULL || player == NULL ) {
+		return;
+	}
+	static const int panelRows[ 3 ] = { 16, 16, 8 };
+	const bool team = gameLocal.IsTeamGame();
+	const bool tourney = gameLocal.gameType == GAME_TOURNEY;
+	const bool roundMode = MPGameTypeHasAny( gameLocal.gameType, GTF_ROUND );
+	const bool useReady = gameLocal.serverInfo.GetBool( "si_useReady" ) && !IsArenaCampaignMatch() &&
+		gameState->GetMPGameState() == WARMUP;
+	const int firstTeam = ( team && !player->spectating && player->team == TEAM_STROGG ) ? TEAM_STROGG : TEAM_MARINE;
+
+	int counts[ 3 ] = { 0, 0, 0 };
+	int ranked = 0;
+	auto publishRow = [&]( int panel, idPlayer *row, int score, bool eliminated ) {
+		if ( counts[ panel ] >= panelRows[ panel ] ) {
+			return;
+		}
+		const int r = counts[ panel ]++;
+		const int client = row->entityNumber;
+		const rvPlayerStat *stat = statManager != NULL ? statManager->GetPlayerStat( client ) : NULL;
+		int flags = 0;
+		flags |= row == player ? 1 : 0;
+		flags |= ( panel != 2 && !row->spectating && row->health <= 0 ) ? 2 : 0;
+		flags |= botManager.IsBot( client ) ? 4 : 0;
+		flags |= eliminated ? 8 : 0;
+		flags |= ( useReady && panel != 2 ) ? 16 : 0;
+		flags |= ( useReady && row->IsReady() ) ? 32 : 0;
+		flags |= player->IsPlayerMuted( row ) ? 64 : 0;
+		flags |= ( team && row->PowerUpActive( row->team ? POWERUP_CTF_MARINEFLAG : POWERUP_CTF_STROGGFLAG ) ) ? 128 : 0;
+		scoreBoard->SetStateString( va( "oq4_sb%d_%d_name", panel, r ), row->GetUserInfo()->GetString( "ui_name" ) );
+		scoreBoard->SetStateString( va( "oq4_sb%d_%d_clan", panel, r ), row->GetUserInfo()->GetString( "ui_clan" ) );
+		scoreBoard->SetStateInt( va( "oq4_sb%d_%d_score", panel, r ), score );
+		scoreBoard->SetStateInt( va( "oq4_sb%d_%d_kills", panel, r ), playerState[ client ].fragCount );
+		scoreBoard->SetStateInt( va( "oq4_sb%d_%d_deaths", panel, r ), stat != NULL ? stat->deaths : 0 );
+		scoreBoard->SetStateInt( va( "oq4_sb%d_%d_time", panel, r ), GetPlayerTime( row ) );
+		scoreBoard->SetStateInt( va( "oq4_sb%d_%d_ping", panel, r ), playerState[ client ].ping );
+		scoreBoard->SetStateInt( va( "oq4_sb%d_%d_flags", panel, r ), flags );
+	};
+	// Tourney lists the players still in it first, then the eliminated ones.
+	for ( int pass = 0; pass < ( tourney ? 2 : 1 ); pass++ ) {
+		for ( int i = 0; i < rankedPlayers.Num(); i++ ) {
+			idPlayer *row = rankedPlayers[ i ].First();
+			if ( row == NULL ) {
+				continue;
+			}
+			const bool eliminated = tourney && row->GetTourneyStatus() == PTS_ELIMINATED;
+			if ( tourney && eliminated != ( pass == 1 ) ) {
+				continue;
+			}
+			int panel = 0;
+			if ( team ) {
+				if ( row->team < 0 || row->team >= TEAM_MAX ) {
+					continue;
+				}
+				panel = row->team == firstTeam ? 0 : 1;
+			}
+			publishRow( panel, row, rankedPlayers[ i ].Second(), eliminated );
+			ranked++;
+		}
+	}
+	for ( int i = 0; i < unrankedPlayers.Num(); i++ ) {
+		if ( unrankedPlayers[ i ] != NULL ) {
+			publishRow( 2, unrankedPlayers[ i ], 0, false );
+		}
+	}
+	// Panels: 0 players, 1 Marine, 2 Strogg, 3 spectators; -1 hides a panel.
+	if ( team ) {
+		scoreBoard->SetStateInt( "oq4_sb0_kind", firstTeam == TEAM_STROGG ? 2 : 1 );
+		scoreBoard->SetStateInt( "oq4_sb1_kind", firstTeam == TEAM_STROGG ? 1 : 2 );
+		scoreBoard->SetStateString( "oq4_sb0_score", va( "%d", GetTeamScore( firstTeam ) ) );
+		scoreBoard->SetStateString( "oq4_sb1_score", va( "%d", GetTeamScore( firstTeam == TEAM_STROGG ? TEAM_MARINE : TEAM_STROGG ) ) );
+	} else {
+		scoreBoard->SetStateInt( "oq4_sb0_kind", 0 );
+		scoreBoard->SetStateInt( "oq4_sb1_kind", -1 );
+		scoreBoard->SetStateString( "oq4_sb0_score", "" );
+		scoreBoard->SetStateString( "oq4_sb1_score", "" );
+	}
+	scoreBoard->SetStateInt( "oq4_sb2_kind", counts[ 2 ] > 0 ? 3 : -1 );
+	scoreBoard->SetStateString( "oq4_sb2_score", "" );
+	for ( int panel = 0; panel < 3; panel++ ) {
+		scoreBoard->SetStateInt( va( "oq4_sb%d_count", panel ), counts[ panel ] );
+	}
+	// The pitch adapts to the entries (stock scoreboard.gui): 15-30 u in team
+	// modes, 17-35 u in deathmatch, 13-26 u in Tourney.
+	const int total = counts[ 0 ] + counts[ 1 ] + counts[ 2 ];
+	static const int teamPitch[ 5 ] = { 30, 24, 20, 17, 15 };
+	static const int dmPitch[ 5 ] = { 35, 28, 23, 20, 17 };
+	static const int tourneyPitch[ 5 ] = { 26, 21, 17, 15, 13 };
+	const int step = total <= 8 ? 0 : total <= 10 ? 1 : total <= 12 ? 2 : total <= 14 ? 3 : 4;
+	scoreBoard->SetStateInt( "oq4_sb_pitch", ( team ? teamPitch : tourney ? tourneyPitch : dmPitch )[ step ] );
+	// KILLS shows in the flag modes, as in the stock team board.
+	scoreBoard->SetStateBool( "oq4_sb_kills", team && gameLocal.gameType != GAME_TDM && !roundMode );
+	// "3RD OF 12": your place among the ranked players.
+	idStr rank;
+	if ( !player->spectating && player->GetRank() >= 0 && ranked > 0 ) {
+		rank = va( common->GetLocalizedString( "#str_231232" ), OQ4_HudOrdinal( player->GetRank() + 1 ).c_str(), ranked );
+	}
+	scoreBoard->SetStateString( "oq4_sb_rank", rank.c_str() );
 }
 
 /*
@@ -10650,6 +10799,7 @@ void idMultiplayerGame::UpdateDMScoreboard( idUserInterface *scoreBoard ) {
 
 	scoreBoard->SetStateBool( "infinity", ( !timeLimit && state != COUNTDOWN ) || inNonTimedState );
 
+	PublishRemasteredScoreboard( scoreBoard );
 	scoreBoard->StateChanged ( gameLocal.time );
 	scoreBoard->Redraw( gameLocal.time );
 }
@@ -10845,6 +10995,7 @@ void idMultiplayerGame::UpdateTeamScoreboard( idUserInterface *scoreBoard ) {
 	mpGameState_t state = gameState->GetMPGameState();
 	scoreBoard->SetStateBool( "infinity", ( !timeLimit && state != COUNTDOWN ) || state == WARMUP || state == GAMEREVIEW || state == SUDDENDEATH );
 
+	PublishRemasteredScoreboard( scoreBoard );
 	scoreBoard->StateChanged( gameLocal.time );
 	scoreBoard->Redraw( gameLocal.time );
 }
@@ -13195,6 +13346,46 @@ void idMultiplayerGame::ClientEndFrame( void ) {
 
 /*
 ================
+OQ4_PublishRankNotice
+
+openQ4: a rank notice in parts for the Remastered center column, which sets
+the ordinal in #FFBE23 (ui-visual-design.md 14.9): "Tied for", the ordinal
+and the rest, from the same language strings as the stock notice.  The
+column shows the parts while the main notice is still this text.
+================
+*/
+static void OQ4_PublishRankNotice( idUserInterface *hud, const char *text, int rank, bool tied, int score ) {
+	idStr phrase;
+	if ( rank == 0 ) {
+		phrase = common->GetLocalizedString( "#str_107689" );
+	} else if ( rank == 1 ) {
+		phrase = common->GetLocalizedString( "#str_107690" );
+	} else if ( rank == 2 ) {
+		phrase = common->GetLocalizedString( "#str_107691" );
+	} else {
+		phrase = va( "%d%s", rank + 1, common->GetLocalizedString( "#str_107692" ) );
+	}
+	idStr lead( phrase );
+	idStr post;
+	int split = phrase.Find( "^0" );
+	const int skip = split >= 0 ? 2 : 0;
+	if ( split < 0 ) {
+		split = phrase.Find( ' ' );
+	}
+	if ( split >= 0 ) {
+		lead = phrase.Left( split );
+		post = phrase.Right( phrase.Length() - split - skip );
+	}
+	lead.RemoveEscapes();
+	post.RemoveEscapes();
+	hud->SetStateString( "oq4_rank_notice_text", text );
+	hud->SetStateString( "oq4_rank_notice_pre", tied ? va( "%s ", common->GetLocalizedString( "#str_107693" ) ) : "" );
+	hud->SetStateString( "oq4_rank_notice_lead", lead.c_str() );
+	hud->SetStateString( "oq4_rank_notice_post", va( "%s %d", post.c_str(), score ) );
+}
+
+/*
+================
 idMultiplayerGame::CommonRun
 Called once each render frame (client)/once each game frame (server)
 ================
@@ -13233,10 +13424,12 @@ void idMultiplayerGame::CommonRun( void ) {
 
 // RAVEN BEGIN
 // shouchard:  let the UI know about voicechat states
-		if ( !testing && sending ) {
-			player->mphud->HandleNamedEvent( "show_transmit_self" );
-		} else {
-			player->mphud->HandleNamedEvent( "hide_transmit_self" );
+		// openQ4: the transmit displays follow changes; repeating the same event
+		// every frame made the HUD run an event program per frame.
+		const int transmitSelf = ( !testing && sending ) ? 1 : 0;
+		if ( transmitSelf != hudTransmitSelf ) {
+			player->mphud->HandleNamedEvent( transmitSelf ? "show_transmit_self" : "hide_transmit_self" );
+			hudTransmitSelf = transmitSelf;
 		}
 
 		if( player->GetUserInfo() && player->GetUserInfo()->GetBool( "s_voiceChatReceive" ) ) {
@@ -13256,16 +13449,19 @@ void idMultiplayerGame::CommonRun( void ) {
 
 			if ( clientNum > -1 && clientNum < MAX_CLIENTS ) {
 				idPlayer *from = ( idPlayer * )gameLocal.entities[clientNum];
-				if( from ) {
+				if( from && hudTransmitOther != clientNum ) {
 					player->mphud->SetStateString( "audio_name", from->GetUserInfo()->GetString( "ui_name" ) );
 					player->mphud->HandleNamedEvent( "show_transmit" );
+					hudTransmitOther = clientNum;
 				}
-			} else {
+			} else if ( hudTransmitOther != -1 ) {
 				player->mphud->HandleNamedEvent( "hide_transmit" );
+				hudTransmitOther = -1;
 			}
 		}
-		else {
+		else if ( hudTransmitOther != -1 ) {
 			player->mphud->HandleNamedEvent( "hide_transmit" );
+			hudTransmitOther = -1;
 		}
 #endif // _USE_VOICECHAT
 // RAVEN END
@@ -13352,7 +13548,13 @@ void idMultiplayerGame::CommonRun( void ) {
 	if ( rankTextPlayer ) {
 		bool tied = false;
 		int rank = GetPlayerRank( rankTextPlayer, tied );
-		(gameLocal.GetLocalPlayer())->GUIMainNotice( GetPlayerRankText( rank, tied, playerState[ rankTextPlayer->entityNumber ].fragCount ) );		
+		const int score = playerState[ rankTextPlayer->entityNumber ].fragCount;
+		const idStr rankText = GetPlayerRankText( rank, tied, score );
+		idPlayer *local = gameLocal.GetLocalPlayer();
+		local->GUIMainNotice( rankText.c_str() );
+		if ( local->mphud ) {
+			OQ4_PublishRankNotice( local->mphud, rankText.c_str(), rank, tied, score );
+		}
 		rankTextPlayer = NULL;
 	}
 
@@ -19246,6 +19448,7 @@ void idMultiplayerGame::UpdateHud( idUserInterface* _mphud ) {
 	} else {
 		ProjectClientManagedMatchContext( _mphud );
 	}
+	PublishRemasteredHud( _mphud, localPlayer );
 	_mphud->StateChanged( gameLocal.time );
 
 	statManager->UpdateInGameHud( _mphud, ( localPlayer->usercmd.buttons & BUTTON_INGAMESTATS ) != 0 );
@@ -19253,6 +19456,273 @@ void idMultiplayerGame::UpdateHud( idUserInterface* _mphud ) {
 	//update awards
 	if ( gameLocal.isClient || gameLocal.isListenServer) {
 		statManager->CheckAwardQueue();
+	}
+}
+
+/*
+================
+OQ4_HudPlain / OQ4_HudOrdinal
+
+openQ4: text for the Remastered multiplayer HUD's fields.  Names arrive
+without color escapes, and places as each language writes its ordinals.
+================
+*/
+static idStr OQ4_HudPlain( const char *text ) {
+	idStr plain( text ? text : "" );
+	plain.RemoveEscapes();
+	return plain;
+}
+
+static idStr OQ4_HudOrdinal( int place ) {
+	if ( place < 1 ) {
+		return "";
+	}
+	const char *key;
+	if ( place == 1 ) {
+		key = "#str_231201";
+	} else if ( place % 10 == 1 && place % 100 != 11 ) {
+		key = "#str_231202";
+	} else if ( place % 10 == 2 && place % 100 != 12 ) {
+		key = "#str_231203";
+	} else if ( place % 10 == 3 && place % 100 != 13 ) {
+		key = "#str_231204";
+	} else {
+		key = "#str_231205";
+	}
+	return va( common->GetLocalizedString( key ), place );
+}
+
+static idPlayer *OQ4_HudClient( int clientNum ) {
+	if ( clientNum < 0 || clientNum >= MAX_CLIENTS ) {
+		return NULL;
+	}
+	idEntity *ent = gameLocal.entities[ clientNum ];
+	return ( ent && ent->IsType( idPlayer::GetClassType() ) ) ? static_cast< idPlayer * >( ent ) : NULL;
+}
+
+/*
+================
+idMultiplayerGame::ResetRemasteredHudAnnouncements
+================
+*/
+void idMultiplayerGame::ResetRemasteredHudAnnouncements( void ) {
+	for ( int flag = 0; flag < 3; flag++ ) {
+		hudFlagStates[ flag ] = -1;
+	}
+	hudClockWarn = -1;
+	hudMatchState = -1;
+}
+
+/*
+================
+idMultiplayerGame::PublishRemasteredHud
+
+openQ4: the Remastered multiplayer HUD (ui-visual-design.md 14.9) states
+what the stock HUD conveys only through formatted text and color escapes:
+the kill feed and chat as fields, ordinals, the lead gap, the match limit,
+the clock as numbers, flag carriers, the zone holder, alive players, the
+vote tally and the followed player.  The stock windows never read these
+keys, so Classic is unchanged.
+================
+*/
+void idMultiplayerGame::PublishRemasteredHud( idUserInterface *_mphud, idPlayer *localPlayer ) {
+	const int now = gameLocal.realClientTime;
+	const bool tourney = gameLocal.gameType == GAME_TOURNEY;
+	const bool teamGame = gameLocal.IsTeamGame();
+	const mpGameState_t state = gameState->GetMPGameState();
+
+	remasteredKills.Publish( _mphud, "oq4_feed", now, 2000, 1000, 3100, tourney ? 2 : 4 );
+	remasteredChat.Publish( _mphud, "oq4_chat", now, 2000, 1000, 3100, 4 );
+
+	_mphud->SetStateBool( "oq4_team_game", teamGame );
+	_mphud->SetStateBool( "oq4_chatting", currentMenu == 2 );
+	_mphud->SetStateInt( "oq4_state", (int)state );
+
+	const char *limitLabel = NULL;
+	int limit = 0;
+	MPResolveMatchLimit( limitLabel, limit );
+	_mphud->SetStateInt( "oq4_limit", Max( 0, limit ) );
+
+	// The followed player when spectating, else the local player: their team
+	// leads the team panels.
+	idPlayer *followed = NULL;
+	if ( localPlayer->spectating && localPlayer->spectator != localPlayer->entityNumber ) {
+		followed = OQ4_HudClient( localPlayer->spectator );
+	}
+	idPlayer *viewer = followed ? followed : localPlayer;
+	_mphud->SetStateInt( "oq4_my_team", viewer->team == TEAM_STROGG ? 1 : 0 );
+
+	// Standing: the stock rows (UpdateHud) with ordinals, which row is you,
+	// your lead over 2nd place or your deficit to the leader, and a tie.
+	idPlayer *row1 = rankedPlayers.Num() ? rankedPlayers[ 0 ].First() : NULL;
+	idPlayer *row2 = NULL;
+	if ( row1 ) {
+		if ( ( row1 == localPlayer || localPlayer->spectating ) && rankedPlayers.Num() > 1 ) {
+			row2 = rankedPlayers[ 1 ].First();
+		} else if ( row1 != localPlayer && !localPlayer->spectating ) {
+			row2 = localPlayer;
+		}
+	}
+	_mphud->SetStateString( "oq4_rank1", row1 ? OQ4_HudOrdinal( 1 ).c_str() : "" );
+	_mphud->SetStateString( "oq4_rank2", row2 ? OQ4_HudOrdinal( row2->GetRank() + 1 ).c_str() : "" );
+	_mphud->SetStateBool( "oq4_row1_you", row1 != NULL && row1 == localPlayer );
+	_mphud->SetStateBool( "oq4_row2_you", row2 != NULL && row2 == localPlayer );
+	int gap = 0;
+	bool showGap = false;
+	if ( row1 && !localPlayer->spectating ) {
+		if ( row1 == localPlayer ) {
+			if ( rankedPlayers.Num() > 1 ) {
+				gap = GetScore( row1 ) - GetScore( rankedPlayers[ 1 ].First() );
+				showGap = true;
+			}
+		} else {
+			gap = GetScore( localPlayer ) - GetScore( row1 );
+			showGap = true;
+		}
+	}
+	_mphud->SetStateInt( "oq4_gap", gap );
+	_mphud->SetStateBool( "oq4_gap_show", showGap );
+	_mphud->SetStateBool( "oq4_tied", rankedPlayers.Num() > 1 && rankedPlayers[ 0 ].Second() == rankedPlayers[ 1 ].Second() );
+
+	// The clock as numbers: the countdown, or the time left in a timed match
+	// and the time played in an untimed one, as GameTime() measures it.
+	bool countdown = false;
+	int clockMs = 0;
+	if ( state == COUNTDOWN ) {
+		countdown = true;
+		clockMs = gameState->GetNextMPGameStateTime() - now;
+	} else if ( tourney && ((rvTourneyGameState*)gameState)->GetArena( localPlayer->GetArena() ).GetState() == AS_WARMUP ) {
+		countdown = true;
+		clockMs = ((rvTourneyGameState*)gameState)->GetArena( localPlayer->GetArena() ).GetNextStateTime() - now;
+	} else {
+		const int matchLength = GetMatchLengthMsec();
+		int startTime = matchStartedTime;
+		if ( tourney ) {
+			startTime = ((rvTourneyGameState*)gameState)->GetArena( localPlayer->GetArena() ).GetMatchStartTime();
+		}
+		clockMs = matchLength > 0 ? matchLength - ( gameLocal.time - startTime ) : gameLocal.time - startTime;
+	}
+	clockMs = Max( 0, clockMs );
+	const int clockSeconds = countdown ? ( clockMs + 999 ) / 1000 : clockMs / 1000;
+	const bool timed = GetMatchLengthMsec() > 0;
+	_mphud->SetStateBool( "oq4_countdown", countdown );
+	_mphud->SetStateBool( "oq4_timed", timed );
+	// 1 in the last minute, 2 in the last ten seconds of a timed match
+	_mphud->SetStateInt( "oq4_clock_warn", ( countdown || !timed ) ? 0 : clockMs < 10000 ? 2 : clockMs < 60000 ? 1 : 0 );
+	_mphud->SetStateString( "oq4_clock", va( "%d:%02d", clockSeconds / 60, clockSeconds % 60 ) );
+	_mphud->SetStateInt( "oq4_ping", playerState[ localPlayer->entityNumber ].ping );
+
+	// Flags: at base 0, taken 1, dropped 2, with the carrier.  Slot 2 is One
+	// Flag CTF's neutral flag.
+	const bool flags = gameLocal.IsFlagGameType() && gameState->IsType( rvCTFGameState::GetClassType() );
+	bool flagsChanged = false;
+	for ( int flag = 0; flag < MAX_CTF_FLAGS; flag++ ) {
+		int flagState = 0;
+		int carrierTeam = -1;
+		idStr carrierName;
+		if ( flags ) {
+			rvCTFGameState *ctf = static_cast< rvCTFGameState * >( gameState );
+			const flagState_t status = ctf->GetFlagState( flag );
+			if ( status == FS_DROPPED ) {
+				flagState = 2;
+			} else if ( status != FS_AT_BASE ) {
+				flagState = 1;
+				idPlayer *carrier = OQ4_HudClient( ctf->GetFlagCarrier( flag ) );
+				if ( carrier ) {
+					carrierName = OQ4_HudPlain( carrier->GetUserInfo()->GetString( "ui_name" ) );
+					carrierTeam = carrier->team;
+				}
+				if ( status == FS_TAKEN_MARINE ) {
+					carrierTeam = TEAM_MARINE;
+				} else if ( status == FS_TAKEN_STROGG ) {
+					carrierTeam = TEAM_STROGG;
+				}
+			}
+		}
+		_mphud->SetStateInt( va( "oq4_flag%d_state", flag ), flagState );
+		_mphud->SetStateString( va( "oq4_flag%d_carrier", flag ), carrierName.c_str() );
+		_mphud->SetStateInt( va( "oq4_flag%d_carrier_team", flag ), carrierTeam );
+		if ( flagState != hudFlagStates[ flag ] ) {
+			hudFlagStates[ flag ] = flagState;
+			flagsChanged = true;
+		}
+	}
+
+	// Dead Zone holder: 0 empty, 1 Marines, 2 Strogg, 3 contested.
+	int zone = 0;
+	if ( gameLocal.gameType == GAME_DEADZONE && gameState->IsType( riDZGameState::GetClassType() ) ) {
+		riDZGameState *dz = static_cast< riDZGameState * >( gameState );
+		const dzState_t marine = dz->GetDZState( TEAM_MARINE );
+		const dzState_t strogg = dz->GetDZState( TEAM_STROGG );
+		if ( marine == DZ_DEADLOCK || strogg == DZ_DEADLOCK ) {
+			zone = 3;
+		} else if ( marine == DZ_TAKEN ) {
+			zone = 1;
+		} else if ( strogg == DZ_TAKEN ) {
+			zone = 2;
+		}
+	}
+	_mphud->SetStateInt( "oq4_zone", zone );
+
+	// Elimination modes: players still standing on each side this round.
+	const bool pips = teamGame && ( MPGameTypeHasAny( gameLocal.gameType, GTF_ELIMINATION ) || MPGameTypeHasAny( gameLocal.gameType, GTF_FREEZE ) );
+	int alive[ TEAM_MAX ] = { 0, 0 };
+	int total[ TEAM_MAX ] = { 0, 0 };
+	if ( pips ) {
+		for ( int i = 0; i < gameLocal.numClients; i++ ) {
+			idPlayer *player = OQ4_HudClient( i );
+			if ( !player || player->wantSpectate || player->team < 0 || player->team >= TEAM_MAX ) {
+				continue;
+			}
+			total[ player->team ]++;
+			if ( !player->spectating && player->health > 0 ) {
+				alive[ player->team ]++;
+			}
+		}
+	}
+	_mphud->SetStateBool( "oq4_pips", pips && state == GAMEON );
+	for ( int team = 0; team < TEAM_MAX; team++ ) {
+		_mphud->SetStateInt( va( "oq4_alive%d", team ), alive[ team ] );
+		_mphud->SetStateInt( va( "oq4_total%d", team ), Min( total[ team ], 8 ) );
+	}
+
+	// The vote: caller, tally, whether you voted and the time left.
+	idPlayer *caller = OQ4_HudClient( voteCaller );
+	_mphud->SetStateString( "oq4_vote_caller", caller ? OQ4_HudPlain( caller->GetUserInfo()->GetString( "ui_name" ) ).c_str() : "" );
+	_mphud->SetStateInt( "oq4_vote_yes", idMath::ClampInt( 0, 99, yesVotes ) );
+	_mphud->SetStateInt( "oq4_vote_no", idMath::ClampInt( 0, 99, noVotes ) );
+	_mphud->SetStateBool( "oq4_vote_voted", voted );
+	// in the ramp's twentieths, so the HUD's state changes once a step
+	_mphud->SetStateInt( "oq4_vote_left", voteLength > 0 ?
+		idMath::ClampInt( 0, 20, (int)ceilf( 20.0f * (float)( voteStartTime + voteLength - gameLocal.time ) / (float)voteLength ) ) : 0 );
+	_mphud->SetStateString( "oq4_vote_yes_key", common->KeysFromBinding( "_impulse28" ) );
+	_mphud->SetStateString( "oq4_vote_no_key", common->KeysFromBinding( "_impulse29" ) );
+
+	// The follow card: who you follow, their side, place and score, and the
+	// controls that cycle, release and show the scores.
+	_mphud->SetStateBool( "oq4_spectating", localPlayer->spectating && !tourney );
+	_mphud->SetStateBool( "oq4_following", followed != NULL && !tourney );
+	_mphud->SetStateString( "oq4_follow_name", followed ? OQ4_HudPlain( followed->GetUserInfo()->GetString( "ui_name" ) ).c_str() : "" );
+	_mphud->SetStateInt( "oq4_follow_team", followed && teamGame ? followed->team : -1 );
+	_mphud->SetStateString( "oq4_follow_rank", followed && !teamGame ? OQ4_HudOrdinal( followed->GetRank() + 1 ).c_str() : "" );
+	_mphud->SetStateString( "oq4_follow_score", followed ? va( "%d", GetScore( followed ) ) : "" );
+	_mphud->SetStateString( "oq4_key_attack", common->KeysFromBinding( "_attack" ) );
+	_mphud->SetStateString( "oq4_key_jump", common->KeysFromBinding( "_moveup" ) );
+	_mphud->SetStateString( "oq4_key_scores", common->KeysFromBinding( "_impulse19" ) );
+
+	// The HUD's looping motion (a taken flag's beat, the last ten seconds'
+	// pulse, the warm-up breathing) starts and stops on these changes only.
+	const int clockWarn = ( countdown || !timed ) ? 0 : clockMs < 10000 ? 2 : clockMs < 60000 ? 1 : 0;
+	if ( flagsChanged ) {
+		_mphud->HandleNamedEvent( "oq4_flags" );
+	}
+	if ( clockWarn != hudClockWarn ) {
+		hudClockWarn = clockWarn;
+		_mphud->HandleNamedEvent( "oq4_clockWarn" );
+	}
+	if ( (int)state != hudMatchState ) {
+		hudMatchState = (int)state;
+		_mphud->HandleNamedEvent( "oq4_state" );
 	}
 }
 
@@ -19305,6 +19775,47 @@ void idMultiplayerGame::PrintChatLine( const char *message, const bool teamChat 
 		msgmodeGui->SetStateString( "chatline", text.c_str() );
 		msgmodeGui->SetStateBool( "chatteam", teamChat );
 		msgmodeGui->HandleNamedEvent( "chatLine" );
+	}
+
+	// openQ4: the Remastered chat lines (ui-visual-design.md 14.9) as fields.
+	// A player's line is "name^0: text" and a team line's text opens with its
+	// team's color; anything else is a server or vote line.
+	{
+		idDict line;
+		idStr name;
+		idStr body( text );
+		int kind = 2;	// 0 all, 1 team, 2 server, 3 spectators
+		int lineTeam = -1;
+		const int split = text.Find( "^0: " );
+		if ( split > 0 ) {
+			name = text.Left( split );
+			body = text.Right( text.Length() - split - 4 );
+			kind = teamChat ? 1 : 0;
+			if ( !idStr::Cmpn( body.c_str(), S_COLOR_STROGG, 5 ) ) {
+				lineTeam = TEAM_STROGG;
+			} else if ( !idStr::Cmpn( body.c_str(), S_COLOR_MARINE, 5 ) ) {
+				lineTeam = TEAM_MARINE;
+			}
+			name.RemoveEscapes();
+			// the TEAM tag replaces a team line's "(Marine)" or "(Strogg)"
+			const bool teamSuffix = teamChat && ( name.StripTrailingOnce( " (Marine)" ) || name.StripTrailingOnce( " (Strogg)" ) );
+			if ( !teamSuffix && name.Find( " (spectating)" ) >= 0 ) {
+				kind = 3;
+			}
+		}
+		body.RemoveEscapes();
+		bool you = false;
+		idPlayer *local = gameLocal.GetLocalPlayer();
+		if ( local && split > 0 ) {
+			const idStr own = OQ4_HudPlain( local->GetUserInfo()->GetString( "ui_name" ) );
+			you = !own.IsEmpty() && ( name == own || !idStr::Cmpn( name.c_str(), va( "%s (", own.c_str() ), own.Length() + 2 ) );
+		}
+		line.Set( "name", name.c_str() );
+		line.Set( "text", body.c_str() );
+		line.SetInt( "kind", kind );
+		line.SetInt( "team", lineTeam );
+		line.SetBool( "you", you );
+		remasteredChat.Add( line, gameLocal.realClientTime, 4 );
 	}
 
 	while ( !chatHistory.IsEmpty() && chatHistory.Length() + text.Length() + 1 > CHAT_HISTORY_SIZE ) {

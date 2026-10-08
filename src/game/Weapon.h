@@ -373,6 +373,7 @@ public:
 
 	// zoom
     int								zoomFov;				// variable zoom fov per weapon (-1 is no zoom)
+	idStr						zoomGuiRequested; // transient backend selection; rebuilt after restore
 	idUserInterface*				zoomGui;				// whether or not to overlay a zoom scope
 	float							zoomTime;				// time it takes to zoom in
 

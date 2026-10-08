@@ -30,7 +30,9 @@ Typed lengths now accept `em`; transforms still accept only `dp`/`px` translatio
 Font-relative dimensions allow text fields and columns to grow with typography.
 The numeric view resolves these dimensions using the same computed font as its
 text, caret and selection. `word-break` accepts the pinned RmlUi normal,
-break-all and break-word policies.
+break-all and break-word policies, and `text-overflow` its clip and ellipsis
+policies: a label in a box that hides overflow ends in an ellipsis instead of
+being cut (the Remastered kill feed's names).
 
 The production SYSTEM source uses flowing choice readbacks, font-relative
 numeric fields and columns, and modal widths/action wrapping that grow with text.

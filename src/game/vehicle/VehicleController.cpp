@@ -134,9 +134,16 @@ void rvVehicleController::DrawHUD ( void ) {
 
 	if ( GetDriver() && GetDriver()->IsType( idPlayer::GetClassType() ) ) {
 		idPlayer * player = static_cast<idPlayer*>( GetDriver() );
+		if ( mVehicle->GetHud() ) {
+			mVehicle->GetHud()->SetStateInt( "radio_audio_emitter", player->GetSoundEmitter() );
+			mVehicle->GetHud()->SetStateInt( "radio_audio_channel", SND_CHANNEL_RADIO );
+		}
 		rvVehicleWeapon * weapon = mVehicle->GetPosition( mPosition )->GetActiveWeapon();
 		if ( weapon ) {
 			if ( weapon->CanZoom() && player->IsZoomed() && player == gameLocal.GetLocalPlayer() ) {
+				weapon->UpdateRetainedScope();
+				weapon->GetZoomGui()->SetStateFloat( "playerYaw", player->viewAngles.yaw );
+				weapon->GetZoomGui()->StateChanged( gameLocal.time );
 				weapon->GetZoomGui()->Redraw( gameLocal.time );			
 			}
 //            if ( mVehicle->GetHud() ) {
