@@ -641,6 +641,72 @@ static void CheckRemasteredTurretHud(ScreenHost& host, const char* path) {
 	runtime.Shutdown();
 }
 
+// The Awakening's MCC cannon (cannonplayerhud.gui, 14.12): the MCC's hull
+// readout stacked under the transmission display, filled in proportion and
+// warning at 25%, and the HUD prompt's Exit.
+static void CheckRemasteredMccHud(ScreenHost& host, const char* path) {
+	const auto source = Read(path);
+	Document document; std::vector<Diagnostic> diagnostics;
+	if (!document.Load(source,diagnostics)) for (const auto& d : diagnostics) std::fprintf(stderr,"%s %u:%u %s\n",path,unsigned(d.line),unsigned(d.column),d.message.c_str());
+	Check(diagnostics.empty() && document.Model().id == "openq4.hud.remastered.mcc","Remastered MCC cannon HUD validates");
+	RemasteredLayoutPreference(host,1);
+	Runtime runtime(host);
+	Check(runtime.Initialize(),"retained runtime");
+	Check(runtime.LoadDocument(source,"guis/hud/remastered_mcc.q4ui",diagnostics),"Remastered MCC cannon HUD loads into a runtime");
+	std::string error;
+	Runtime::EventEffects effects;
+	StateValues values = RemasteredLayout(1280,720);
+	values.insert({{"oq4_key_jump",std::string("SPACE")}});
+	Check(runtime.SetState(values,error,0),error.c_str());
+	Check(runtime.RunEvent("hudJoin",0,effects,error),"the join program runs");
+	runtime.Frame(RemasteredViewport(1280,720),.1);
+	Check(host.errors == 0,"the MCC cannon HUD frames without runtime errors");
+	// The readout: 36 u above the stock group, directly under the transmission display.
+	Bounds gauge;
+	Check(runtime.GetBounds("mcc-gauge",gauge) && Near(gauge.x,320+494*1.5f,1.f) && Near(gauge.y,(80-36)*1.5f,1.f) &&
+		Near(gauge.width,136*1.5f,1.f),"the hull gauge stacks under the transmission display");
+	auto hull = runtime.PresentedValue("mcc-hull","text");
+	Check(hull && hull->text == "2000","a whole MCC reads 2000");
+	Check(Shown(runtime,"mcc-fill") && !Shown(runtime,"mcc-fill-warn") && Shown(runtime,"vpr") && Shown(runtime,"vpr-exit"),
+		"the full track and Exit show");
+	// The drawn extent of the hull fill: #B3D06E at 0.35, premultiplied.
+	const auto fillExtent = [&]() {
+		float lo = 1e9f, hi = -1e9f;
+		for (const auto& draw : host.draws) for (const auto& v : draw.vertices) {
+			if (v.a < .3f || v.a > .4f || std::fabs(v.r/v.a-.702f) > .03f || std::fabs(v.g/v.a-.816f) > .03f) continue;
+			lo = std::min(lo,v.x); hi = std::max(hi,v.x);
+		}
+		return std::pair{lo,hi};
+	};
+	host.draws.clear(); runtime.Frame(RemasteredViewport(1280,720),.15);
+	const auto fullFill = fillExtent();
+	// The track fills in proportion: half the hull moves the window's trailing edge to the middle.
+	Check(runtime.SetState({{"mcchealth",1000.0}},error,.2),error.c_str());
+	host.draws.clear();
+	runtime.Frame(RemasteredViewport(1280,720),.25);
+	const auto halfFill = fillExtent();
+	Check(fullFill.second > fullFill.first+.8f*gauge.width && Near(halfFill.first,fullFill.first,1.f) &&
+		halfFill.second < fullFill.second-.3f*gauge.width && halfFill.second > fullFill.first+.3f*gauge.width,
+		"half the hull draws half the fill from the leading end");
+	const auto shift = runtime.PresentedValue("mcc-win","transform");
+	const float expected = ((5.4f+114.2f*.5f)*136.f/125.f-136.f)*1.5f;
+	hull = runtime.PresentedValue("mcc-hull","text");
+	Check(shift && Near(float(shift->data[0]),expected,.1f) && hull && hull->text == "1000","half the hull fills half the track");
+	// At or below 25% the readout warns.
+	Check(runtime.SetState({{"mcchealth",400.0}},error,.3),error.c_str());
+	runtime.Frame(RemasteredViewport(1280,720),.35);
+	const auto colour = runtime.PresentedValue("mcc-hull","color");
+	Check(Shown(runtime,"mcc-fill-warn") && Shown(runtime,"mcc-track-warn") && !Shown(runtime,"mcc-fill") && colour &&
+		Near(float(colour->data[0]),1) && Near(float(colour->data[1]),.2f,.01f),"a quarter hull warns in #FF3300");
+	// Minimal keeps the readout and the prompt.
+	RemasteredLayoutPreference(host,2);
+	runtime.Frame(RemasteredViewport(1280,720),.4);
+	Check(!Shown(runtime,"tr-full") && Shown(runtime,"vpr") && runtime.GetBounds("mcc-gauge",gauge),"Minimal keeps the hull readout and the prompt");
+	RemasteredLayoutPreference(host,1);
+	Check(host.errors == 0,"no runtime diagnostics across the MCC cannon exercise");
+	runtime.Shutdown();
+}
+
 // The objectives display and notices (wristcomm.gui, 14.11).
 static void CheckRemasteredObjectivesHud(ScreenHost& host, const char* path, bool strogg) {
 	const auto source = Read(path);

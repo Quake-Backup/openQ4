@@ -931,6 +931,7 @@ if build_engine or get_option('build_native_tests')
              meson.project_source_root() / 'content/baseoq4/pak0/guis/hud/remastered_vehicle.q4ui',
              meson.project_source_root() / 'content/baseoq4/pak0/guis/hud/remastered_airdef.q4ui',
              meson.project_source_root() / 'content/baseoq4/pak0/guis/hud/remastered_turret.q4ui',
+             meson.project_source_root() / 'content/baseoq4/pak0/guis/hud/remastered_mcc.q4ui',
              meson.project_source_root() / 'content/baseoq4/pak0/guis/hud/remastered_objectives.q4ui',
              meson.project_source_root() / 'content/baseoq4/pak0/guis/hud/remastered_objectives_strogg.q4ui',
              meson.project_source_root() / 'content/baseoq4/pak0/guis/hud/remastered_scoreboard.q4ui'], timeout: 240)

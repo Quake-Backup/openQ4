@@ -167,6 +167,8 @@ constexpr RemasteredRoute RemasteredRoutes[]={
 	{"guis/vehicles/airdef_cannon.gui","guis/hud/remastered_airdef.q4ui"},
 	// The Awakening's space cannon with its ship-status panel (14.12).
 	{"guis/vehicles/airassault/turretplayerhud.gui","guis/hud/remastered_turret.q4ui"},
+	// The Awakening's MCC cannon with the MCC's hull readout (14.12).
+	{"guis/vehicles/mcc/cannonplayerhud.gui","guis/hud/remastered_mcc.q4ui"},
 	// The objectives display and its notices (14.11).
 	{"guis/wristcomm.gui","guis/hud/remastered_objectives.q4ui"},
 	{"guis/wristcomm_strogg.gui","guis/hud/remastered_objectives_strogg.q4ui"},

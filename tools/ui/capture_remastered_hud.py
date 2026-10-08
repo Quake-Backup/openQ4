@@ -123,6 +123,22 @@ def space_cannon():
     ]
 
 
+def mcc_cannon():
+    """The Awakening's MCC cannon (guis/vehicles/mcc/cannonplayerhud.gui): the
+    player boards m06's side gun as the map's turret sequence does; the hull
+    readout follows mcchealth, which the sequence's own loop also writes."""
+    gui = 'guis/vehicles/mcc/cannonplayerhud.gui'
+    return [
+        'set g_autoExecAfterMapLoad ""', 'notarget', 'god', 'waitMsec 9000',
+        'script "$player1.enterVehicle($turret)"', 'waitMsec 3000', shot('mcc'),
+        *hud(gui, 'state mcchealth 1100'), 'waitMsec 300', shot('mcc-half'),
+        *hud(gui, 'state mcchealth 420', 'state rhinochatter 1', 'event radioChatterUp'), 'waitMsec 700', shot('mcc-warn'),
+        *hud(gui, 'event radioChatterDown'),
+        'set ui_hudLayout 0', 'waitMsec 400', shot('mcc-classic'), 'set ui_hudLayout 1', 'waitMsec 400', shot('mcc-restored'),
+        'set ui_hudLayout 2', 'waitMsec 400', shot('mcc-minimal'), 'set ui_hudLayout 1',
+    ]
+
+
 def objectives(gui):
     """The objectives display through the held scores button (the game
     publishes the list), then the notices and a failure through the stock
@@ -147,6 +163,7 @@ SCENARIOS = {
     'tank': ('game/convoy1', in_vehicle('tank_1')),
     'airdef': ('game/mcc_landing', cannon()),
     'turret': ('game/m03_airassault', space_cannon()),
+    'mcc': ('game/m06_mcc_invasion', mcc_cannon()),
     'strogg': ('game/recomp', on_foot('guis/hud_strogg.gui')),
     'mp': ('mp:mp/q4dm1', [
         'set g_autoExecAfterMapLoad ""', 'waitMsec 2500', shot('mp-base'),
@@ -185,7 +202,7 @@ SCENARIOS = {
 }
 
 
-AWAKENING = {'turret'}
+AWAKENING = {'turret', 'mcc'}
 
 
 def main() -> int:

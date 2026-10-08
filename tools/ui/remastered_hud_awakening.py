@@ -14,7 +14,7 @@ import math
 
 import build_retained_screens as ui
 from remastered_hud_base import (S, HudDocument, anchor, beyond_minimal, box, join_events, layout_state, num, op, play, pts_path,
-                                 rgb, stroke, tr, transform_value, u, vec)
+                                 rgb, sel, stroke, tr, transform_value, u, vec)
 
 # The dropship from above, nose up (hud_ship_01), in the panel's 128 u box.
 SHIP = [(62.7, 17.0), (58.6, 20.5), (56.9, 28.0), (51.0, 33.5), (47.5, 38.5), (47.5, 40.0), (34.0, 49.5), (34.6, 61.5),
@@ -235,3 +235,96 @@ def turret_document() -> dict:
                             "extensions": {"openq4": {"reference": "ui-visual-design.md 14.12",
                                                       "stock": "guis/vehicles/airassault/turretplayerhud.gui",
                                                       "joinEvents": joins}}})
+
+
+# ------------------------------------------------------------ the MCC cannon
+
+# The stock gauge plate (backbar) and track (valbar), 125x59 u, drawn 136x70 u.
+MCC_BACK = "M1 10.4Q1 9.2 2.2 9.2H122.8Q124 9.2 124 10.4V54.7Q124 56.2 122.5 56.2H91.7L84.9 49.3H2.2Q1 49.3 1 48.1Z"
+MCC_FILL = ("M5.4 14.8Q5.4 13.8 6.4 13.8H118.6Q119.6 13.8 119.6 14.8V34.6H105.4A16.6 16.6 0 0 0 93.6 44.7H6.4Q5.4 44.7 5.4 "
+            "43.7Z")
+HULL, HULL_WARN = "#B3D06E", "#FF3300"
+USS_KEY, HANNIBAL_KEY = "#str_231242", "#str_231243"
+
+
+def mcc_readout(doc: HudDocument, dy: float = -36.0) -> dict:
+    """The U.S.S. Hannibal readout (cannonplayerhud.gui, group 469,64): the
+    stock gauge plate scaled to 136x70 u under U.S.S. Hannibal in Marine 0.25,
+    the hull in Marine 0.50 #F1F0C9 (the MCC's health divided by 10, 2000 when
+    whole). Remastered stacks it 36 u higher, directly under the transmission
+    display, fills the track in proportion (the stock track is static) and at
+    or below 25% turns it #FF3300 at 0.60 with a 2 Hz pulse, as the vehicle
+    gauges warn."""
+    from remastered_hud_base import BOUND_TEXT, shear_group, svg_path, text_box
+    from remastered_hud_vehicle import moving_window
+    doc.number("mcchealth", 2000)
+    width, height = 136.0, 70.0
+    sx, sy = width / 125.0, height / 59.0
+    m = (round(sx * ui.U, 5), 0, 0, round(sy * ui.U, 5), 0, 0)
+    health = op("clamp", op("/", S("mcchealth"), 2000), 0, 1)
+    warn = op("<=", health, 0.25)
+
+    def part(ident, data, colour, alpha, **props):
+        return vec(ident, [svg_path(ident, data, matrix=m, fill=ui.solid(rgb(colour, alpha)))], props or None)
+    back = part("mcc-back", MCC_BACK, "#000000", 0.5)
+    back_opaque = part("mcc-back-opaque", MCC_BACK, "#000000", 0.85, display=ui.keyword("none"))
+    doc.show("mcc-back", op("!", S("oq4.opaque")))
+    doc.show("mcc-back-opaque", S("oq4.opaque"))
+    track = part("mcc-track", MCC_FILL, HULL, 0.2)
+    doc.show("mcc-track", op("!", warn))
+    track_warn = part("mcc-track-warn", MCC_FILL, HULL_WARN, 0.6, opacity=num(1), display=ui.keyword("none"))
+    doc.show("mcc-track-warn", warn)
+    doc.timeline("mcc-pulse", 500, [tr("mcc-track-warn", "opacity", [(0, num(1)), (250, num(0.5)), (500, num(1))])], iterations=0)
+    doc.joins.append(play("mcc-pulse"))
+    fill = part("mcc-fill", MCC_FILL, HULL, 0.35)
+    doc.show("mcc-fill", op("!", warn))
+    fill_warn = part("mcc-fill-warn", MCC_FILL, HULL_WARN, 0.6, display=ui.keyword("none"))
+    doc.show("mcc-fill-warn", warn)
+    # The fill grows from the leading end: the window's trailing edge follows the hull.
+    window = moving_window(doc, "mcc-win", 0, 0, width, height, [fill, fill_warn],
+                           op("-", op("*", op("+", 5.4, op("*", 114.2, health)), sx), width))
+    gauge = box("mcc-gauge", u(494), u(80 + dy), u(width), u(height),
+                [shear_group("mcc-plate", 0, 0, u(width), u(height), -0.22, [back, back_opaque, track, track_warn, window])])
+    labels = [text_box("mcc-uss", USS_KEY, face="marine", size=u(8.375), colour=[1, 1, 1, 0.74], baseline=u(89 + dy), x=u(512),
+                       width=u(60)),
+              text_box("mcc-name", HANNIBAL_KEY, face="marine", size=u(8.375), colour=[1, 1, 1, 0.74], baseline=u(89 + dy),
+                       x=u(560), width=u(80))]
+    hull = text_box("mcc-hull", BOUND_TEXT, face="marine", size=u(16.75), colour=rgb("#F1F0C9", 0.733), baseline=u(128 + dy),
+                    right=u(585), width=u(101))
+    doc.bind("mcc-hull.text", "mcc-hull", "text", op("numberText", op("floor", S("mcchealth"))))
+    doc.bind("mcc-hull.color", "mcc-hull", "color", [sel(warn, c, d) for c, d in zip(rgb(HULL_WARN, 0.733), rgb("#F1F0C9", 0.733))])
+    return ui.group("mcc", {**ui.FULL, "display": ui.keyword("block")}, [gauge, *labels, hull])
+
+
+def mcc_document() -> dict:
+    """The MCC cannon (guis/vehicles/mcc/cannonplayerhud.gui, 14.12): the
+    side gun cannot be damaged (it inherits noDamage, health 0 and god mode),
+    so its HUD reports what the player defends, the MCC's hull. Remastered
+    adds the transmission display the side gun's HUD lacks, stacks the readout
+    under it and shows Exit in the HUD prompt."""
+    from remastered_hud_groups import notices, transmission
+    from remastered_hud_status import full
+    from remastered_hud_vehicle import hud_prompt
+    doc = HudDocument("openq4.hud.remastered.mcc")
+    layout_state(doc)
+    radio = transmission(doc, strogg=False, emblem="squad_falcon")
+    exit_notice, saved, missile_text = notices(doc)
+    readout = mcc_readout(doc)
+    prompt = hud_prompt(doc)
+    doc.on("showExitmessage", {"op": "setState", "values": {"oq4.vehicle": True}})
+    doc.on("hideExitmessage", {"op": "setState", "values": {"oq4.vehicle": False}})
+    doc.on("showLockmessage", {"op": "setState", "values": {"oq4.locked": True}})
+    doc.on("hideLockmessage", {"op": "setState", "values": {"oq4.locked": False}})
+    # The HUD exists only while the gun is crewed.
+    doc.joins.append({"op": "setState", "values": {"oq4.vehicle": True}})
+    doc.on("hudJoin", *doc.joins)
+    doc.on("onInit", *doc.joins)
+    # Minimal (ui_hudLayout 2) keeps the hull readout, the prompt and the save notice.
+    root = full("hud-root", [
+        anchor(doc, "tr", [beyond_minimal(doc, "tr-full", [radio]), readout]),
+        anchor(doc, "tc", [beyond_minimal(doc, "tc-full", [missile_text, exit_notice]), saved]),
+        anchor(doc, "br", [prompt]),
+    ])
+    return doc.build(root, {"canvas": {"height": 720, "minWidth": 960},
+                            "extensions": {"openq4": {"reference": "ui-visual-design.md 14.12",
+                                                      "stock": "guis/vehicles/mcc/cannonplayerhud.gui"}}})

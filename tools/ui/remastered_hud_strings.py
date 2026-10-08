@@ -99,6 +99,9 @@ ENTRIES = {
     "#str_231240": ("16:9;21:9;Full", "16:9;21:9;Total", "16:9;21:9;Celá", "16:9;21:9;Plein", "16:9;21:9;Voll",
                     "16:9;21:9;Teljes", "16:9;21:9;Piena", "16:9;21:9;Pełna", "16:9;21:9;Вся", "16:9;21:9;Completa",
                     "16:9;21:9;Tam", "16:9;21:9;Уся"),
+    # The MCC cannon's readout (14.12): the ship's name, the same in every language.
+    "#str_231242": ("U.S.S.",) * 12,
+    "#str_231243": ("Hannibal",) * 12,
     "#str_231241": ("Safe Area Inset", "Margem da área segura", "Okraj bezpečné oblasti", "Marge de zone sûre",
                     "Sicherheitsrand", "Biztonsági margó", "Margine area sicura", "Margines obszaru bezpiecznego",
                     "Отступ безопасной зоны", "Margen de zona segura", "Güvenli alan boşluğu", "Відступ безпечної зони"),
