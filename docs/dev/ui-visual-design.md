@@ -2486,6 +2486,11 @@ of the stock's breathing lines in the center column.
   - **Prompts.** Send, Channel and Cancel, with the active device's glyphs.
   - **Keyboards.** Controller and touch players get the platform or on-screen
     keyboard (section 13.5).
+  - **Room.** The history stands from the input's prompt row up to 6 u under
+    the leading group above the box (Competitive's team status, or the vote),
+    and shows only whole messages: a message the room would cut fades out.
+    Where the box is too narrow for the three prompts they wrap onto a
+    second row.
 - **Classic.** Classic keeps the stock lines at 8,302 u and the stock input.
 
 **Voice (Remastered).** One plate per talker stacks directly above the chat

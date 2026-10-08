@@ -71,6 +71,9 @@ def main():
         'ui_autoJoin': '1', 'ui_spectate': 'Play', 'ui_team': 'Marine', 'ui_name': 'ChatTest',
         'ui_chatScale': '1', 'ui_chatWidth': '320', 'ui_chatTime': '3', 'ui_chatLines': '6',
         'ui_chatOffsetX': '0', 'ui_chatOffsetY': '0', 'ui_chatAlpha': '0.5',
+        # The native panel's rows are the Classic layout's; the Remastered HUD
+        # draws chat in its own document (docs/dev/ui/remastered-hud.md).
+        'ui_hudLayout': '0',
         'g_autoExecAfterMapLoad': 'chat_smoke.cfg', 'g_autoExecAfterMapLoadDelayMs': '500',
     }
     executable = ROOT / '.install/openQ4-client_x64.exe'

@@ -810,6 +810,17 @@ bool idUserInterfaceRetained::GetPresentationValue(const char* name, idStr& valu
 	const std::string alias(name); const auto separator = alias.find("::");
 	if (separator == std::string::npos) return false;
 	if (idStr::Icmp(alias.substr(0,separator).c_str(),"gui") == 0) return false;
+	// openQ4: "node::@width" (or @height, @x, @y) reads the node's laid-out
+	// border box in canvas dp, for a HUD peer's layout readbacks.
+	if (alias.compare(separator+2,1,"@") == 0) {
+		Bounds bounds;
+		if (!impl->RuntimeView()->GetBounds(alias.substr(0,separator),bounds)) return false;
+		const std::string field = alias.substr(separator+3);
+		const float* number = field == "width" ? &bounds.width : field == "height" ? &bounds.height :
+			field == "x" ? &bounds.x : field == "y" ? &bounds.y : nullptr;
+		if (!number || !std::isfinite(*number)) return false;
+		value = va("%.3f",*number); return true;
+	}
 	const auto property = impl->RuntimeView()->PresentedValue(alias.substr(0,separator),alias.substr(separator+2));
 	if (!property) return false;
 	value = (property->type == ValueType::Text ? property->text : property->Css()).c_str(); return true;

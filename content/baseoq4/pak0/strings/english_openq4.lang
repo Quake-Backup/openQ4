@@ -1274,4 +1274,7 @@
 	"#str_231251"	"AT BASE"
 	"#str_231252"	"TAKEN"
 	"#str_231253"	"DROPPED"
+	"#str_231254"	"ALL"
+	"#str_231255"	"Send"
+	"#str_231256"	"Channel"
 }

@@ -9821,6 +9821,10 @@ void idMultiplayerGame::Clear() {
 	pingUpdateTime = 0;
 	remasteredKills.Clear();
 	remasteredChat.Clear();
+	remasteredChatLog.Clear();
+	remasteredChatOpen = false;
+	remasteredChatEntry.Clear();
+	remasteredChatCaret = -1;
 	hudTransmitSelf = -1;
 	hudTransmitOther = -2;
 	ResetRemasteredHudAnnouncements();
@@ -19681,6 +19685,56 @@ void idMultiplayerGame::PublishRemasteredCompetitive( idUserInterface *_mphud, i
 	}
 }
 
+/*
+================
+idMultiplayerGame::PublishRemasteredChat
+
+openQ4: the Remastered chat box (ui-visual-design.md 14.9). At rest it shows
+the timed lines. While the input is open it shows up to eight lines of history
+at full strength above the entry, ending as many messages back as the control
+has scrolled (oq4_chat_back), and the entry: the message-mode edit control's
+text split at its caret (the control publishes the caret and the overstrike
+mode), the channel, whether team chat exists here and the characters left of
+the stock 128. Opening the input, typing and moving the caret restart the
+caret's blink.
+================
+*/
+void idMultiplayerGame::PublishRemasteredChat( idUserInterface *_mphud, int now ) {
+	const int inputLimit = 128;	// the message-mode edit control's maxchars
+	const bool chatting = currentMenu == 2 && msgmodeGui != NULL;
+	_mphud->SetStateBool( "oq4_chatting", chatting );
+	if ( !chatting ) {
+		remasteredChatOpen = false;
+		remasteredChat.Publish( _mphud, "oq4_chat", now, 2000, 1000, 3100, 4 );
+		for ( int slot = 4; slot < rvHudLines::MaxLines; slot++ ) {
+			_mphud->SetStateBool( va( "oq4_chat%d_live", slot ), false );
+		}
+		_mphud->SetStateInt( "oq4_chat_count", remasteredChat.Count() );
+		return;
+	}
+	const int logged = remasteredChatLog.Num();
+	const int back = idMath::ClampInt( 0, Max( 0, logged - 1 ), msgmodeGui->GetStateInt( "oq4_chat_back" ) );
+	const int end = logged - back;
+	const int start = Max( 0, end - rvHudLines::MaxLines );
+	rvHudLines::PublishWindow( _mphud, "oq4_chat", remasteredChatLog.Ptr() + start, end - start, rvHudLines::MaxLines );
+	_mphud->SetStateInt( "oq4_chat_count", end - start );
+
+	const idStr text = msgmodeGui->GetStateString( "chattext" );
+	const int caret = idMath::ClampInt( 0, text.Length(), msgmodeGui->GetStateInt( "oq4_chat_caret", va( "%d", text.Length() ) ) );
+	_mphud->SetStateString( "oq4_chatin_before", text.Left( caret ).c_str() );
+	_mphud->SetStateString( "oq4_chatin_after", text.Right( text.Length() - caret ).c_str() );
+	_mphud->SetStateInt( "oq4_chatin_left", inputLimit - text.Length() );
+	_mphud->SetStateBool( "oq4_chatin_team", msgmodeGui->GetStateBool( "messagemode" ) );
+	_mphud->SetStateBool( "oq4_chatin_channels", msgmodeGui->GetStateBool( "chatTeamAvailable" ) );
+	_mphud->SetStateBool( "oq4_chatin_overstrike", msgmodeGui->GetStateBool( "oq4_chat_overstrike" ) );
+	if ( !remasteredChatOpen || caret != remasteredChatCaret || text != remasteredChatEntry ) {
+		remasteredChatOpen = true;
+		remasteredChatCaret = caret;
+		remasteredChatEntry = text;
+		_mphud->HandleNamedEvent( "oq4_chatType" );
+	}
+}
+
 void idMultiplayerGame::PublishRemasteredHud( idUserInterface *_mphud, idPlayer *localPlayer ) {
 	const int now = gameLocal.realClientTime;
 	const bool tourney = gameLocal.gameType == GAME_TOURNEY;
@@ -19688,10 +19742,9 @@ void idMultiplayerGame::PublishRemasteredHud( idUserInterface *_mphud, idPlayer 
 	const mpGameState_t state = gameState->GetMPGameState();
 
 	remasteredKills.Publish( _mphud, "oq4_feed", now, 2000, 1000, 3100, tourney ? 2 : 4 );
-	remasteredChat.Publish( _mphud, "oq4_chat", now, 2000, 1000, 3100, 4 );
+	PublishRemasteredChat( _mphud, now );
 
 	_mphud->SetStateBool( "oq4_team_game", teamGame );
-	_mphud->SetStateBool( "oq4_chatting", currentMenu == 2 );
 	_mphud->SetStateInt( "oq4_state", (int)state );
 
 	const char *limitLabel = NULL;
@@ -20026,6 +20079,10 @@ void idMultiplayerGame::PrintChatLine( const char *message, const bool teamChat 
 		line.SetInt( "team", lineTeam );
 		line.SetBool( "you", you );
 		remasteredChat.Add( line, gameLocal.realClientTime, 4 );
+		remasteredChatLog.Append( line );
+		if ( remasteredChatLog.Num() > 64 ) {
+			remasteredChatLog.RemoveIndex( 0 );
+		}
 	}
 
 	while ( !chatHistory.IsEmpty() && chatHistory.Length() + text.Length() + 1 > CHAT_HISTORY_SIZE ) {

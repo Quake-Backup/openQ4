@@ -12,6 +12,7 @@ extern idUserInterfaceManagerLocal uiManagerLocal;
 #include <json/json.h>
 #include <cmath>
 #include <cstdlib>
+#include <array>
 #include <map>
 #include <set>
 
@@ -204,6 +205,18 @@ struct idRemasteredHud::Impl {
 	// back while a vehicle is crewed or a transmission plays - shows what the
 	// stock windows show. A variable the stock GUI lacks is skipped.
 	std::vector<std::pair<std::string,std::string>> joinEvents;
+	// Layout readbacks (extensions.openq4.readbacks), applied the next frame;
+	// none feeds back into the layout it measures:
+	// [state, node, view] sets a boolean state when the node lays out wider
+	// than the view (the chat entry's mark of text before its view);
+	// [state, node, "@height"] a number state to the node's laid-out height in
+	// canvas dp while it has one (the chat prompts, wrapped or not);
+	// [state, view, "@firstInside", prefix, count] a number state to the first
+	// of nodes prefix0..prefix<count-1> laid out with its top inside the
+	// view, or count (the open chat's history fades the lines its room cuts).
+	struct Readback { std::string state,node,view,prefix; int count=0; };
+	std::vector<Readback> readbacks;
+	std::map<std::string,float> readbackValues;
 	// ui_hudProfile accumulators
 	double forwardMs=0,eventMs=0,stateMs=0,drawMs=0,unseenMs=0;
 	int forwards=0,events=0,frames=0;
@@ -227,6 +240,16 @@ struct idRemasteredHud::Impl {
 		if (joins.isArray()) for (const auto& pair:joins) {
 			if (pair.isArray() && pair.size()==2 && pair[0].isString() && pair[1].isString())
 				joinEvents.emplace_back(pair[0].asString(),pair[1].asString());
+		}
+		const Json::Value& measured=data["extensions"]["openq4"]["readbacks"];
+		if (measured.isArray()) for (const auto& entry:measured) {
+			if (!entry.isArray() || (entry.size()!=3 && entry.size()!=5)) continue;
+			bool strings=true;
+			for (const auto& part:entry) strings=strings && part.isString();
+			if (!strings) continue;
+			Readback readback{entry[0].asString(),entry[1].asString(),entry[2].asString()};
+			if (entry.size()==5) { readback.prefix=entry[3].asString(); readback.count=atoi(entry[4].asString().c_str()); }
+			readbacks.push_back(std::move(readback));
 		}
 		const Json::Value& state=data["state"];
 		if (!state.isObject()) return true;
@@ -405,7 +428,49 @@ bool idRemasteredHud::Draw(const idUserInterfaceLocal& legacy,int time) {
 	impl->stateMs+=drawStarted-stateStarted;
 	impl->drawMs+=ProfileNow()-drawStarted;
 	idStr drawn;
-	if (impl->gui->GetPresentationValue("__retained::drawSucceeded",drawn) && drawn=="1") { impl->failures=0; return true; }
+	if (impl->gui->GetPresentationValue("__retained::drawSucceeded",drawn) && drawn=="1") {
+		impl->failures=0;
+		const auto measure=[&](const std::string& node,const char* field,float& value) {
+			idStr text;
+			if (!impl->gui->GetPresentationValue(va("%s::@%s",node.c_str(),field),text)) return false;
+			value=atof(text); return true;
+		};
+		for (const auto& [name,node,view,prefix,count]:impl->readbacks) {
+			if (view=="@firstInside") {
+				float top=0,y=0,height=0;
+				if (!measure(node,"y",top)) continue;
+				int first=count;
+				for (int i=0;i<count;++i) {
+					// A node out of the layout keeps its last box: skip it.
+					const std::string child=prefix+std::to_string(i);
+					idStr display;
+					if (impl->gui->GetPresentationValue(va("%s::display",child.c_str()),display) && display=="none") continue;
+					if (measure(child,"height",height) && height>0 && measure(child,"y",y) && y>=top-.5f) { first=i; break; }
+				}
+				const auto last=impl->readbackValues.find(name);
+				if (last==impl->readbackValues.end() || last->second!=first) {
+					impl->readbackValues[name]=float(first); impl->gui->SetStateFloat(name.c_str(),float(first));
+				}
+				continue;
+			}
+			if (view=="@height") {
+				idStr height;
+				if (!impl->gui->GetPresentationValue(va("%s::@height",node.c_str()),height)) continue;
+				const float value=atof(height);
+				const auto last=impl->readbackValues.find(name);
+				if (value>0 && (last==impl->readbackValues.end() || idMath::Fabs(last->second-value)>.25f)) {
+					impl->readbackValues[name]=value; impl->gui->SetStateFloat(name.c_str(),value);
+				}
+				continue;
+			}
+			idStr nodeWidth,viewWidth;
+			const bool wider=impl->gui->GetPresentationValue(va("%s::@width",node.c_str()),nodeWidth) &&
+				impl->gui->GetPresentationValue(va("%s::@width",view.c_str()),viewWidth) && atof(nodeWidth)>atof(viewWidth)+.5;
+			auto& last=impl->readbackValues[name];
+			if ((last!=0)!=wider) { last=wider ? 1.f : 0.f; impl->gui->SetStateBool(name.c_str(),wider); }
+		}
+		return true;
+	}
 	// A frame that cannot present falls back at once; a persistent failure
 	// stops retrying until the gate, layout or document changes.
 	if (++impl->failures>=30) impl->Fail("the document failed to draw");

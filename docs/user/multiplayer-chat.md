@@ -1,9 +1,18 @@
 # Multiplayer chat
 
-Chat keeps the latest 64 received messages, wraps long lines, and grows upward
-above the lower HUD. New messages appear for three seconds and fade out over
-another 0.75 seconds. Opening chat reveals the retained conversation again.
-The panel uses Quake 4's fonts, olive frame and aspect-correct GUI scaling.
+Chat keeps the latest 64 received messages and wraps long lines.
+
+With the Remastered HUD layout (the default), the four latest messages sit at
+the left edge above the status bar, each on its own plate, and leave one by one
+after a few seconds. Opening chat shows up to eight recent messages above an
+entry field that names the channel (ALL or TEAM), keeps your cursor in view as
+you type, counts the characters you have left near the limit and shows the
+Send, Channel and Cancel keys. The history shows only whole messages and never
+covers the team list of the Competitive layout.
+
+With the Classic layout, chat grows upward above the lower HUD in Quake 4's
+olive frame: new messages appear for three seconds and fade out over another
+0.75 seconds, and opening chat reveals the retained conversation again.
 
 Your existing **Chat** and **Team Chat** bindings still work. The console
 commands `messagemode` and `messagemode2` are aliases for
@@ -16,7 +25,7 @@ Chat remains a multiplayer feature, including local games with bots.
 | Escape | Cancel and close |
 | Tab | Switch All/Team in a team game; each channel keeps its own draft |
 | Page Up / Page Down | Scroll received history by a page |
-| Mouse wheel | Scroll received history by a line |
+| Mouse wheel | Scroll received history by a line (by a message in the Remastered layout) |
 | Ctrl+Home / Ctrl+End | Oldest / newest received lines |
 | Up / Down | Recall sent messages in the current channel; Down past the newest restores your draft |
 | Home / End, Ctrl+Left / Ctrl+Right | Move within the input line |
@@ -33,7 +42,8 @@ display to the newest messages. Received history and the last 32 distinct
 consecutive submissions per channel are held in memory and cleared when a new
 map initializes or the UI shuts down; they are not written to disk.
 
-Settings apply immediately and are saved automatically:
+These settings shape the Classic layout's chat panel; they apply immediately
+and are saved automatically:
 
 | Console setting | Default | Range / meaning |
 | --- | --- | --- |

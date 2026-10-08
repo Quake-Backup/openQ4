@@ -5,6 +5,7 @@
 #include "DeviceContext.h"
 #include "UserInterfaceLocal.h"
 #include "ChatWindow.h"
+#include "RetainedHud.h"
 
 static idCVar ui_chatScale("ui_chatScale", "1", CVAR_GUI | CVAR_ARCHIVE | CVAR_FLOAT, "chat font and spacing scale", 0.75f, 2.0f);
 static idCVar ui_chatWidth("ui_chatWidth", "320", CVAR_GUI | CVAR_ARCHIVE | CVAR_FLOAT, "chat width in 640x480 GUI units", 200.0f, 600.0f);
@@ -18,6 +19,8 @@ static oq4chat::History chatHistory;
 static oq4chat::SentHistory sentHistory[2];
 static idChatWindow *activeChat = NULL;
 static int lastMessageTime = 0;
+// The Remastered input's history: how many messages back from the newest.
+static int messagesBack = 0;
 
 static float ChatLabelScale(idDeviceContext *dc, const char *label, float scale, float width) {
     // Keep localized chrome legible inside deliberately narrow/custom layouts.
@@ -52,6 +55,7 @@ idChatWindow::~idChatWindow() {
 
 void idChatWindow::Reset() {
     chatHistory.Clear();
+    messagesBack = 0;
     sentHistory[0] = oq4chat::SentHistory();
     sentHistory[1] = oq4chat::SentHistory();
     activeChat = NULL;
@@ -64,6 +68,20 @@ void idChatWindow::History_f(const idCmdArgs &args) {
         return;
     }
     const char *action = args.Argv(1);
+    if (idRemasteredHud::Enabled()) {
+        const int messages = static_cast<int>(chatHistory.messages.size());
+        if (!idStr::Icmp(action, "up")) { activeChat->ScrollMessages(-7); }
+        else if (!idStr::Icmp(action, "down")) { activeChat->ScrollMessages(7); }
+        else if (!idStr::Icmp(action, "top")) { activeChat->ScrollMessages(-messages); }
+        else if (!idStr::Icmp(action, "bottom")) { activeChat->ScrollMessages(messages); }
+        else if (*action && idStr::Icmp(action, "status")) {
+            common->Printf("usage: chatHistory [up|down|top|bottom|status]\n");
+            return;
+        }
+        common->Printf("chatHistory: messages=%d back=%d following=%d channel=%d\n", messages, messagesBack,
+            messagesBack == 0 ? 1 : 0, activeChat->gui->GetStateBool("messagemode") ? 1 : 0);
+        return;
+    }
     int delta = 0;
     if (!idStr::Icmp(action, "up")) { delta = -Max(1, activeChat->visibleRows - 1); }
     else if (!idStr::Icmp(action, "down")) { delta = Max(1, activeChat->visibleRows - 1); }
@@ -82,6 +100,42 @@ void idChatWindow::History_f(const idCmdArgs &args) {
         activeChat->gui->GetStateBool("messagemode") ? 1 : 0);
 }
 
+// Semantic stand-ins for typing, for captures and tests without device
+// input: "chatInput <text>" sets the open entry with the caret at its end,
+// "chatCaret <n>" moves the caret.
+void idChatWindow::Input_f(const idCmdArgs &args) {
+    if (activeChat == NULL) {
+        common->Printf("chatInput: open message mode first\n");
+        return;
+    }
+    if (!idStr::Icmp(args.Argv(0), "chatCaret")) {
+        activeChat->SetCursorPosition(atoi(args.Argv(1)));
+    } else {
+        activeChat->SetInput(args.Args(1, -1));
+        activeChat->SetCursorPosition(activeChat->text.Length());
+    }
+    activeChat->PublishCaret();
+}
+
+// openQ4: in the Remastered layout the multiplayer HUD document draws the
+// entry (ui-visual-design.md 14.9); the game copies the text from gui::chattext
+// and the caret and overstrike mode from here.
+void idChatWindow::PublishCaret() {
+    if (!input) { return; }
+    gui->SetStateInt("oq4_chat_caret", idMath::ClampInt(0, text.Length(), CursorPosition()));
+    gui->SetStateBool("oq4_chat_overstrike", dc->GetOverStrike());
+}
+
+// openQ4: the Remastered input shows whole messages (ui-visual-design.md
+// 14.9), so its history scrolls by messages, up to the oldest retained: how
+// far back from the newest, which the game reads to send that window of its
+// own log. A page is the input's eight messages less one.
+void idChatWindow::ScrollMessages(int delta) {
+    const int messages = static_cast<int>(chatHistory.messages.size());
+    messagesBack = idMath::ClampInt(0, Max(0, messages - 1), messagesBack - delta);
+    gui->SetStateInt("oq4_chat_back", messagesBack);
+}
+
 void idChatWindow::Activate(bool activate, idStr &act) {
     idEditWindow::Activate(activate, act);
     if (!input) { return; }
@@ -93,7 +147,10 @@ void idChatWindow::Activate(bool activate, idStr &act) {
         sentHistory[1].Begin();
         lastScrollKey = 0;
         channelKeyDown = false;
+        messagesBack = 0;
+        gui->SetStateInt("oq4_chat_back", 0);
         GainFocus();
+        PublishCaret();
     } else if (activeChat == this) {
         activeChat = NULL;
         // Closing returns the passive surface to new messages. An open reader
@@ -109,6 +166,8 @@ void idChatWindow::RunNamedEvent(const char *eventName) {
     } else if (!idStr::Icmp(eventName, "chatLine")) {
         chatHistory.Append(gui->GetStateString("chatline"), gui->GetStateBool("chatteam"));
         lastMessageTime = Sys_Milliseconds();
+        // A reader scrolled back keeps the same messages in view.
+        if (input && messagesBack > 0) { ScrollMessages(-1); }
     } else {
         idEditWindow::RunNamedEvent(eventName);
     }
@@ -121,6 +180,12 @@ void idChatWindow::SetInput(const char *value) {
 }
 
 const char *idChatWindow::HandleEvent(const sysEvent_t *event, bool *updateVisuals) {
+    const char *result = HandleInput(event, updateVisuals);
+    PublishCaret();
+    return result;
+}
+
+const char *idChatWindow::HandleInput(const sysEvent_t *event, bool *updateVisuals) {
     cmd.Clear();
     if (!input || activeChat != this) { return ""; }
     const int key = event->evValue;
@@ -147,10 +212,18 @@ const char *idChatWindow::HandleEvent(const sysEvent_t *event, bool *updateVisua
             const int now = Sys_Milliseconds();
             if (key != lastScrollKey || now - lastScrollTime >= 120) {
                 int delta = (key == K_PGUP || key == K_MWHEELUP) ? -1 : 1;
-                if (key == K_PGUP || key == K_PGDN) { delta *= Max(1, visibleRows - 1); }
-                if (key == K_HOME) { delta = -static_cast<int>(rows.size()); }
-                if (key == K_END) { delta = static_cast<int>(rows.size()); }
-                chatHistory.Scroll(rows, visibleRows, delta);
+                if (idRemasteredHud::Enabled()) {
+                    const int messages = static_cast<int>(chatHistory.messages.size());
+                    if (key == K_PGUP || key == K_PGDN) { delta *= 7; }
+                    if (key == K_HOME) { delta = -messages; }
+                    if (key == K_END) { delta = messages; }
+                    ScrollMessages(delta);
+                } else {
+                    if (key == K_PGUP || key == K_PGDN) { delta *= Max(1, visibleRows - 1); }
+                    if (key == K_HOME) { delta = -static_cast<int>(rows.size()); }
+                    if (key == K_END) { delta = static_cast<int>(rows.size()); }
+                    chatHistory.Scroll(rows, visibleRows, delta);
+                }
                 lastScrollTime = now;
                 lastScrollKey = key;
             }
@@ -211,6 +284,9 @@ void idChatWindow::Draw(int time, float x, float y) {
     const bool editing = input && activeChat == this;
     if (input && !editing) { return; }
     if (!input && activeChat != NULL) { return; }
+    // The Remastered layout draws chat in the multiplayer HUD document; this
+    // control keeps the input, its history recall and channel switching.
+    if (idRemasteredHud::Enabled()) { return; }
     float alpha = 1.0f;
     if (!editing) {
         if (chatHistory.messages.empty() || ui_chatTime.GetFloat() <= 0.0f) { return; }

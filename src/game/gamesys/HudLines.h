@@ -66,6 +66,28 @@ public:
 		}
 	}
 
+	// `count` lines at full strength, oldest first, and the slots after them up
+	// to `slots` empty: a window of a history that never times out (the open
+	// chat input's).
+	static void PublishWindow( idUserInterface *gui, const char *prefix, const idDict *window, int count, int slots ) {
+		if ( gui == NULL ) {
+			return;
+		}
+		slots = idMath::ClampInt( 1, MaxLines, slots );
+		for ( int slot = 0; slot < slots; slot++ ) {
+			const bool live = slot < count;
+			gui->SetStateBool( va( "%s%d_live", prefix, slot ), live );
+			gui->SetStateFloat( va( "%s%d_alpha", prefix, slot ), live ? 1.0f : 0.0f );
+			if ( !live ) {
+				continue;
+			}
+			for ( int i = 0; i < window[ slot ].GetNumKeyVals(); i++ ) {
+				const idKeyValue *kv = window[ slot ].GetKeyVal( i );
+				gui->SetStateString( va( "%s%d_%s", prefix, slot, kv->GetKey().c_str() ), kv->GetValue().c_str() );
+			}
+		}
+	}
+
 	int Count() const { return count; }
 
 private:

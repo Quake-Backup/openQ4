@@ -753,6 +753,8 @@ void idUserInterfaceManagerLocal::Init() {
 	cmdSystem->AddCommand("ui_hudTest",[](const idCmdArgs& args) { uiManagerLocal.HudTest(args); },CMD_FL_SYSTEM|CMD_FL_CHEAT,"inspect or drive HUD GUI state without device input");
 	cmdSystem->AddCommand("ui_observeLegacy",UI_ObserveLegacy,CMD_FL_SYSTEM,"observe exact legacy parse/fixup/alpha decisions without activation");
 	cmdSystem->AddCommand("chatHistory", idChatWindow::History_f, CMD_FL_SYSTEM, "browse open chat: up, down, top, bottom, status");
+	cmdSystem->AddCommand("chatInput", idChatWindow::Input_f, CMD_FL_SYSTEM, "set the open chat entry without device input, the caret at its end");
+	cmdSystem->AddCommand("chatCaret", idChatWindow::Input_f, CMD_FL_SYSTEM, "move the open chat entry's caret to a byte offset without device input");
 	screenRect = idRectangle(0, 0, 640, 480);
 	dc.Init();
 }
@@ -761,6 +763,8 @@ void idUserInterfaceManagerLocal::Shutdown() {
 	ClearHudPrimitives();
 	cmdSystem->RemoveCommand("ui_hudTest");
 	cmdSystem->RemoveCommand("chatHistory");
+	cmdSystem->RemoveCommand("chatInput");
+	cmdSystem->RemoveCommand("chatCaret");
 	cmdSystem->RemoveCommand("ui_observeLegacy");
 	idChatWindow::Reset();
 	// Destruction unregisters from every list. Take one live allocation at a

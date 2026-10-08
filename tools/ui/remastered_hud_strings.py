@@ -128,6 +128,12 @@ ENTRIES = {
                     "ROBADA", "ALINDI", "ЗАХОПЛЕНО"),
     "#str_231253": ("DROPPED", "CAÍDA", "UPUŠTĚNA", "TOMBÉ", "AM BODEN", "ELEJTVE", "A TERRA", "UPUSZCZONA", "БРОШЕН",
                     "CAÍDA", "DÜŞTÜ", "КИНУТО"),
+    # The chat input (14.9): the All channel's tag (the Team tag is #str_231001)
+    # and the Send and Channel prompts (Cancel is #str_42936).
+    "#str_231254": ("ALL", "TODOS", "VŠICHNI", "TOUS", "ALLE", "MIND", "TUTTI", "WSZYSCY", "ВСЕ", "TODOS", "HERKES", "УСІ"),
+    "#str_231255": ("Send", "Enviar", "Odeslat", "Envoyer", "Senden", "Küldés", "Invia", "Wyślij", "Отправить", "Enviar", "Gönder",
+                    "Надіслати"),
+    "#str_231256": ("Channel", "Canal", "Kanál", "Canal", "Kanal", "Csatorna", "Canale", "Kanał", "Канал", "Canal", "Kanal", "Канал"),
     # Settings > Game Options > HUD: the objectives display's hold or toggle (14.11).
     "#str_231247": ("Toggle Objectives", "Alternar objetivos", "Přepínání úkolů", "Objectifs à bascule", "Ziele umschalten",
                     "Célok be/ki", "Obiettivi a commutazione", "Przełącz cele", "Переключать задачи", "Alternar objetivos",

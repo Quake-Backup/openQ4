@@ -824,6 +824,59 @@ def voice(doc: HudDocument) -> list:
 # ================================================================ chat lines
 
 CHAT_FIELDS = {"name": "", "text": "", "kind": 0, "team": -1, "you": False, "live": False, "alpha": 0}
+# The open input's history (up to eight messages), the stock message limit
+# (the message-mode edit control's maxchars) and the line pitch, 20 dp.
+CHAT_SLOTS, CHAT_LIMIT, CHAT_PITCH = 8, 128, 13.3
+# Under the lines while the input is open (atlas mpChat): a 7 u gap, the
+# prompt row (9 u, or two rows 4 u apart where the box is too narrow for the
+# prompts; the peer measures it, oq4.chatPrompts in canvas dp), 4 u, then the
+# 18 u field.
+CHAT_INPUT = 38
+
+
+def chat_geometry() -> tuple:
+    """The chat box's bottom above the bottom edge and its width, in the
+    bottom-leading anchor's dp (see chat_box)."""
+    from remastered_hud_base import status_scale
+    scale = S("hud.scale")
+    bar_scale = status_scale(True)
+    beside = lambda half: op("/", op("-", op("-", op("/", S("hud.width"), 2), op("*", u(half), bar_scale)), S("hud.left")), scale)
+    room = op("-", beside(219), u(16))
+    wide = op(">=", room, u(180))
+    competitive = op("==", S("hud.layout"), 3)
+    strip_room = op("clamp", op("-", beside(165), u(14)), u(120), u(200))
+    width = sel(wide, op("min", room, u(300)), sel(competitive, strip_room, u(200)))
+    # Its bottom clears the status bar's top (51 u, 15% higher in Competitive) by 8 u.
+    clearance = op("+", op("/", op("*", u(51), bar_scale), scale), u(8))
+    return sel(competitive, clearance, sel(wide, u(59), u(150))), width
+
+
+def chat_history_room() -> tuple:
+    """The room for history above the open input (14.9: up to eight
+    messages, as many as the space above allows), up to 6 u under the leading
+    group above the box: Competitive's team status (its rows end 16.5 u apart
+    from y 150 of the center-leading canvas) or the vote card (45 u and 12 u
+    a field from its top). The center-leading canvas centers on the view; the
+    bottom-leading one stands on the bottom inset; both scale by the HUD scale.
+    Returns the room's height (dp) and the messages of one line it holds."""
+    from remastered_hud_competitive import competitive, team_mode
+    half = op("/", op("-", op("/", S("hud.height"), 2), S("hud.bottom")), S("hud.scale"))
+    far = u(10000)
+    spectating, mine = S("oq4_spectating"), S("oq4_my_team")
+    rows = sel(OR(spectating, op("==", mine, 0)), S("oq4_ts0_count"), S("oq4_ts1_count"))
+    team_shown = AND(competitive(), team_mode(), op(">", rows, 0))
+    team_top = op("-", op("+", half, u(92)), op("*", rows, u(16.5)))
+    fields = u(0)
+    for k in range(1, 7):
+        fields = op("+", fields, sel(op("!=", S(f"voteInfo_{k}"), ""), u(12), 0))
+    rebased = op("+", op("/", op("-", S("hud.top"), op("/", S("hud.height"), 2)), S("hud.scale")), u(240) + u(36))
+    vote_top = sel(competitive(), rebased, u(150))
+    vote_bottom = op("-", half, op("-", op("+", op("+", vote_top, u(45)), fields), u(240)))
+    limit = op("min", sel(team_shown, team_top, far), sel(op("!=", S("voteNotice"), 0), vote_bottom, far))
+    bottom, _ = chat_geometry()
+    prompts = op("+", u(CHAT_INPUT - 9), op("/", S("oq4.chatPrompts"), S("hud.scale")))
+    space = op("max", 0, op("-", op("-", op("-", limit, bottom), prompts), u(6)))
+    return space, op("clamp", op("floor", op("/", space, u(CHAT_PITCH))), 0, CHAT_SLOTS)
 
 
 def chat_lines(doc: HudDocument) -> list:
@@ -833,11 +886,19 @@ def chat_lines(doc: HudDocument) -> list:
     team's text color; all-chat is #FFFF8D with white names; server and vote
     lines carry the information symbol in white at 0.70; your lines use the
     header-band plate at 0.30 and the marker. A long message wraps in the box
-    and keeps its lines together. The input (message mode) shows its own
-    history, so the lines step aside while it is open."""
-    declare(doc, {"oq4_chatting": False})
+    and keeps its lines together. While the input is open the game sends up
+    to eight messages of history at full strength (oq4_chat_count): the
+    newest that fit the room above the input show, and the lines stand in a
+    column from its bottom (the newest first, reversed) that the room clips,
+    so wrapped history never reaches the group above."""
+    declare(doc, {"oq4_chatting": False, "oq4_chat_count": 0, "oq4_spectating": False, "oq4_my_team": 0, "voteNotice": 0,
+                  "oq4_ts0_count": 0, "oq4_ts1_count": 0, "oq4_team_game": False, "oq4.chatPrompts": u(9), "oq4.chatFirst": 0})
+    for k in range(1, 7):
+        doc.string(f"voteInfo_{k}")
+    room, fitting = chat_history_room()
+    first_shown = op("-", S("oq4_chat_count"), fitting)
     messages = []
-    for slot in range(4):
+    for slot in range(CHAT_SLOTS):
         def f(name, slot=slot):
             return f"oq4_chat{slot}_{name}"
         declare(doc, {f(k): v for k, v in CHAT_FIELDS.items()})
@@ -892,10 +953,23 @@ def chat_lines(doc: HudDocument) -> list:
                                  "padding-top": ui.length(u(0)), "margin-top": ui.length(u(2)), "max-width": ui.length(100, "%"),
                                  "opacity": num(1)},
                            [plate, band, you_mark, tag, info, words])
-        doc.bind(cid + ".display", cid, "display", sel(AND(S(f("live")), NOT(S("oq4_chatting"))), "flex", "none"))
-        doc.bind(cid + ".opacity", cid, "opacity", S(f("alpha")))
+        fits = OR(NOT(S("oq4_chatting")), op(">=", slot, first_shown))
+        doc.bind(cid + ".display", cid, "display", sel(AND(S(f("live")), fits), "flex", "none"))
+        # A line the room cuts at its top fades out (the peer reads which is
+        # the first inside), so the history shows whole messages.
+        doc.bind(cid + ".opacity", cid, "opacity", sel(op("<", slot, S("oq4.chatFirst")), 0, S(f("alpha"))))
         messages.append(message)
-    return messages
+    # RmlUi clips an overflow: hidden box only once its content overflows
+    # toward its trailing or bottom side; the history overflows upward, so an
+    # empty strut always reaches past the bottom.
+    strut = ui.group("chatlog-strut", {**ui.absolute(left=0, top=0, width=u(1), height=ui.length(200, "%")),
+                                       "display": ui.keyword("block"), "pointer-events": ui.keyword("none")})
+    log = ui.group("chatlog", {"position": ui.keyword("relative"), "display": ui.keyword("flex"),
+                               "flex-direction": ui.keyword("column-reverse"), "align-items": ui.keyword("flex-start"),
+                               "width": ui.length(100, "%"), "max-height": ui.length(u(10000)), "overflow": ui.keyword("hidden")},
+                   list(reversed(messages)) + [strut])
+    doc.bind("chatlog.max-height", "chatlog", "max-height", sel(S("oq4_chatting"), room, u(10000)))
+    return [log]
 
 
 def chat_box(doc: HudDocument, children: list) -> dict:
@@ -911,23 +985,159 @@ def chat_box(doc: HudDocument, children: list) -> dict:
     bar and, where it is not wide, is 200 u wide or as wide as the space
     beside the widest strip (eleven weapons), down to 120 u."""
     # Anchor-local dp (the bl anchor is scaled by hud.scale about its corner).
-    from remastered_hud_base import status_scale
-    scale = S("hud.scale")
-    bar_scale = status_scale(True)
-    beside = lambda half: op("/", op("-", op("-", op("/", S("hud.width"), 2), op("*", u(half), bar_scale)), S("hud.left")), scale)
-    room = op("-", beside(219), u(16))
-    wide = op(">=", room, u(180))
-    competitive = op("==", S("hud.layout"), 3)
-    strip_room = op("clamp", op("-", beside(165), u(14)), u(120), u(200))
-    width = sel(wide, op("min", room, u(300)), sel(competitive, strip_room, u(200)))
-    # Its bottom clears the status bar's top (51 u, 15% higher in Competitive) by 8 u.
-    clearance = op("+", op("/", op("*", u(51), bar_scale), scale), u(8))
+    bottom, width = chat_geometry()
     box = ui.group("chatbox", {**ui.absolute(left=u(8), width=u(300), height=u(400)), "bottom": ui.length(u(59)), "display": ui.keyword("flex"),
                                "flex-direction": ui.keyword("column"), "justify-content": ui.keyword("flex-end"),
                                "align-items": ui.keyword("flex-start")}, children)
     doc.bind("chatbox.width", "chatbox", "width", width)
-    doc.bind("chatbox.bottom", "chatbox", "bottom", sel(competitive, clearance, sel(wide, u(59), u(150))))
+    doc.bind("chatbox.bottom", "chatbox", "bottom", bottom)
     return box
+
+
+# ============================================================ chat input
+
+# The channel tag, the prompts and their keys (ENTER, TAB and ESCAPE in the
+# engine's localized key names).
+ALL_TAG, SEND_WORD, CHANNEL_WORD, CANCEL_WORD = "#str_231254", "#str_231255", "#str_231256", "#str_42936"
+KEY_ENTER, KEY_TAB, KEY_ESCAPE = "#str_07019", "#str_07018", "#str_07020"
+
+
+def rect_commands() -> list:
+    """A rectangle filling its node."""
+    return [{"id": "a", "op": "move", "points": [[0, 0]]}, {"id": "b", "op": "line", "points": [[{"fraction": 1}, 0]]},
+            {"id": "c", "op": "line", "points": [[{"fraction": 1}, {"fraction": 1}]]},
+            {"id": "d", "op": "line", "points": [[0, {"fraction": 1}]]}, {"id": "e", "op": "close"}]
+
+
+def chat_chip(ident: str, key: str) -> dict:
+    """A chat prompt's key (atlas mpChat): its name in dark ProFont 6.6 u on
+    a 9 u white chip at 0.78 with a 2.5 u cut at the lower-leading corner."""
+    return ui.group(ident, {"position": ui.keyword("relative"), "display": ui.keyword("block"), "height": ui.length(u(9)),
+                            "padding-left": ui.length(u(3)), "padding-right": ui.length(u(3))},
+                    [vec(ident + "-bg", [{"id": "k", "fill": ui.solid([1, 1, 1, 0.78]), "commands": [
+                        {"id": "a", "op": "move", "points": [[0, 0]]}, {"id": "b", "op": "line", "points": [[{"fraction": 1}, 0]]},
+                        {"id": "c", "op": "line", "points": [[{"fraction": 1}, {"fraction": 1}]]},
+                        {"id": "d", "op": "line", "points": [[u(2.5), {"fraction": 1}]]},
+                        {"id": "e", "op": "line", "points": [[0, {"fraction": 1, "dp": -u(2.5)}]]}, {"id": "f", "op": "close"}]}]),
+                     label(ident + "-name", key, 6.6, rgb(DARK), face="profont", line=9)])
+
+
+def chat_prompt(ident: str, key: str, word: str) -> dict:
+    """The chip, then the action in Lowpixel 7.6 u white at 0.80 with the
+    stock 1 u drop shadow, 9 u before the next prompt."""
+    words = ui.group(ident + "-words", {"position": ui.keyword("relative"), "display": ui.keyword("block"),
+                                        "margin-left": ui.length(u(3))},
+                     [label(ident + "-shadow", word, 7.6, [0, 0, 0, 0.8], line=9, **ui.absolute(left=u(1), top=u(1))),
+                      label(ident + "-word", word, 7.6, [1, 1, 1, 0.8], line=9)])
+    return flex_row(ident, [chat_chip(ident + "-key", key), words], **{"margin-right": ui.length(u(9))})
+
+
+def chat_input(doc: HudDocument) -> dict:
+    """The chat input under the lines while message mode is open (14.9,
+    atlas mpChat): the prompts, Send, Channel (where team chat exists) and
+    Cancel, then the field, the stock chat plate recessed: black at 0.80 easing
+    to 0.55 at the trailing end, with #CCCC51 rails down the leading side,
+    along the lower-leading cut and the first 70% of the bottom. In the field
+    the channel tag (ALL in #FFFF8D, TEAM in your team's text color), then the
+    entry in Lowpixel 10.7 u #FFFF8D with the caret (a bar, or an underline
+    while overstriking) blinking once a second, steady under reduced motion.
+    The entry scrolls sideways to keep the caret 3 u inside its view; text
+    clipped before the view fades under a #FFFF8D mark, and from 80% of the
+    128-character limit the characters left show at the trailing end."""
+    declare(doc, {"oq4_chatin_before": "", "oq4_chatin_after": "", "oq4_chatin_left": CHAT_LIMIT, "oq4_chatin_team": False,
+                  "oq4_chatin_channels": False, "oq4_chatin_overstrike": False, "oq4_my_team": 0, "oq4.chatClipped": False})
+    team = S("oq4_chatin_team")
+    strogg = op("==", S("oq4_my_team"), 1)
+    channel = chat_prompt("chatin-pr-channel", KEY_TAB, CHANNEL_WORD)
+    channel["properties"]["display"] = ui.keyword("none")
+    doc.bind("chatin-pr-channel.display", "chatin-pr-channel", "display", sel(S("oq4_chatin_channels"), "flex", "none"))
+    prompts = flex_row("chatin-prompts", [chat_prompt("chatin-pr-send", KEY_ENTER, SEND_WORD), channel,
+                                          chat_prompt("chatin-pr-cancel", KEY_ESCAPE, CANCEL_WORD)],
+                       **{"flex-wrap": ui.keyword("wrap"), "row-gap": ui.length(u(4)), "margin-top": ui.length(u(7))})
+    plate = vec("chatin-plate", [
+        {"id": "fill", "fill": ui.linear((0, 0), ({"fraction": 1}, 0), [(0, [0, 0, 0, 0.8]), (0.7, [0, 0, 0, 0.8]), (1, [0, 0, 0, 0.55])]),
+         "commands": [{"id": "a", "op": "move", "points": [[0, 0]]}, {"id": "b", "op": "line", "points": [[{"fraction": 1}, 0]]},
+                      {"id": "c", "op": "line", "points": [[{"fraction": 1}, {"fraction": 1}]]},
+                      {"id": "d", "op": "line", "points": [[u(9), {"fraction": 1}]]},
+                      {"id": "e", "op": "line", "points": [[0, u(9)]]}, {"id": "f", "op": "close"}]},
+        {"id": "rail", "fill": {"type": "none"}, "stroke": ui.stroke(ui.solid(rgb("#CCCC51", 0.8)), u(1), minimum=0),
+         "commands": [{"id": "a", "op": "move", "points": [[u(0.5), 0]]}, {"id": "b", "op": "line", "points": [[u(0.5), u(9)]]},
+                      {"id": "c", "op": "line", "points": [[u(9), {"fraction": 1, "dp": -u(0.5)}]]},
+                      {"id": "d", "op": "line", "points": [[{"fraction": 0.7}, {"fraction": 1, "dp": -u(0.5)}]]}]}])
+    tag_all = tag_node(doc, "chatin-all", ALL_TAG, [("c", rgb(NOTE), None)], display=ui.keyword("none"))
+    doc.bind("chatin-all.display", "chatin-all", "display", sel(team, "none", "block"))
+    tag_team = tag_node(doc, "chatin-team", "#str_231001", [("m", rgb(MAR_T), NOT(strogg)), ("s", rgb(STR_T), strogg)],
+                        display=ui.keyword("none"))
+    doc.bind("chatin-team.display", "chatin-team", "display", sel(team, "block", "none"))
+    entry = {**ui.typeface(FACE, u(10.7), u(18), rgb(NOTE)), "white-space": ui.keyword("pre")}
+    clear = [0, 0, 0, 0]
+    # The text before the caret three times: an invisible spacer in the view's
+    # flow, which lays out as wide as the text but no wider than the view
+    # less 3 u and so places the caret; the visible text, set flush against
+    # the caret in a wide box, so a longer entry grows toward the leading edge
+    # and beyond under the view's clip; and an invisible probe free to be as
+    # wide as the text, which the peer compares with the view (the mark).
+    spacer = ui.label("chatin-before", BOUND_TEXT, {**entry, "color": ui.colour(clear), "position": ui.keyword("relative"),
+                                                    "display": ui.keyword("block")})
+    doc.bind("chatin-before.text", "chatin-before", "text", S("oq4_chatin_before"))
+    shown = ui.label("chatin-shown", BOUND_TEXT, {**entry, **ui.absolute(right=0, top=0, width=u(1400), height=u(18)),
+                                                  "display": ui.keyword("block"), "text-align": ui.keyword("right")})
+    doc.bind("chatin-shown.text", "chatin-shown", "text", S("oq4_chatin_before"))
+    after = ui.label("chatin-after", BOUND_TEXT, {**entry, **ui.absolute(left=0, top=0), "display": ui.keyword("block")})
+    doc.bind("chatin-after.text", "chatin-after", "text", S("oq4_chatin_after"))
+    probe_text = ui.label("chatin-probe-text", BOUND_TEXT, {**entry, "color": ui.colour(clear), "position": ui.keyword("relative"),
+                                                            "display": ui.keyword("block"), "padding-right": ui.length(u(3))})
+    doc.bind("chatin-probe-text.text", "chatin-probe-text", "text", S("oq4_chatin_before"))
+    probe = flex_row("chatin-probe", [probe_text], **{**ui.absolute(left=0, top=0, width=u(1400), height=u(18)),
+                                                      "pointer-events": ui.keyword("none")})
+    carets = []
+    over = S("oq4_chatin_overstrike")
+    for cid, steady in (("chatin-caret", False), ("chatin-caret-steady", True)):
+        caret = ui.group(cid, {**ui.absolute(left=u(0.2), top=u(4), width=u(1.2), height=u(10)), "display": ui.keyword("block"),
+                               "background-color": ui.colour(rgb(NOTE)), "opacity": num(1)})
+        doc.bind(cid + ".width", cid, "width", sel(over, u(5), u(1.2)))
+        doc.bind(cid + ".height", cid, "height", sel(over, u(1.2), u(10)))
+        doc.bind(cid + ".top", cid, "top", sel(over, u(13.8), u(4)))
+        doc.show(cid, S("oq4.reduced") if steady else NOT(S("oq4.reduced")))
+        carets.append(caret)
+    at = ui.group("chatin-at", {"position": ui.keyword("relative"), "display": ui.keyword("block"), "width": ui.length(0),
+                                "height": ui.length(u(18)), "flex-shrink": ui.number(0)}, [shown, after, *carets])
+    line = ui.group("chatin-line", {"position": ui.keyword("relative"), "display": ui.keyword("flex"), "flex-direction": ui.keyword("row"),
+                                    "align-items": ui.keyword("flex-start"), "width": ui.length(100, "%"), "height": ui.length(u(18)),
+                                    "padding-right": ui.length(u(3)), "box-sizing": ui.keyword("border-box")},
+                    [spacer, at])
+    fade = vec("chatin-fade", [{"id": "f", "fill": ui.linear((0, 0), ({"fraction": 1}, 0), [(0, [0, 0, 0, 0.8]), (1, [0, 0, 0, 0])]),
+                                "commands": rect_commands()}],
+               {**ui.absolute(left=0, top=0, width=u(8), height=u(18)), "display": ui.keyword("none")})
+    more = vec("chatin-more", [pts_path("m", [(u(1), u(9)), (u(4), u(6)), (u(4), u(12))], fill=ui.solid(rgb(NOTE, 0.7)))],
+               {**ui.absolute(left=0, top=0, width=u(5), height=u(18)), "display": ui.keyword("none")})
+    doc.show("chatin-fade", S("oq4.chatClipped"))
+    doc.show("chatin-more", S("oq4.chatClipped"))
+    view = ui.group("chatin-view", {"position": ui.keyword("relative"), "display": ui.keyword("block"),
+                                    "flex-grow": ui.number(1), "flex-shrink": ui.number(1), "min-width": ui.length(0),
+                                    "height": ui.length(u(18)), "margin-left": ui.length(u(6)), "margin-right": ui.length(u(8)),
+                                    "overflow": ui.keyword("hidden")},
+                    [probe, line, fade, more])
+    left = S("oq4_chatin_left")
+    counting = op("<=", left, CHAT_LIMIT * 0.2)
+    doc.bind("chatin-view.margin", "chatin-view", "margin-right", sel(counting, 0, u(8)))
+    count = bound_label(doc, "chatin-count", op("numberText", op("max", left, 0)), 7.5, [1, 1, 1, 0.6], face="profont", line=18,
+                        **{"margin-left": ui.length(u(4)), "margin-right": ui.length(u(5)), "display": ui.keyword("none")})
+    doc.bind("chatin-count.display", "chatin-count", "display", sel(counting, "block", "none"))
+    doc.bind("chatin-count.color", "chatin-count", "color", colour_of([(op("<=", left, 0), rgb(ERR, 0.6))], [1, 1, 1, 0.6]))
+    row = flex_row("chatin-row", [tag_all, tag_team, view, count],
+                   **{**ui.absolute(left=0, top=0, width=ui.length(100, "%"), height=u(18)), "padding-left": ui.length(u(6)),
+                      "box-sizing": ui.keyword("border-box")})
+    field = ui.group("chatin-field", {"position": ui.keyword("relative"), "display": ui.keyword("block"), "width": ui.length(100, "%"),
+                                      "height": ui.length(u(18)), "margin-top": ui.length(u(4))}, [plate, row])
+    group = ui.group("chatin", {"position": ui.keyword("relative"), "display": ui.keyword("none"), "width": ui.length(100, "%")},
+                     [prompts, field])
+    doc.bind("chatin.display", "chatin", "display", sel(S("oq4_chatting"), "block", "none"))
+    # Opening the input, typing and moving the caret restart the blink on.
+    doc.timeline("chatin-blink", 1000, [tr("chatin-caret", "opacity", [(0, num(1)), (499, num(1)), (500, num(0)), (999, num(0)),
+                                                                        (1000, num(1))])], iterations=0)
+    doc.on("oq4_chatType", play("chatin-blink"))
+    return group
 
 
 # ========================================================== match context
@@ -1521,9 +1731,14 @@ def mp_document() -> dict:
         anchor(doc, "cr", [trailing, stats]),
         anchor(doc, "cc", [beyond_minimal(doc, "cc-full", [aim])]),
         anchor(doc, "cl", [leading, ballot]),
-        anchor(doc, "bl", [chat_box(doc, talkers + lines)]),
+        anchor(doc, "bl", [chat_box(doc, talkers + lines + [chat_input(doc)])]),
         anchor(doc, "bc", [follow, respawn], scale="hud.centerScale"),
         arena,
     ])
+    # The peer measures whether the chat entry outgrows its view (the probe,
+    # the text with its 3 u, is wider than the view) for the mark before it.
     return doc.build(root, {"canvas": {"height": 720, "minWidth": 960},
-                            "extensions": {"openq4": {"reference": "ui-visual-design.md 14.9", "stock": "guis/mphud.gui"}}})
+                            "extensions": {"openq4": {"reference": "ui-visual-design.md 14.9", "stock": "guis/mphud.gui",
+                                                      "readbacks": [["oq4.chatClipped", "chatin-probe-text", "chatin-view"],
+                                                                    ["oq4.chatPrompts", "chatin-prompts", "@height"],
+                                                                    ["oq4.chatFirst", "chatlog", "@firstInside", "chat", "8"]]}}})

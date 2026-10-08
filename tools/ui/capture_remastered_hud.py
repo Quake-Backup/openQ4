@@ -211,6 +211,10 @@ SCENARIOS = {
         'set ui_hudScale 1.25', 'waitMsec 300', shot('mp-scaled'), 'set ui_hudScale 1',
         'set ui_hudLayout 0', 'waitMsec 400', shot('mp-classic'), 'set ui_hudLayout 1', 'waitMsec 400', shot('mp-restored'),
         'set ui_hudLayout 2', 'waitMsec 400', shot('mp-minimal'), 'set ui_hudLayout 1',
+        # The chat input over the history (chatInput fills the entry without device input).
+        'clientMessageMode', 'waitMsec 300', 'chatInput "Rail on the bridge, quad in ten"', 'waitMsec 400', shot('mp-chat-input'),
+        'chatCaret 4', 'waitMsec 300', shot('mp-chat-caret'),
+        'chatHistory up', 'waitMsec 300', shot('mp-chat-history'),
     ]),
     # A spectator follows a bot (the follow card with Next, Previous and Free
     # camera), then flies free from its view: name tags over the players in
@@ -271,7 +275,9 @@ SCENARIOS = {
     # once; the native checks place the vote card.)
     'mp-competitive-matrix': ('mp:mp/q4ctf1', [
         'set g_autoExecAfterMapLoad ""', 'waitMsec 2500', *['addbot'] * 15, 'waitMsec 6000', shot('matrix-ctf'),
-        'clientMessageMode', 'waitMsec 600', shot('matrix-chat'),
+        'clientMessageMode', 'waitMsec 300', 'chatInput Meet at the railgun on the upper walkway', 'waitMsec 600', shot('matrix-chat'),
+        'chatInput Their quad respawns in thirty seconds so hold the lower ramp until it is up and then push through the '
+        'teleporter together', 'waitMsec 400', shot('matrix-chat-long'),
     ]),
 }
 

@@ -82,7 +82,7 @@ the timer (`oq4_mb_sub`, `oq4_mb_ready`), the team status rows
 | --- | --- | --- |
 | `guis/hud.gui`, `guis/q4xhud.gui` | `remastered_marine.q4ui`, `remastered_marine_awakening.q4ui` | Status bar, weapon strip, pickups, transmission display, boss bar, notices, interactive brackets, damage direction, missile warning; in multiplayer the powerup slots and developer readouts |
 | `guis/hud_strogg.gui`, `guis/q4xhud_strogg.gui` | `remastered_strogg.q4ui`, `remastered_strogg_awakening.q4ui` | The Strogg family of the same groups |
-| `guis/mphud.gui` | `remastered_mp.q4ui` | Kill feed, standing, team panels with flags and zone, timer, center column notices, aim text, vote, voice, chat lines, follow card (Next, Previous, Free camera), the free camera's name tags, respawn prompt, Tourney strip, statistics card, Arena ceremony, lag notice; in Competitive the match bar, network quality and team status |
+| `guis/mphud.gui` | `remastered_mp.q4ui` | Kill feed, standing, team panels with flags and zone, timer, center column notices, aim text, vote, voice, chat lines and, while message mode is open (`guis/mpmsgmode.gui`), the chat input, follow card (Next, Previous, Free camera), the free camera's name tags, respawn prompt, Tourney strip, statistics card, Arena ceremony, lag notice; in Competitive the match bar, network quality and team status |
 | `guis/hud.gui` while riding the flatbed, `guis/hud_strogg.gui` on the tram | (the on-foot documents) | The ride's silhouette gauge replaces the three gauges (`enterFlatbed`/`enterTram`), traced from the stock truck and tram art |
 | `guis/vehicles/airassault/turretplayerhud.gui` | `remastered_turret.q4ui` | The Awakening's space cannon (m03's dropship guns): the transmission display, boss bar, notices, damage direction, brackets and missile warning without gauges, strip or powerups; the ship-status panel under the transmission display (damage sections, spinning objective markers, attack darts, and the view cone relative to the ship's nose); the HUD prompt's Exit |
 | `guis/vehicles/mcc/cannonplayerhud.gui` | `remastered_mcc.q4ui` | The Awakening's MCC cannon (m06): the gun takes no damage, so the readout is the MCC's hull, U.S.S. Hannibal over the stock gauge plate with the hull number (the MCC's health divided by 10), stacked under the transmission display the side gun's HUD lacked, its track filled in proportion and warning at 25%; the HUD prompt's Exit |
@@ -115,6 +115,21 @@ not answer.
 Strings cross over with color escapes removed and `^ik` key escapes resolved
 to key names. A mod that ships its own stock-named GUI keeps it.
 
+A document can ask the peer to read its layout back into its state for the
+next frame (`extensions.openq4.readbacks`), where bindings alone cannot know a
+laid-out size. None of these readbacks feeds the layout it measures:
+
+- `[state, node, view]`: whether the node lays out wider than the view (the
+  chat entry's mark of text scrolled out of view).
+- `[state, node, "@height"]`: the node's laid-out height in canvas dp while it
+  has one (the chat prompts, one row or wrapped).
+- `[state, view, "@firstInside", prefix, count]`: the first of the shown
+  nodes `prefix0` to `prefix<count-1>` whose top lies inside the view (the
+  first whole message of the chat history; the lines above it fade).
+
+The retained GUI answers `node::@width`, `@height`, `@x` and `@y` presentation
+reads with the node's laid-out box.
+
 Diagnostics: `ui_hudProfile N` prints per-document forward, event, state,
 draw and unseen-evaluation timings averaged over N frames, and
 `ui_hudTest <gui> state|event|get ...` writes, sends or reads a key without
@@ -131,6 +146,19 @@ extra fields beside the stock ones; the stock GUIs ignore them.
   vote tally, the followed player and the control keys. `oq4_flags`,
   `oq4_clockWarn` and `oq4_state` are announced as events, so looping motion
   starts only when its state does.
+- Chat input (`PublishRemasteredChat`): while message mode is open,
+  `oq4_chatting`, up to eight lines of untimed history in the chat slots
+  (`oq4_chat_count`), and the entry from the message-mode GUI's edit control
+  split at its caret (`oq4_chatin_before`, `_after`), the characters left of
+  the stock 128 (`oq4_chatin_left`), the channel (`oq4_chatin_team`), whether
+  team chat exists (`oq4_chatin_channels`) and the overstrike mode. The
+  control (`idChatWindow`) publishes its caret and overstrike mode
+  (`oq4_chat_caret`, `oq4_chat_overstrike`) and, in the Remastered layout,
+  stops drawing its own panel; it keeps the typing, recall and channel
+  switching. Opening the input, typing and moving the caret send
+  `oq4_chatType`, which restarts the caret's blink. `chatInput <text>` and
+  `chatCaret <n>` fill the open entry and move its caret without device
+  input.
 - Name tags (`PublishRemasteredNameTags`): for a free-flying spectator,
   `oq4_tags` players in view, nearest first and at most eight, each with
   `oq4_tag{i}_x`/`_y` (the point above its head as fractions of the view),
@@ -215,16 +243,21 @@ and frame costs for a document.
   on the bike and runs the countdown; the race's checkpoint event, the
   countdown's expiry and the crouch control drive the rest), `mp` (with the
   scoreboard and the respawn
-  prompt after `kill 0`), `mp-spectator` (in warm-up, so the match is not
+  prompt after `kill 0`, then the chat input through `clientMessageMode`,
+  `chatInput` and `chatCaret`), `mp-spectator` (in warm-up, so the match is not
   abandoned when the only human spectates: the follow card through
-  `follownext`, then the free camera's name tags through `followfree`) and
-  `mp-ctf` (with the scoreboard), and the
-  `mp-pace`/`sp-pace` profiles.
+  `follownext`, then the free camera's name tags through `followfree`),
+  `mp-ctf` (with the scoreboard), the Competitive `mp-competitive` (deathmatch),
+  `mp-competitive-ctf`, `mp-competitive-spec` (both teams' lists while
+  following and flying free) and `mp-competitive-matrix` (eight players a
+  team, a long name and the chat input with a long entry; run it at each
+  `--size`), and the `mp-pace`/`sp-pace` profiles.
 
 ## Open work
 
 - The match summary (section 14.14), the scoreboard's scrolling past 16
-  rows, The Awakening's GEV display, the chat entry line (an
-  interactive field, which belongs with the retained menu input) still draw
-  their stock layout through the presentation bridge.
+  rows and The Awakening's GEV display still draw their stock layout through
+  the presentation bridge.
+- The chat input's prompts name the keyboard's keys; controller and touch
+  players' platform or on-screen keyboard (section 13.5) is not implemented.
 - The touch control that toggles the objectives display is not implemented.

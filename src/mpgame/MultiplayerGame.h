@@ -1364,6 +1364,13 @@ private:
 	// ones and published to the multiplayer HUD as fields (ui-visual-design.md 14.9)
 	rvHudLines		remasteredKills;
 	rvHudLines		remasteredChat;
+	// the last 64 chat lines, untimed: the history the open input shows,
+	// eight at a time
+	idList<idDict>	remasteredChatLog;
+	// the chat entry last published (a change restarts the caret's blink)
+	bool			remasteredChatOpen;
+	idStr			remasteredChatEntry;
+	int				remasteredChatCaret;
 	// the transmit displays last sent to the HUD (-1 unknown; the talker's client)
 	int				hudTransmitSelf;
 	int				hudTransmitOther;
@@ -1379,6 +1386,7 @@ private:
 	void			PublishRemasteredHud( idUserInterface *_mphud, idPlayer *localPlayer );
 	void			PublishRemasteredNameTags( idUserInterface *_mphud, idPlayer *localPlayer, bool freeCamera );
 	void			PublishRemasteredCompetitive( idUserInterface *_mphud, idPlayer *localPlayer, idPlayer *followed, int limit );
+	void			PublishRemasteredChat( idUserInterface *_mphud, int now );
 
 	// rcon buffer
 	idStr			rconHistory;

@@ -337,16 +337,15 @@ static void CheckRemasteredMpHud(ScreenHost& host, const char* path) {
 	runtime.Frame(RemasteredViewport(1280,720),3.8);
 	Check(!Shown(runtime,"frag") && !Shown(runtime,"main"),"notices leave after 2500 ms");
 
-	// Chat: a line shows on its plate and steps aside while typing.
+	// Chat: a line shows on its plate.
 	Check(runtime.SetState({{"oq4_chat0_live",true},{"oq4_chat0_alpha",1.0},{"oq4_chat0_name",std::string("Kaz")},
-		{"oq4_chat0_text",std::string("rail on the bridge")},{"oq4_chat0_kind",1.0},{"oq4_chat0_team",0.0}},error,3.9),error.c_str());
+		{"oq4_chat0_text",std::string("rail on the bridge")},{"oq4_chat0_kind",1.0},{"oq4_chat0_team",0.0},{"oq4_chat_count",1.0}},error,3.9),error.c_str());
 	runtime.Frame(RemasteredViewport(1280,720),3.95);
 	Bounds chat;
 	Check(Shown(runtime,"chat0") && Shown(runtime,"chat0-tag") && runtime.GetBounds("chat0",chat) && Near(chat.x,8*1.5f,1.f) &&
 		Near(chat.y+chat.height,720-59*1.5f,2.f),"a team chat line sits on the leading edge clear of the status bar");
-	Check(runtime.SetState({{"oq4_chatting",true}},error,4.0),error.c_str());
-	runtime.Frame(RemasteredViewport(1280,720),4.05);
-	Check(!Shown(runtime,"chat0"),"the lines step aside while the input is open");
+	Check(!Shown(runtime,"chatin"),"no input at rest");
+
 
 	// Vote and follow card.
 	Check(runtime.SetState({{"voteNotice",1.0},{"voteInfo_1",std::string("Map: q4dm7")},{"oq4_vote_yes",3.0},{"oq4_spectating",true},
@@ -422,6 +421,82 @@ static void CheckRemasteredMpHud(ScreenHost& host, const char* path) {
 	Check(runtime.SetState({{"oq4_respawn",0.0}},error,4.9),error.c_str());
 	runtime.Frame(RemasteredViewport(1280,720),4.95);
 	Check(Shown(runtime,"tl-full") && Shown(runtime,"tr-full"),"Remastered brings them back");
+
+	// The input (atlas mpChat) opens at the box's bottom and pushes the lines,
+	// now history, up: the prompts, then the field with the channel tag and
+	// the entry, the caret between the text before and after it.
+	Check(runtime.SetState({{"oq4_chatting",true},{"oq4_chatin_before",std::string("rail on")},{"oq4_chatin_after",std::string(" the bridge")},
+		{"oq4_chatin_left",110.0},{"oq4_chatin_channels",true}},error,5.0),error.c_str());
+	Check(runtime.RunEvent("oq4_chatType",5.0,effects,error),"typing restarts the caret");
+	host.draws.clear();
+	runtime.Frame(RemasteredViewport(1280,720),5.005);
+	Bounds field, prompts, history, before, at, after, view;
+	Check(Shown(runtime,"chatin") && Shown(runtime,"chat0") && Shown(runtime,"chatin-all") && !Shown(runtime,"chatin-team") &&
+		Shown(runtime,"chatin-pr-send") && Shown(runtime,"chatin-pr-channel") && Shown(runtime,"chatin-pr-cancel") && !Shown(runtime,"chatin-count"),
+		"the input opens under the history with the ALL tag and Send, Channel and Cancel");
+	const auto sendKey = runtime.PresentedValue("chatin-pr-send-key-name","text");
+	Check(sendKey && sendKey->text == "#str_07019","Send names the Enter key");
+	Check(runtime.GetBounds("chatin-field",field) && runtime.GetBounds("chat0",history) && runtime.GetBounds("chatin-prompts",prompts) &&
+		history.y+history.height <= prompts.y && prompts.y+prompts.height <= field.y && Near(field.height,18*1.5f,.5f),
+		"the history, the prompts and the field stack in that order");
+	Check(Near(field.y+field.height,720-59*1.5f,2.f),"the field takes the box's bottom: the box never lowers");
+	Check(runtime.GetBounds("chatin-before",before) && runtime.GetBounds("chatin-at",at) && runtime.GetBounds("chatin-after",after) &&
+		runtime.GetBounds("chatin-view",view) && Near(at.x,before.x+before.width,.5f) && Near(after.x,at.x,.5f) && Near(before.x,view.x,.5f) &&
+		before.width > 10 && before.width < view.width-10,
+		"a short entry starts at its view, the caret between the text before and after it");
+	Bounds shownShort;
+	Check(runtime.GetBounds("chatin-shown",shownShort) && Near(shownShort.x+shownShort.width,at.x,.5f),"the shown text ends at the caret");
+	const auto blink = runtime.PresentedValue("chatin-caret","opacity");
+	Check(Shown(runtime,"chatin-caret") && !Shown(runtime,"chatin-caret-steady") && blink && blink->data[0] > .99,"the caret starts its blink on");
+	runtime.Frame(RemasteredViewport(1280,720),5.75);
+	const auto blinked = runtime.PresentedValue("chatin-caret","opacity");
+	Check(blinked && blinked->data[0] < .01,"the caret is off in the second half of its second");
+	// A long entry scrolls sideways: the caret stays 3 u inside the view, the
+	// view clips the text before it, and the characters left show.
+	const std::string longEntry = "the quick brown fox jumps over the lazy dog while the railgun charges on the bridge above the lava "
+		"and the quad waits";
+	Check(runtime.SetState({{"oq4_chatin_before",longEntry},{"oq4_chatin_after",std::string("")},{"oq4_chatin_left",8.0},
+		{"oq4.chatClipped",true}},error,5.76),error.c_str());
+	host.draws.clear();
+	runtime.Frame(RemasteredViewport(1280,720),5.77);
+	Bounds probe, shown;
+	Check(runtime.GetBounds("chatin-probe-text",probe) && runtime.GetBounds("chatin-view",view) && probe.width > view.width*1.2f,
+		"the long entry outgrows its view");
+	Check(runtime.GetBounds("chatin-at",at) && Near(at.x,view.x+view.width-3*1.5f,1.f),
+		"a long entry scrolls to keep the caret 3 u inside its view");
+	Check(runtime.GetBounds("chatin-shown",shown) && Near(shown.x+shown.width,at.x,.5f),"the shown text ends at the caret");
+	float inkLeft = 1e9f, inkRight = -1e9f; std::size_t ink = 0;
+	for (const auto& draw : host.draws) for (const auto& v : draw.vertices)
+		if (v.y > field.y && v.y < field.y+field.height && v.a > .99f && std::abs(v.b-0x8D/255.f) < .02f && v.r > .99f) {
+			inkLeft = std::min(inkLeft,v.x); inkRight = std::max(inkRight,v.x); ++ink;
+		}
+	Check(ink > 0 && inkLeft >= view.x-1 && inkRight <= at.x+1.5f && inkRight > at.x-12,
+		"the view clips the scrolled text before it and shows its end at the caret");
+	const auto count = runtime.PresentedValue("chatin-count","text");
+	Check(Shown(runtime,"chatin-count") && count && count->text == "8","the characters left show past 80% of the limit");
+	Check(Shown(runtime,"chatin-more") && Shown(runtime,"chatin-fade"),"text before the view fades under the mark");
+	// The team channel takes your team's text color; overstrike underlines.
+	Check(runtime.SetState({{"oq4_chatin_team",true},{"oq4_my_team",1.0},{"oq4_chatin_overstrike",true},{"oq4.chatClipped",false},
+		{"oq4_chatin_left",0.0}},error,5.78),error.c_str());
+	runtime.Frame(RemasteredViewport(1280,720),5.79);
+	Bounds caret;
+	const auto spent = runtime.PresentedValue("chatin-count","color");
+	Check(Shown(runtime,"chatin-team") && Shown(runtime,"chatin-team-s") && !Shown(runtime,"chatin-team-m") && !Shown(runtime,"chatin-all"),
+		"the team channel shows the TEAM tag in your team's color");
+	Check(runtime.GetBounds("chatin-caret",caret) && caret.width > caret.height && !Shown(runtime,"chatin-more"),
+		"overstrike turns the caret into an underline");
+	Check(spent && Near(float(spent->data[0]),0xE4/255.f,.01f),"no characters left reads #E46D56");
+	// Reduced motion holds the caret steady.
+	host.reducedMotion = true;
+	runtime.SetReducedMotion(true,5.795);
+	runtime.Frame(RemasteredViewport(1280,720),5.8);
+	Check(Shown(runtime,"chatin-caret-steady") && !Shown(runtime,"chatin-caret"),"reduced motion holds the caret steady");
+	host.reducedMotion = false;
+	runtime.SetReducedMotion(false,5.81);
+	Check(runtime.SetState({{"oq4_chatting",false},{"oq4_chatin_team",false},{"oq4_chatin_overstrike",false},{"oq4_chatin_left",128.0},
+		{"oq4_chatin_before",std::string("")}},error,5.85),error.c_str());
+	runtime.Frame(RemasteredViewport(1280,720),5.9);
+	Check(!Shown(runtime,"chatin"),"closing the input removes it");
 	Check(host.errors == 0,"no runtime diagnostics across the MP HUD exercise");
 	runtime.Shutdown();
 }
@@ -587,6 +662,64 @@ static void CheckRemasteredCompetitiveHud(ScreenHost& host, const char* path) {
 		Check(top > 280*1.5f,"four chat lines stay under eight team rows");
 	}
 	Check(runtime.SetState(RemasteredLayout(1280,720),error,1.2),error.c_str());
+
+	// The open input shows the history that fits under the team status: with
+	// eight rows (to 280 u) six of eight messages at 16:9, the newest.
+	StateValues history{{"oq4_chatting",true},{"oq4_chat_count",8.0},{"oq4_ts1_count",8.0}};
+	for (int i = 0; i < 8; ++i) {
+		const std::string key = "oq4_chat"+std::to_string(i);
+		history.insert({{key+"_live",true},{key+"_alpha",1.0},{key+"_name",std::string("Kaz")},{key+"_text",std::string("on the bridge")},
+			{key+"_kind",0.0}});
+	}
+	Check(runtime.SetState(history,error,1.21),error.c_str());
+	runtime.Frame(RemasteredViewport(1280,720),1.22);
+	Bounds oldest;
+	Check(!Shown(runtime,"chat0") && !Shown(runtime,"chat1") && Shown(runtime,"chat2") && Shown(runtime,"chat7") && Shown(runtime,"chatin"),
+		"the input's history keeps the newest messages that fit");
+	Check(runtime.GetBounds("chat2",oldest) && oldest.y > 280*1.5f,"the history stays under eight team rows");
+	// At 4:3 the box narrows to 120 u: the prompts wrap onto a second row and
+	// wrapped history is clipped at the room's top, never reaching the rows.
+	StateValues wrapped;
+	for (int i = 0; i < 8; ++i)
+		wrapped.insert({"oq4_chat"+std::to_string(i)+"_text",std::string("hold the lower ramp until the quad is up then push through")});
+	wrapped.insert({"oq4_chatin_channels",true});
+	Check(runtime.SetState(wrapped,error,1.221),error.c_str());
+	Check(runtime.SetState(RemasteredLayout(960,720),error,1.222),error.c_str());
+	runtime.Frame(RemasteredViewport(960,720),1.2225);
+	// The engine peer measures the prompt row for the room (a layout readback).
+	Bounds measured;
+	Check(runtime.GetBounds("chatin-prompts",measured) &&
+		runtime.SetState({{"oq4.chatPrompts",double(measured.height)}},error,1.2226),"the prompt row's height reads back");
+	host.draws.clear();
+	runtime.Frame(RemasteredViewport(960,720),1.223);
+	Bounds log, promptRow, line7;
+	Check(runtime.GetBounds("chatlog",log) && log.y >= 280*1.5f-.5f && runtime.GetBounds("chat7",line7) && line7.height > 20*1.5f,
+		"wrapped history is clipped at the room's top under eight team rows");
+	float inkTop = 1e9f;
+	for (const auto& draw : host.draws) for (const auto& v : draw.vertices)
+		if (v.x < 120*1.5f && v.y > 200*1.5f && v.y < log.y+log.height && std::abs(v.b-0x8D/255.f) < .02f && v.r > .99f && v.a > .99f)
+			inkTop = std::min(inkTop,v.y);
+	Check(inkTop >= log.y-.5f,"no history ink above the room");
+	// The engine peer reads the first line whose top the room holds (a layout
+	// readback); a line the room cuts fades, so the history shows whole messages.
+	int lowest = 8, first = 8;
+	for (int i = 0; i < 8; ++i) {
+		Bounds b;
+		if (!Shown(runtime,"chat"+std::to_string(i)) || !runtime.GetBounds("chat"+std::to_string(i),b) || b.height <= 0) continue;
+		lowest = std::min(lowest,i);
+		if (first == 8 && b.y >= log.y-.5f) first = i;
+	}
+	Check(first > lowest && first < 8,"the room cuts the oldest wrapped line it shows");
+	Check(runtime.SetState({{"oq4.chatFirst",double(first)}},error,1.2232),error.c_str());
+	runtime.Frame(RemasteredViewport(960,720),1.2234);
+	const auto cut = runtime.PresentedValue("chat"+std::to_string(lowest),"opacity");
+	const auto whole = runtime.PresentedValue("chat"+std::to_string(first),"opacity");
+	Check(cut && cut->data[0] < .01 && whole && whole->data[0] > .99,"the cut line fades and the whole ones stay");
+	Check(runtime.GetBounds("chatin-prompts",promptRow) && promptRow.height > 15*1.5f,"the prompts wrap in a 120 u box");
+	Check(runtime.SetState(RemasteredLayout(1280,720),error,1.224),error.c_str());
+	StateValues rest{{"oq4_chatting",false},{"oq4_chat_count",0.0},{"oq4_ts1_count",2.0}};
+	for (int i = 0; i < 8; ++i) rest.insert({"oq4_chat"+std::to_string(i)+"_live",false});
+	Check(runtime.SetState(rest,error,1.23),error.c_str());
 
 	// Spectating: both lists flank the view, the followed row lit; held
 	// statistics take the trailing list's place. Tags add a health line.

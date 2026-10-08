@@ -19,7 +19,11 @@ public:
     bool IsInput() const { return input; }
     static void Reset();
     static void History_f(const idCmdArgs &args);
+    static void Input_f(const idCmdArgs &args);
 private:
+    const char *HandleInput(const sysEvent_t *event, bool *updateVisuals);
+    void PublishCaret();
+    void ScrollMessages(int delta);
     void Reflow(float width, float scale);
     void SetInput(const char *value);
     bool input;
