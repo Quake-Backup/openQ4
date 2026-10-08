@@ -35,6 +35,7 @@ places.
 | `guis/hud_strogg.gui`, `guis/q4xhud_strogg.gui` | `remastered_strogg.q4ui`, `remastered_strogg_awakening.q4ui` | The Strogg family of the same groups |
 | `guis/mphud.gui` | `remastered_mp.q4ui` | Kill feed, standing, team panels with flags and zone, timer, center column notices, aim text, vote, voice, chat lines, follow card, respawn prompt, Tourney strip, statistics card, Arena ceremony, lag notice |
 | `guis/hud.gui` while riding the flatbed, `guis/hud_strogg.gui` on the tram | (the on-foot documents) | The ride's silhouette gauge replaces the three gauges (`enterFlatbed`/`enterTram`), traced from the stock truck and tram art |
+| `guis/vehicles/airassault/turretplayerhud.gui` | `remastered_turret.q4ui` | The Awakening's space cannon (m03's dropship guns): the transmission display, boss bar, notices, damage direction, brackets and missile warning without gauges, strip or powerups; the ship-status panel under the transmission display (damage sections, spinning objective markers, attack darts, and the view cone relative to the ship's nose); the HUD prompt's Exit |
 | `guis/vehicles/hud.gui` | `remastered_vehicle.q4ui` | The walker's and hover tank's status bar (ARMOR and SHIELDS gauges, weapon panel, rocket count, charge bar), entry lines, hit flash, electrical warning, HUD prompt (Exit or Vehicle locked), transmission display, boss bar, notices |
 | `guis/vehicles/airdef_cannon.gui` | `remastered_airdef.q4ui` | The air-defence cannon: the retained nailgun lens held still (Gaussian focus beyond the aperture) with its two crescent load bars and amber reticle, the transmission display the stock lacks, the HUD prompt (Exit or Vehicle locked) in place of the centered exit line, and the save notice |
 | `guis/wristcomm.gui`, `guis/wristcomm_strogg.gui` | `remastered_objectives.q4ui`, `remastered_objectives_strogg.q4ui` | Objectives display (every objective, three at a time, a COMPLETED section), new-objective and objective-complete notices, OBJECTIVE FAILED |
@@ -93,7 +94,11 @@ extra fields beside the stock ones; the stock GUIs ignore them.
   eliminated, ready, muted, flag carrier), the pitch `oq4_sb_pitch`,
   `oq4_sb_kills` and the rank line `oq4_sb_rank`. The header and footer read the
   stock keys. `testScoreboard <msec>` holds the board open without input.
-- Vehicles (`rvVehicle::UpdateHUD`): `oq4_key_jump`, the control that leaves.
+- Vehicles (`rvVehicle::UpdateHUD`): `oq4_key_jump`, the control that leaves,
+  and `oq4_shipYaw`, the heading of whatever carries the vehicle (m03's
+  dropship), against which the ship panel's cone shows the gun's heading.
+- The Awakening's on-foot documents carry the ship panel too, shown once m03's
+  script sends the player's HUD a marker, damage or warning.
 - Objectives (`idPlayer`): `oq4_new_title`/`oq4_new_shot` and `oq4_done_title`
   latched per notice, `oq4_obj_count` with `oq4_obj{i}_title/_text/_shot`
   newest first, `oq4_done_count` with `oq4_done{i}`, `oq4_obj_scroll`, and
@@ -132,14 +137,15 @@ and frame costs for a document.
   --scenario <name>` captures windowed gameplay without host input: `marine`,
   `strogg`, `objectives`, `tank` (convoy1, boarding through the actor's
   `enterVehicle` script event), `airdef` (mcc_landing's cannon, boarded the
-  same way), `mp` (with the scoreboard and the respawn
+  same way), `turret` (m03's top gun, with `--awakening <content root holding
+  q4xbase>`, after the level's own hand-off from its AI gunner), `mp` (with the scoreboard and the respawn
   prompt after `kill 0`) and `mp-ctf` (with the scoreboard), and the
   `mp-pace`/`sp-pace` profiles.
 
 ## Open work
 
 - The match summary (section 14.14), the scoreboard's scrolling past 16
-  rows, The Awakening's space cannon, MCC cannon, speeder and GEV displays, the chat entry line (an
+  rows, The Awakening's MCC cannon, speeder and GEV displays, the chat entry line (an
   interactive field, which belongs with the retained menu input) still draw
   their stock layout through the presentation bridge.
 - The Objectives hold/toggle setting and touch toggle are not implemented.

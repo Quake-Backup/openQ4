@@ -1313,6 +1313,11 @@ void rvVehicle::UpdateHUD ( int position, idUserInterface* gui ) {
 	// openQ4: the Remastered HUD prompt names the control that leaves the
 	// vehicle (Exit on the jump key) instead of the stock bracketed line.
 	gui->SetStateString ( "oq4_key_jump", common->KeysFromBinding ( "_moveUp" ) );
+	// openQ4: the heading of whatever carries the vehicle (m03's dropship under
+	// its space cannon), so the Remastered ship panel's view cone turns with
+	// the gun relative to the ship's nose rather than the world.
+	idEntity* carrier = GetBindMaster ( ) ? GetBindMaster ( ) : this;
+	gui->SetStateFloat ( "oq4_shipYaw", carrier->GetPhysics()->GetAxis().ToAngles().yaw );
 	const int speed = Max ( 0, idMath::FtoiFast ( GetPhysics()->GetLinearVelocity().Length() * 0.25f + 0.5f ) - 4 );
 	for ( int i = 0; i < MAX_RENDERENTITY_GUI; i++ ) {
 		if ( renderEntity.gui[ i ] ) {

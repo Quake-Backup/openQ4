@@ -104,6 +104,25 @@ def cannon():
     ]
 
 
+def space_cannon():
+    """The Awakening's space cannon (guis/vehicles/airassault/turretplayerhud.gui):
+    the player boards m03's top gun through the actor's enterVehicle script
+    event, then the script's own ship events drive the panel."""
+    gui = 'guis/vehicles/airassault/turretplayerhud.gui'
+    return [
+        # The level seats an AI gunner in the top gun and hands it over later, as here.
+        'set g_autoExecAfterMapLoad ""', 'notarget', 'god', 'waitMsec 9000',
+        'script "$topgun_driver.exitVehicle( 1 )"', 'waitMsec 300', 'script "$topgun_driver.remove()"', 'waitMsec 300',
+        'script "$topgun.show()"', 'script "$player1.enterVehicle($topgun)"', 'waitMsec 3000', shot('turret'),
+        *hud(gui, 'event ship_health_01_on', 'event ship_health_02_on', 'event ship_target_03_on', 'event warning_NE'),
+        'waitMsec 300', shot('turret-panel'),
+        *hud(gui, 'state rhinochatter 1', 'event radioChatterUp'), 'waitMsec 700', shot('turret-radio'),
+        *hud(gui, 'event radioChatterDown'),
+        'set ui_hudLayout 0', 'waitMsec 400', shot('turret-classic'), 'set ui_hudLayout 1', 'waitMsec 400', shot('turret-restored'),
+        'set ui_hudLayout 2', 'waitMsec 400', shot('turret-minimal'), 'set ui_hudLayout 1',
+    ]
+
+
 def objectives(gui):
     """The objectives display through the held scores button (the game
     publishes the list), then the notices and a failure through the stock
@@ -127,6 +146,7 @@ SCENARIOS = {
     'objectives': ('game/airdefense1', objectives('guis/wristcomm.gui')),
     'tank': ('game/convoy1', in_vehicle('tank_1')),
     'airdef': ('game/mcc_landing', cannon()),
+    'turret': ('game/m03_airassault', space_cannon()),
     'strogg': ('game/recomp', on_foot('guis/hud_strogg.gui')),
     'mp': ('mp:mp/q4dm1', [
         'set g_autoExecAfterMapLoad ""', 'waitMsec 2500', shot('mp-base'),
@@ -165,6 +185,9 @@ SCENARIOS = {
 }
 
 
+AWAKENING = {'turret'}
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--assets', type=Path, required=True)
@@ -174,6 +197,7 @@ def main() -> int:
     parser.add_argument('--size', default='1280x720')
     parser.add_argument('--scenario', action='append', choices=sorted(SCENARIOS))
     parser.add_argument('--timeout', type=int, default=240)
+    parser.add_argument('--awakening', type=Path, help="content root holding The Awakening's q4xbase (expansion scenarios)")
     args = parser.parse_args()
     args.output = args.output.resolve()
     if args.output.exists() or not args.output.is_relative_to((ROOT / '.tmp').resolve()):
@@ -190,6 +214,14 @@ def main() -> int:
             capture.SCENARIO_CVARS[scenario]['si_gameType'] = 'CTF'
         if scenario == 'mp-tourney':
             capture.SCENARIO_CVARS[scenario]['si_gameType'] = 'Tourney'
+        # The Awakening's scenarios run its game directory over baseoq4.
+        args.game_dir = 'q4xbase' if scenario in AWAKENING else 'baseoq4'
+        if scenario in AWAKENING:
+            if not args.awakening:
+                parser.error(f'--awakening is required for {scenario}')
+            capture.SCENARIO_CVARS[scenario].update({'fs_awakeningpath': str(args.awakening.resolve()), 'fs_game_base': 'baseoq4',
+                                                     'com_gameMode': 'SP', 'si_gameType': 'singleplayer',
+                                                     'com_nextGameModule': 'game_sp'})
         result = capture.run(args, scenario)
         log = (ROOT / result['log']).read_text(encoding='utf-8', errors='replace') if result['log'] else ''
         result['remastered_warnings'] = [line for line in log.splitlines() if 'Remastered HUD' in line or 'retained:' in line.lower()]

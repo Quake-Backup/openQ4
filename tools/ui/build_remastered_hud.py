@@ -26,6 +26,7 @@ from remastered_hud_status import full, status_bar
 from remastered_hud_objectives import objectives_document
 from remastered_hud_scoreboard import scoreboard_document
 from remastered_hud_vehicle import airdef_document, ride_gauge, vehicle_document
+from remastered_hud_awakening import ship_panel, turret_document
 
 ROOT = Path(__file__).resolve().parents[2]
 OUT = ROOT / "content/baseoq4/pak0/guis/hud"
@@ -59,6 +60,9 @@ def on_foot_document(*, strogg: bool, awakening: bool) -> dict:
     exit_notice, saved, missile_text = notices(doc)
     missile = missile_chevron(doc)
     speed, comments = dev_readouts(doc)
+    # The Awakening's m03 script also sends the ship panel's markers, damage and
+    # warnings to the player's HUD, which the expansion's HUD cannot show.
+    ship = [ship_panel(doc, always=False, cone=False)] if awakening else []
     # Multiplayer draws its gauges from the Marine document (state mp).
     trailing_bottom = [] if strogg or awakening else [powerups(doc)]
 
@@ -72,7 +76,7 @@ def on_foot_document(*, strogg: bool, awakening: bool) -> dict:
     root = full("hud-root", [
         center_box("hud-world", [brackets]),
         anchor(doc, "bc", gauges + [ride, beyond_minimal(doc, "bc-full", [pickups, strip])], scale="hud.centerScale"),
-        anchor(doc, "tr", [beyond_minimal(doc, "tr-full", [radio]), speed]),
+        anchor(doc, "tr", [beyond_minimal(doc, "tr-full", [radio]), speed, *ship]),
         anchor(doc, "tc", [beyond_minimal(doc, "tc-full", [boss, missile_text, exit_notice]), saved]),
         anchor(doc, "cc", [beyond_minimal(doc, "cc-full", [hit, missile])]),
         anchor(doc, "tl", [comments]),
@@ -97,6 +101,7 @@ DOCUMENTS = {
     "remastered_mp.q4ui": mp_document,
     "remastered_vehicle.q4ui": vehicle_document,
     "remastered_airdef.q4ui": airdef_document,
+    "remastered_turret.q4ui": turret_document,
     "remastered_objectives.q4ui": lambda: objectives_document(strogg=False),
     "remastered_objectives_strogg.q4ui": lambda: objectives_document(strogg=True),
     "remastered_scoreboard.q4ui": scoreboard_document,

@@ -212,6 +212,16 @@ static void CheckRemasteredHud(ScreenHost& host, const char* path, const std::st
 	runtime.Frame(RemasteredViewport(1280,720),8.15);
 	Check(Shown(runtime,"bc-full") && Shown(runtime,"tr-full") && Shown(runtime,"tc-full") && Shown(runtime,"cc-full"),
 		"Remastered brings them back");
+
+	// The Awakening's m03 script also sends the ship panel to the player's HUD.
+	if (id.find(".awakening") != std::string::npos) {
+		Check(!Shown(runtime,"ship"),"the ship panel waits for the script");
+		Check(runtime.RunEvent("ship_target_01_on",8.2,effects,error),"a marker reaches the player's HUD");
+		runtime.Frame(RemasteredViewport(1280,720),8.25);
+		Bounds cone;
+		Check(Shown(runtime,"ship") && Shown(runtime,"ship-target1") && !runtime.GetBounds("ship-cone",cone),
+			"on foot the panel appears without the gun's view cone");
+	}
 	Check(host.errors == 0,"no runtime diagnostics across the HUD exercise");
 	runtime.Shutdown();
 }
@@ -551,6 +561,69 @@ static void CheckRemasteredAirdefHud(ScreenHost& host, const char* path) {
 	Check(!Shown(runtime,"vpr"),"leaving clears the prompt");
 	Check(host.errors == 0,"no runtime diagnostics across the cannon exercise");
 	host.softFocus = false;
+	runtime.Shutdown();
+}
+
+// The Awakening's space cannon (turretplayerhud.gui, 14.12): the ship-status
+// panel under the transmission display with its damage, markers, darts and
+// view cone, and the HUD prompt the turret HUD lacked.
+static void CheckRemasteredTurretHud(ScreenHost& host, const char* path) {
+	const auto source = Read(path);
+	Document document; std::vector<Diagnostic> diagnostics;
+	if (!document.Load(source,diagnostics)) for (const auto& d : diagnostics) std::fprintf(stderr,"%s %u:%u %s\n",path,unsigned(d.line),unsigned(d.column),d.message.c_str());
+	Check(diagnostics.empty() && document.Model().id == "openq4.hud.remastered.turret","Remastered space cannon HUD validates");
+	RemasteredLayoutPreference(host,1);
+	Runtime runtime(host);
+	Check(runtime.Initialize(),"retained runtime");
+	Check(runtime.LoadDocument(source,"guis/hud/remastered_turret.q4ui",diagnostics),"Remastered space cannon HUD loads into a runtime");
+	std::string error;
+	Runtime::EventEffects effects;
+	StateValues values = RemasteredLayout(1280,720);
+	values.insert({{"oq4_key_jump",std::string("SPACE")}});
+	Check(runtime.SetState(values,error,0),error.c_str());
+	Check(runtime.RunEvent("hudJoin",0,effects,error),"the join program runs");
+	runtime.Frame(RemasteredViewport(1280,720),.1);
+	Check(host.errors == 0,"the space cannon HUD frames without runtime errors");
+	// The panel: the stock 128 u box at 512,32 of the top-trailing anchor.
+	Bounds panel;
+	Check(Shown(runtime,"ship") && runtime.GetBounds("ship",panel) && Near(panel.x,320+512*1.5f,1.f) && Near(panel.y,32*1.5f,1.f) &&
+		Near(panel.width,128*1.5f,1.f),"the ship panel sits under the transmission display");
+	Bounds gauge;
+	Check(!runtime.GetBounds("health-gauge",gauge) && !runtime.GetBounds("strip",gauge),"the gun keeps no gauges or weapon strip");
+	Check(Shown(runtime,"vpr") && Shown(runtime,"vpr-exit"),"the crewed gun shows Exit at once");
+	// Damage: each section lights on its event and clears on its _off.
+	Check(runtime.RunEvent("ship_health_01_on",.2,effects,error) && runtime.RunEvent("ship_health_02_on",.2,effects,error),"damage runs");
+	runtime.Frame(RemasteredViewport(1280,720),.25);
+	Check(Shown(runtime,"ship-damage1") && Shown(runtime,"ship-damage2") && !Shown(runtime,"ship-damage3"),"the damaged sections light");
+	Check(runtime.RunEvent("ship_health_01_off",.3,effects,error),"a repair runs");
+	runtime.Frame(RemasteredViewport(1280,720),.35);
+	Check(!Shown(runtime,"ship-damage1") && Shown(runtime,"ship-damage2"),"a repaired section clears");
+	// A marker spins at 0.35 turn a second.
+	Check(runtime.RunEvent("ship_target_03_on",.4,effects,error),"a marker runs");
+	runtime.Frame(RemasteredViewport(1280,720),.4);
+	runtime.Frame(RemasteredViewport(1280,720),.9);
+	const auto spin = runtime.PresentedValue("ship-target3","transform");
+	Check(Shown(runtime,"ship-target3") && !Shown(runtime,"ship-target1") && spin && std::fabs(float(spin->data[4])) > 40,
+		"the objective marker shows and spins");
+	// A dart pulses while it fades over 3 s.
+	Check(runtime.RunEvent("warning_NE",1.0,effects,error),"a warning runs");
+	runtime.Frame(RemasteredViewport(1280,720),1.01);
+	const auto lit = runtime.PresentedValue("ship-warn-NE","opacity");
+	Check(lit && float(lit->data[0]) > .8,"the dart lights");
+	runtime.Frame(RemasteredViewport(1280,720),4.2);
+	const auto faded = runtime.PresentedValue("ship-warn-NE","opacity");
+	Check(faded && float(faded->data[0]) < .01,"the dart has faded after 3 s");
+	// The view cone follows the gun relative to the ship's nose.
+	Check(runtime.SetState({{"playerYaw",120.0},{"oq4_shipYaw",90.0}},error,4.3),error.c_str());
+	runtime.Frame(RemasteredViewport(1280,720),4.35);
+	const auto cone = runtime.PresentedValue("ship-cone","transform");
+	Check(cone && Near(float(cone->data[4]),-30,.01f),"the cone turns with the gun's heading off the nose");
+	// Minimal keeps the panel and the prompt.
+	RemasteredLayoutPreference(host,2);
+	runtime.Frame(RemasteredViewport(1280,720),4.4);
+	Check(!Shown(runtime,"tr-full") && Shown(runtime,"ship") && Shown(runtime,"vpr"),"Minimal keeps the ship panel and the prompt");
+	RemasteredLayoutPreference(host,1);
+	Check(host.errors == 0,"no runtime diagnostics across the space cannon exercise");
 	runtime.Shutdown();
 }
 

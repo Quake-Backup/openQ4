@@ -103,7 +103,10 @@ alpha's own code:
 - **Displays.** The race clock counts down on the speeder bike's HUD (m07), the
   MCC's health shows on the MCC cannon's (m06), the bike's dashboard shows your
   speed, the dropship status panel's view cone turns with your view (m03), and
-  the crosshair shows when a marine is too busy to talk.
+  the crosshair shows when a marine is too busy to talk. With the Remastered HUD
+  the dropship guns (m03) show the ship-status panel under the radio display,
+  with its damage, objective markers and attack warnings, and an Exit prompt;
+  the same panel appears on your own HUD while you move about the dropship.
 
 ## Fixes to the alpha
 
