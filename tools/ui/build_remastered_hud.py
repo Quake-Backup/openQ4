@@ -17,7 +17,7 @@ import json
 from pathlib import Path
 
 import build_retained_screens as ui
-from remastered_hud_base import AND, NOT, S, HudDocument, anchor, beyond_minimal, layout_state, op
+from remastered_hud_base import AND, NOT, S, HudDocument, anchor, beyond_minimal, join_events, layout_state, op
 from remastered_hud_groups import (boss_bar, dev_readouts, hit_indicator, interactive_brackets, missile_chevron, notices,
                                    pickup_lines, powerups, transmission, weapon_strip)
 from remastered_hud_lint import lint
@@ -25,7 +25,7 @@ from remastered_hud_mp import mp_document
 from remastered_hud_status import full, status_bar
 from remastered_hud_objectives import objectives_document
 from remastered_hud_scoreboard import scoreboard_document
-from remastered_hud_vehicle import ride_gauge, vehicle_document
+from remastered_hud_vehicle import airdef_document, ride_gauge, vehicle_document
 
 ROOT = Path(__file__).resolve().parents[2]
 OUT = ROOT / "content/baseoq4/pak0/guis/hud"
@@ -78,10 +78,15 @@ def on_foot_document(*, strogg: bool, awakening: bool) -> dict:
         anchor(doc, "tl", [comments]),
         anchor(doc, "br", [beyond_minimal(doc, "br-full", trailing_bottom)] if trailing_bottom else []),
     ])
+    # The stock windows that hold an event's lasting effect (hud.gui and its family).
+    ride = ("p_tram::visible", "enterTram") if strogg else ("p_flatbed::visible", "enterFlatbed")
+    joins = join_events(doc, [("desktop::hidden", "hideHud"), ("p_radio::visible", "radioChatterUp"),
+                              ("BossBar::visible", "showBossBar"), ("p_boss_shield_bar_left::visible", "showBossShieldBar"),
+                              ("brackets::visible", "showBrackets"), ("missile_indicator::visible", "missileThreatUp"), ride])
     return doc.build(root, {"canvas": {"height": 720, "minWidth": 960},
                             "extensions": {"openq4": {"reference": "ui-visual-design.md 14.3-14.12",
                                                       "stock": "guis/hud_strogg.gui" if strogg else "guis/hud.gui",
-                                                      "awakening": awakening}}})
+                                                      "awakening": awakening, "joinEvents": joins}}})
 
 
 DOCUMENTS = {
@@ -91,6 +96,7 @@ DOCUMENTS = {
     "remastered_strogg_awakening.q4ui": lambda: on_foot_document(strogg=True, awakening=True),
     "remastered_mp.q4ui": mp_document,
     "remastered_vehicle.q4ui": vehicle_document,
+    "remastered_airdef.q4ui": airdef_document,
     "remastered_objectives.q4ui": lambda: objectives_document(strogg=False),
     "remastered_objectives_strogg.q4ui": lambda: objectives_document(strogg=True),
     "remastered_scoreboard.q4ui": scoreboard_document,

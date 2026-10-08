@@ -36,6 +36,7 @@ places.
 | `guis/mphud.gui` | `remastered_mp.q4ui` | Kill feed, standing, team panels with flags and zone, timer, center column notices, aim text, vote, voice, chat lines, follow card, respawn prompt, Tourney strip, statistics card, Arena ceremony, lag notice |
 | `guis/hud.gui` while riding the flatbed, `guis/hud_strogg.gui` on the tram | (the on-foot documents) | The ride's silhouette gauge replaces the three gauges (`enterFlatbed`/`enterTram`), traced from the stock truck and tram art |
 | `guis/vehicles/hud.gui` | `remastered_vehicle.q4ui` | The walker's and hover tank's status bar (ARMOR and SHIELDS gauges, weapon panel, rocket count, charge bar), entry lines, hit flash, electrical warning, HUD prompt (Exit or Vehicle locked), transmission display, boss bar, notices |
+| `guis/vehicles/airdef_cannon.gui` | `remastered_airdef.q4ui` | The air-defence cannon: the retained nailgun lens held still (Gaussian focus beyond the aperture) with its two crescent load bars and amber reticle, the transmission display the stock lacks, the HUD prompt (Exit or Vehicle locked) in place of the centered exit line, and the save notice |
 | `guis/wristcomm.gui`, `guis/wristcomm_strogg.gui` | `remastered_objectives.q4ui`, `remastered_objectives_strogg.q4ui` | Objectives display (every objective, three at a time, a COMPLETED section), new-objective and objective-complete notices, OBJECTIVE FAILED |
 | `guis/scoreboard.gui` | `remastered_scoreboard.q4ui` | The held scoreboard: soft backing, server header, your place, your team's panel, the other team's and the spectators', rows with your marker, DEATHS, ping bars, dead players and bots, and the footer; in Tourney the bracket tree (closed outlines, elbow connectors, your arena in aqua, finished arenas in blue, EMPTY arenas) over the players and spectators lists |
 
@@ -52,6 +53,13 @@ so their scripts, timers and presentation aliases stay where the stock layout
 expects them. On its first frame the peer joins the stock GUI's dictionary.
 Named events sent before that frame (a vehicle's boarding events arrive before
 its HUD is first drawn) are queued, up to 32, and replayed after the join.
+State that only events carry survives a peer rebuilt mid-game (the layout
+switched to Classic and back): a document's `extensions.openq4.joinEvents`
+pairs a stock window variable with the event that set it (`exit_msg::visible`
+with Exit, `p_radio::visible` with the transmission display, `desktop::hidden`
+with `hideHud`), and the peer replays the event at its join when the variable
+holds (`!` inverts the test). The generator refuses an event the document does
+not answer.
 Strings cross over with color escapes removed and `^ik` key escapes resolved
 to key names. A mod that ships its own stock-named GUI keeps it.
 
@@ -123,16 +131,15 @@ and frame costs for a document.
 - `tools/ui/capture_remastered_hud.py --assets <Quake 4> --output .tmp/<dir>
   --scenario <name>` captures windowed gameplay without host input: `marine`,
   `strogg`, `objectives`, `tank` (convoy1, boarding through the actor's
-  `enterVehicle` script event), `mp` (with the scoreboard and the respawn
+  `enterVehicle` script event), `airdef` (mcc_landing's cannon, boarded the
+  same way), `mp` (with the scoreboard and the respawn
   prompt after `kill 0`) and `mp-ctf` (with the scoreboard), and the
   `mp-pace`/`sp-pace` profiles.
 
 ## Open work
 
 - The match summary (section 14.14), the scoreboard's scrolling past 16
-  rows, the air-defence cannon (its exit line needs per-window suppression of
-  the stock drawing before a prompt can replace it), The Awakening's space
-  cannon, MCC cannon, speeder and GEV displays, the chat entry line (an
+  rows, The Awakening's space cannon, MCC cannon, speeder and GEV displays, the chat entry line (an
   interactive field, which belongs with the retained menu input) still draw
   their stock layout through the presentation bridge.
 - The Objectives hold/toggle setting and touch toggle are not implemented.

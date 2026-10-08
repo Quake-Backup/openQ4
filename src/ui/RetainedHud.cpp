@@ -163,6 +163,8 @@ constexpr RemasteredRoute RemasteredRoutes[]={
 	{"guis/mphud.gui","guis/hud/remastered_mp.q4ui"},
 	// The walker's and the hover tank's shared vehicle HUD (14.12).
 	{"guis/vehicles/hud.gui","guis/hud/remastered_vehicle.q4ui"},
+	// The air-defence cannon's optic, transmission display and HUD prompt (14.12).
+	{"guis/vehicles/airdef_cannon.gui","guis/hud/remastered_airdef.q4ui"},
 	// The objectives display and its notices (14.11).
 	{"guis/wristcomm.gui","guis/hud/remastered_objectives.q4ui"},
 	{"guis/wristcomm_strogg.gui","guis/hud/remastered_objectives_strogg.q4ui"},
@@ -189,6 +191,12 @@ struct idRemasteredHud::Impl {
 	// Named events sent before the document loads (a vehicle's boarding
 	// events precede its HUD's first frame), replayed in order after the join.
 	std::vector<std::string> pending;
+	// Events whose effect outlasts them (extensions.openq4.joinEvents): when a
+	// stock window variable holds at the join ("!" inverts the test), the event
+	// replays, so a peer rebuilt mid-game - the layout switched to Classic and
+	// back while a vehicle is crewed or a transmission plays - shows what the
+	// stock windows show. A variable the stock GUI lacks is skipped.
+	std::vector<std::pair<std::string,std::string>> joinEvents;
 	// ui_hudProfile accumulators
 	double forwardMs=0,eventMs=0,stateMs=0,drawMs=0,unseenMs=0;
 	int forwards=0,events=0,frames=0;
@@ -208,6 +216,11 @@ struct idRemasteredHud::Impl {
 		Json::CharReaderBuilder builder; builder["allowComments"]=true;
 		std::unique_ptr<Json::CharReader> reader(builder.newCharReader());
 		if (!reader->parse(source.data(),source.data()+source.size(),&data,&error) || !data.isObject()) return false;
+		const Json::Value& joins=data["extensions"]["openq4"]["joinEvents"];
+		if (joins.isArray()) for (const auto& pair:joins) {
+			if (pair.isArray() && pair.size()==2 && pair[0].isString() && pair[1].isString())
+				joinEvents.emplace_back(pair[0].asString(),pair[1].asString());
+		}
 		const Json::Value& state=data["state"];
 		if (!state.isObject()) return true;
 		for (const auto& name:state.getMemberNames()) {
@@ -342,6 +355,12 @@ bool idRemasteredHud::Draw(const idUserInterfaceLocal& legacy,int time) {
 			impl->Forward(entry->GetKey().c_str(),entry->GetValue().c_str());
 		}
 		impl->gui->HandleNamedEvent("hudJoin");
+		for (const auto& [variable,event]:impl->joinEvents) {
+			const bool invert=variable.starts_with('!');
+			idStr value;
+			if (legacy.GetPresentationValue(variable.c_str()+(invert ? 1 : 0),value) && (atof(value.c_str())!=0)!=invert)
+				impl->gui->HandleNamedEvent(event.c_str());
+		}
 		for (const auto& name:impl->pending) impl->gui->HandleNamedEvent(name.c_str());
 		impl->pending.clear();
 	}

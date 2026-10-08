@@ -84,6 +84,26 @@ def in_vehicle(vehicle):
     ]
 
 
+def cannon():
+    """The air-defence cannon (guis/vehicles/airdef_cannon.gui), which the
+    player crews in mcc_landing once the map hands it over: boarding through
+    the actor's enterVehicle script event, as the map's shootDoor() does, then
+    the stock events drive the transmission display and the prompt's lock."""
+    gui = 'guis/vehicles/airdef_cannon.gui'
+    return [
+        # The map's AI gunner holds the gun until maintainBigGun() ends; clearing its
+        # flag lets the loop remove the gunner and unlock the gun, as the level does.
+        'set g_autoExecAfterMapLoad ""', 'notarget', 'god', 'waitMsec 3000',
+        'script "map_mcc_landing::g_bigGunActive = 0"', 'waitMsec 14000',
+        'script "$player1.enterVehicle($vehicle_airdefense_big_gun_1)"', 'waitMsec 1500', shot('cannon'),
+        *hud(gui, 'state rhinochatter 1', 'event radioChatterUp'), 'waitMsec 700', shot('cannon-radio'),
+        *hud(gui, 'event radioChatterDown', 'event showLockmessage'), 'waitMsec 200', shot('cannon-locked'),
+        *hud(gui, 'event hideLockmessage'),
+        'set ui_hudLayout 0', 'waitMsec 400', shot('cannon-classic'), 'set ui_hudLayout 1', 'waitMsec 400', shot('cannon-restored'),
+        'set ui_hudLayout 2', 'waitMsec 400', shot('cannon-minimal'), 'set ui_hudLayout 1',
+    ]
+
+
 def objectives(gui):
     """The objectives display through the held scores button (the game
     publishes the list), then the notices and a failure through the stock
@@ -106,6 +126,7 @@ SCENARIOS = {
     'marine': ('game/airdefense1', on_foot('guis/hud.gui')),
     'objectives': ('game/airdefense1', objectives('guis/wristcomm.gui')),
     'tank': ('game/convoy1', in_vehicle('tank_1')),
+    'airdef': ('game/mcc_landing', cannon()),
     'strogg': ('game/recomp', on_foot('guis/hud_strogg.gui')),
     'mp': ('mp:mp/q4dm1', [
         'set g_autoExecAfterMapLoad ""', 'waitMsec 2500', shot('mp-base'),

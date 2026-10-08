@@ -355,7 +355,8 @@ With the Remastered HUD layout (the default) the whole HUD follows your screen:
 the status bar stays centered on the bottom edge, the radio sits in the top-right
 corner, objective notices use the top corners, and multiplayer's kill feed,
 standing, timer and chat keep to the edges. Vehicles get the same centered status
-bar with an Exit prompt naming your jump key, the objectives display lists every
+bar with an Exit prompt naming your jump key (the air-defence cannon keeps its
+scope and adds the radio display), the objectives display lists every
 objective with the completed ones below, and the scoreboard adds your place, ping
 bars and the Tourney bracket. After you die in multiplayer, a Respawn prompt
 names your attack key once you can return, with a countdown while overtime

@@ -385,6 +385,17 @@ def layout_state(doc: HudDocument) -> None:
     doc.cvar("hud.layout", "ui_hudLayout", "number", 1)
 
 
+def join_events(doc: HudDocument, pairs: list) -> list:
+    """extensions.openq4.joinEvents: [stock window variable, event] pairs the
+    engine peer replays when the variable holds at its join ("!" inverts),
+    so state that only events carry survives a peer rebuilt mid-game (the
+    layout switched to Classic and back). Each event must be one the document
+    answers."""
+    for variable, event in pairs:
+        assert event in doc.events, f"join event {event} has no handler"
+    return [list(pair) for pair in pairs]
+
+
 def beyond_minimal(doc: HudDocument, ident: str, children: list) -> dict:
     """Groups the Minimal layout leaves out (section 13.9, ui_hudLayout 2).
     Minimal keeps health, armor, ammunition and the crosshair family, plus

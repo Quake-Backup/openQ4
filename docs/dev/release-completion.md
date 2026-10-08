@@ -3,8 +3,8 @@
 ## 0.13.2 release candidate
 
 - [x] Lay out the gameplay HUD in visual specification section 14's Remastered
-  layout: the on-foot, multiplayer, walker and hover tank, flatbed and tram,
-  objectives and scoreboard (Tourney included) HUDs answer the stock GUIs' state
+  layout: the on-foot, multiplayer, walker and hover tank, air-defence cannon,
+  flatbed and tram, objectives and scoreboard (Tourney included) HUDs answer the stock GUIs' state
   and events from generated retained documents, with the fields the stock GUIs
   lack published by the game, and multiplayer adds the respawn prompt. The
   Minimal preset (`ui_hudLayout 2`) keeps the readouts, the crosshair and what

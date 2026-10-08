@@ -730,6 +730,9 @@ rows). Event replay before a HUD's first frame, copy-on-write motion values
 with undoable event sampling, and frame-only incremental motion application
 keep the large documents cheap. `openq4-ui-remastered-hud` checks every
 document; captures cover gameplay in single player, multiplayer, a vehicle and
-the objectives. The scoreboard includes Tourney's bracket tree. The match
-summary, the chat entry, the air-defence cannon and The Awakening's vehicle
-displays remain on the stock layout.
+the objectives. The scoreboard includes Tourney's bracket tree. Later the same
+day multiplayer gained the respawn prompt, the Minimal preset arrived
+(`ui_hudLayout 2`), Settings > Game Options gained a HUD section, and the
+air-defence cannon gained its Remastered optic with the transmission display
+and the HUD prompt. The match summary, the chat entry and The Awakening's
+vehicle displays remain on the stock layout.

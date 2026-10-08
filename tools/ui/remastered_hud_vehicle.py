@@ -16,9 +16,11 @@ key. The game publishes the jump key (oq4_key_jump) beside the stock fields.
 """
 from __future__ import annotations
 
+import build_retained_scopes as scopes
 import build_retained_screens as ui
 import hud_svg
-from remastered_hud_base import (AND, NOT, OR, S, U, HudDocument, anchor, beyond_minimal, box, layout_state, num, op, play,
+from remastered_hud_base import (AND, NOT, OR, S, U, HudDocument, anchor, beyond_minimal, box, join_events, layout_state, num,
+                                 op, play,
                                  cancel, pts_path,
                                  rgb, rounded_rect, sel, shadowed, shear_group, sheared_points, stroke, svg_path, text_box,
                                  tr, transform_value, u, vec)
@@ -422,6 +424,8 @@ def vehicle_document() -> dict:
     hit = hit_flash(doc)
     elec_l, elec_r = electric_warning(doc)
     doc.on("showExitmessage", {"op": "setState", "values": {"oq4.vehicle": True}}, *show_lines)
+    # A rebuilt peer rejoins a crewed vehicle without replaying the entry lines.
+    doc.on("oq4_joinVehicle", {"op": "setState", "values": {"oq4.vehicle": True}})
     doc.on("hideExitmessage", {"op": "setState", "values": {"oq4.vehicle": False}}, *hide_lines)
     doc.on("showLockmessage", {"op": "setState", "values": {"oq4.locked": True}})
     doc.on("hideLockmessage", {"op": "setState", "values": {"oq4.locked": False}})
@@ -438,9 +442,86 @@ def vehicle_document() -> dict:
         anchor(doc, "cc", [beyond_minimal(doc, "cc-full", [missile])]),
         anchor(doc, "br", [prompt]),
     ])
+    joins = join_events(doc, [("exit_msg::visible", "oq4_joinVehicle"), ("lock_msg::visible", "showLockmessage"),
+                              ("p_radio::visible", "radioChatterUp"), ("missile_indicator::visible", "missileThreatUp"),
+                              ("left_elecwarn::visible", "electricWarningOn"), ("BossBar::visible", "showBossBar"),
+                              ("p_boss_shield_bar_left::visible", "showBossShieldBar")])
     return doc.build(root, {"canvas": {"height": 720, "minWidth": 960},
                             "extensions": {"openq4": {"reference": "ui-visual-design.md 14.8, 14.12",
-                                                      "stock": "guis/vehicles/hud.gui"}}})
+                                                      "stock": "guis/vehicles/hud.gui", "joinEvents": joins}}})
+
+
+# ------------------------------------------------------------ the air-defence cannon
+
+def load_bar(ident: str, mirror: bool) -> list:
+    """A crescent load bar (the atlas's air-defence bow) inside the lens's
+    trailing edge, mirrored for the leading one: an #E6780B edge over #FF6C0B
+    at 0.40. The stock binds the bars to nothing, so they stay full."""
+    def p(x, y):
+        return [round(U * (640 - x if mirror else x), 4), round(U * y, 4)]
+    cmds = [{"id": "a", "op": "move", "points": [p(546, 145)]},
+            {"id": "b", "op": "quadratic", "points": [p(584.5, 240.5), p(541, 334)]},
+            {"id": "c", "op": "line", "points": [p(537, 330)]},
+            {"id": "d", "op": "quadratic", "points": [p(566.5, 241), p(542, 152)]},
+            {"id": "e", "op": "close"}]
+    return [{"id": ident + "-fill", "commands": cmds, "fill": ui.solid(ui.rgb("#FF6C0B", 0.4))},
+            {"id": ident + "-edge", "commands": cmds, "fill": {"type": "none"},
+             "stroke": {"paint": ui.solid(ui.rgb("#E6780B")), "widthDp": round(U * 1.6, 4), "minimumPixels": 0, "join": "round"}}]
+
+
+def airdef_lens() -> list:
+    """The cannon's optic: the retained nailgun scope's amber lens held still
+    (Gaussian focus beyond r 255, the glow at its resting tint, the notched
+    ring in black 0.34 without the yaw, the hooks, bands and hairline, haze
+    beyond), the two load bars and the crosshair_nailgun reticle, 50 u in
+    #E6780B. The optic fits the view's height or width like every scope, and
+    the haze fills the exposed bands."""
+    stops = [(144, 0), (168, .07), (192, .255), (216, .57), (240, .97), (252, 1), (264, .69), (276, 0)]
+    glow = scopes.art("ad-glow", scopes.radial("ad-glow", stops, "#533200", "additive"), opacity=ui.number(.44))
+    ring2 = scopes.art("ad-ring2", [scopes.measured("nail_ring2", [0, 0, 0, .34])])
+    haze = scopes.art("ad-haze", scopes.radial("ad-haze", [(291.5, .08), (310, .24), (332, .4), (356, .5)], "#828282"))
+    marks = scopes.art("ad-marks", [scopes.measured("nail_hook", [0, 0, 0, .5]),
+                                    scopes.ring("band1", 263, 15, ui.rgb("#020202", .5)),
+                                    scopes.ring("edge", 272, 2.4, [0, 0, 0, 1]),
+                                    scopes.ring("band2", 282.5, 18, ui.rgb("#020202", .71)),
+                                    scopes.ring("hairline", 218.1, 2.2, ui.rgb("#3C2500"), "additive")])
+    bars = scopes.art("ad-load", load_bar("lead", True) + load_bar("trail", False))
+    reticle = hud_svg.icon_nodes("crosshair_nailgun", "ad-reticle", U * 295, U * 215, U * 50, tint=ui.rgb("#E6780B"),
+                                 family="crosshairs")
+    return [scopes.lens_focus(255), scopes.surround("ad-outer-haze", scopes.circle(356), ui.rgb("#828282", .5)),
+            scopes.center("ad-optic", [glow, ring2, haze, marks, bars, *reticle])]
+
+
+def airdef_document() -> dict:
+    """The air-defence cannon (guis/vehicles/airdef_cannon.gui, 14.12). The
+    stock draws a static amber scope overlay with two load bars and its own
+    reticle and centres its exit line. Remastered keeps the optic, adds the
+    transmission display the cannon's HUD lacks at the top-trailing corner,
+    sets the HUD prompt (Exit, or a lock and Vehicle locked) bottom-trailing in
+    place of the exit line and keeps the save notice."""
+    doc = HudDocument("openq4.hud.remastered.airdef")
+    layout_state(doc)
+    lens = airdef_lens()
+    radio = transmission(doc, strogg=False, emblem="radio_rhino")
+    exit_notice, saved, missile_text = notices(doc)
+    prompt = hud_prompt(doc)
+    doc.on("showExitmessage", {"op": "setState", "values": {"oq4.vehicle": True}})
+    doc.on("hideExitmessage", {"op": "setState", "values": {"oq4.vehicle": False}})
+    doc.on("showLockmessage", {"op": "setState", "values": {"oq4.locked": True}})
+    doc.on("hideLockmessage", {"op": "setState", "values": {"oq4.locked": False}})
+    doc.on("hudJoin", *doc.joins)
+    doc.on("onInit", *doc.joins)
+    # Minimal (ui_hudLayout 2) keeps the optic, the prompt and the save notice.
+    root = full("hud-root", [
+        *lens,
+        anchor(doc, "tr", [beyond_minimal(doc, "tr-full", [radio])]),
+        anchor(doc, "tc", [beyond_minimal(doc, "tc-full", [exit_notice, missile_text]), saved]),
+        anchor(doc, "br", [prompt]),
+    ])
+    joins = join_events(doc, [("exit_msg::visible", "showExitmessage"), ("lock_msg::visible", "showLockmessage")])
+    return doc.build(root, {"canvas": {"height": 720, "minWidth": 960},
+                            "extensions": {"openq4": {"reference": "ui-visual-design.md 14.12",
+                                                      "stock": "guis/vehicles/airdef_cannon.gui", "joinEvents": joins}}})
 
 # ------------------------------------------------------------------ ride gauges
 

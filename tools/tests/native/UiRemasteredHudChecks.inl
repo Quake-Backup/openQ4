@@ -482,6 +482,78 @@ static void CheckRemasteredVehicleHud(ScreenHost& host, const char* path) {
 	runtime.Shutdown();
 }
 
+// The air-defence cannon (guis/vehicles/airdef_cannon.gui, 14.12): the nailgun
+// lens held still with its load bars and reticle, the transmission display the
+// stock lacks, and the HUD prompt in place of the centred exit line.
+static void CheckRemasteredAirdefHud(ScreenHost& host, const char* path) {
+	const auto source = Read(path);
+	Document document; std::vector<Diagnostic> diagnostics;
+	if (!document.Load(source,diagnostics)) for (const auto& d : diagnostics) std::fprintf(stderr,"%s %u:%u %s\n",path,unsigned(d.line),unsigned(d.column),d.message.c_str());
+	Check(diagnostics.empty() && document.Model().id == "openq4.hud.remastered.airdef","Remastered air-defence HUD validates");
+	RemasteredLayoutPreference(host,1);
+	Runtime runtime(host);
+	Check(runtime.Initialize(),"retained runtime");
+	Check(runtime.LoadDocument(source,"guis/hud/remastered_airdef.q4ui",diagnostics),"Remastered air-defence HUD loads into a runtime");
+	std::string error;
+	Runtime::EventEffects effects;
+	host.softFocus = true;
+	Check(runtime.SetState(RemasteredLayout(1280,720),error,0),error.c_str());
+	Check(runtime.RunEvent("hudJoin",0,effects,error),"the join program runs");
+	host.softened.clear(); host.draws.clear();
+	runtime.Frame(RemasteredViewport(1280,720),.1);
+	Check(host.errors == 0 && !host.draws.empty(),"the cannon HUD draws without runtime errors");
+	Bounds optic;
+	Check(runtime.GetBounds("ad-optic",optic) && Near(optic.x,160) && Near(optic.y,0) && Near(optic.width,960) && Near(optic.height,720),
+		"the optic fills the 4:3 center");
+	Check(!host.softened.empty(),"the lens softens the view beyond its aperture");
+	Bounds reticle, load, ring;
+	Check(Shown(runtime,"ad-reticle") && runtime.GetBounds("ad-reticle",reticle) && runtime.GetBounds("ad-load",load) &&
+		runtime.GetBounds("ad-ring2",ring) && Near(load.x,optic.x) && Near(ring.width,optic.width),"the reticle, load bars and ring are laid out in the optic");
+	Check(!Shown(runtime,"vpr") && !Shown(runtime,"radio"),"no prompt or transmission before boarding or chatter");
+
+	// Boarding shows the jump key's Exit; a script's lock shows Vehicle locked.
+	Check(runtime.SetState({{"oq4_key_jump",std::string("SPACE")}},error,.2),error.c_str());
+	Check(runtime.RunEvent("showExitmessage",.2,effects,error),"boarding runs");
+	runtime.Frame(RemasteredViewport(1280,720),.25);
+	Bounds prompt;
+	Check(Shown(runtime,"vpr") && Shown(runtime,"vpr-exit") && !Shown(runtime,"vpr-lock") && runtime.GetBounds("vpr",prompt) &&
+		Near(prompt.x+prompt.width,320+629*1.5f,1.5f),"the HUD prompt trails at 629 u with Exit");
+	const auto key = runtime.PresentedValue("vpr-key","text");
+	Check(key && key->text == "SPACE","the prompt names the jump control");
+	Check(runtime.RunEvent("showLockmessage",.3,effects,error),"a lock runs");
+	runtime.Frame(RemasteredViewport(1280,720),.35);
+	Check(Shown(runtime,"vpr-lock") && !Shown(runtime,"vpr-exit"),"a lock reads Vehicle locked");
+	Check(runtime.RunEvent("hideLockmessage",.4,effects,error),"unlocking runs");
+
+	// The transmission display the stock cannon HUD lacks, and the save notice.
+	Check(runtime.RunEvent("radioChatterUp",.4,effects,error) && runtime.RunEvent("saveMessage",.4,effects,error),"chatter and a save run");
+	runtime.Frame(RemasteredViewport(1280,720),1.2);
+	Check(Shown(runtime,"radio") && Shown(runtime,"saved") && Shown(runtime,"vpr-exit"),"the transmission display and the save notice show");
+
+	// Wide and tall views keep the optic round and centred.
+	Check(runtime.SetState(RemasteredLayout(2560,1080),error,1.3),error.c_str());
+	runtime.Frame(RemasteredViewport(2560,1080),1.35);
+	Check(runtime.GetBounds("ad-optic",optic) && Near(optic.x,560,1.f) && Near(optic.width,1440,1.f) && Near(optic.height,1080,1.f),
+		"at 21:9 the optic keeps its proportions at the center");
+	Check(runtime.SetState(RemasteredLayout(720,1280),error,1.4),error.c_str());
+	runtime.Frame(RemasteredViewport(720,1280),1.45);
+	Check(runtime.GetBounds("ad-optic",optic) && Near(optic.width,720,1.f) && Near(optic.height,540,1.f) && Near(optic.y,370,1.f),
+		"in a tall view the optic fits the width");
+
+	// Minimal keeps the optic, the prompt and the save notice.
+	Check(runtime.SetState(RemasteredLayout(1280,720),error,1.5),error.c_str());
+	RemasteredLayoutPreference(host,2);
+	runtime.Frame(RemasteredViewport(1280,720),1.55);
+	Check(!Shown(runtime,"tr-full") && Shown(runtime,"vpr") && Shown(runtime,"ad-reticle"),"Minimal keeps the optic and the prompt");
+	RemasteredLayoutPreference(host,1);
+	Check(runtime.RunEvent("hideExitmessage",1.6,effects,error),"leaving runs");
+	runtime.Frame(RemasteredViewport(1280,720),1.65);
+	Check(!Shown(runtime,"vpr"),"leaving clears the prompt");
+	Check(host.errors == 0,"no runtime diagnostics across the cannon exercise");
+	host.softFocus = false;
+	runtime.Shutdown();
+}
+
 // The objectives display and notices (wristcomm.gui, 14.11).
 static void CheckRemasteredObjectivesHud(ScreenHost& host, const char* path, bool strogg) {
 	const auto source = Read(path);
