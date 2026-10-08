@@ -1295,6 +1295,7 @@ struct Runtime::Impl {
 			// A large document's state is costly to copy: copy it only when a
 			// source changed. Unchanged sources leave the state as it was.
 			if (!state.WouldChange(changes,true)) ValidModals(state,motion,error);
+			else if (!interaction.HasAuthoredModals()) state.Set(changes,error,true);
 			else {
 				State candidate = state;
 				if (candidate.Set(changes,error,true) && ValidModals(candidate,motion,error)) state = std::move(candidate);
@@ -1604,7 +1605,10 @@ struct Runtime::Impl {
 			// motion wrote since and, when the state changed, the properties
 			// bindings own: a HUD's running trace or a changed readout walks
 			// those, not every authored value.
-			if (stateChanged) for (const auto& [key,value] : state.Properties()) changedKeys.push_back(key);
+			// openQ4: a state change reaches only the bound properties whose
+			// values changed (all of them after a full evaluation).
+			if (stateChanged && !state.TakeChangedProperties(changedKeys))
+				for (const auto& [key,value] : state.Properties()) changedKeys.push_back(key);
 			std::sort(changedKeys.begin(),changedKeys.end());
 			changedKeys.erase(std::unique(changedKeys.begin(),changedKeys.end()),changedKeys.end());
 			Stats().motionInputsScanned += changedKeys.size();
@@ -1618,6 +1622,8 @@ struct Runtime::Impl {
 			return current();
 		}
 		Stats().motionInputsScanned += motion.Values().size();
+		// A complete pass applies every bound value: the change log restarts.
+		{ std::vector<PropertyKey> consumed; state.TakeChangedProperties(consumed); }
 		if (appliedInputs.size() < motion.Values().size()) appliedInputs.resize(motion.Values().size());
 		const bool indexing = inputIndexes.size() != motion.Values().size();
 		if (indexing) inputIndexes.clear();
@@ -1888,9 +1894,16 @@ bool Runtime::SetState(const StateValues& changes, std::string& error, double se
     if(!Mutate())return false;
 
 	if (!impl->canonical) { error = "State updates require a canonical document"; return false; }
-	State candidate = impl->state;
-	if (!candidate.Set(changes,error) || !impl->ValidModals(candidate,impl->motion,error)) return false;
-	impl->state = std::move(candidate);
+	if (!impl->interaction.HasAuthoredModals()) {
+		// openQ4: Set is transactional on its own, and without authored modals
+		// there is nothing else to validate: a HUD's frequent updates no longer
+		// copy the whole state.
+		if (!impl->state.Set(changes,error)) return false;
+	} else {
+		State candidate = impl->state;
+		if (!candidate.Set(changes,error) || !impl->ValidModals(candidate,impl->motion,error)) return false;
+		impl->state = std::move(candidate);
+	}
 	if (std::isfinite(seconds)) impl->time = std::max(impl->time,seconds);
 	impl->ApplyControlBindings(); return true;
 }

@@ -98,8 +98,17 @@ existing document without rebuilding its layout tree or editing source.
 
 Colors remain in 0–1, geometry obeys existing signed/nonnegative rules, keywords
 use the property registry, and font identifiers stay bounded. Unchanged batches
-skip evaluation and retain revision. Changed batches currently evaluate every
-binding; selective dependency invalidation is future work.
+skip evaluation and retain revision. A changed batch evaluates only the bindings
+whose expressions read a changed variable (an index built when the document
+loads), against the committed values overlaid with the batch, and commits once
+every one of them has succeeded; presentation variables and control readbacks
+are evaluated in full when the document declares any. A pending transient
+property or presentation write takes the full evaluation instead, so that
+successful expressions still replace it. The state logs the bound properties
+whose values changed, and the next update applies only those; after a full
+evaluation, a restore or an overflowing log it applies every bound property.
+Without authored modals, `SetState` updates the state in place rather than
+validating a copy.
 
 One binding owns each effective property. A timeline cannot also own that same
 property. Conflicting ownership is a source error: put data-driven geometry or

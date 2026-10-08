@@ -295,6 +295,23 @@ tessellated every frame. Fifteen layers remain, for the 0.4-opacity rails and
 markers and for the glint and its mask. A cold first frame takes 45-50 ms,
 most of it stroke unions, the reticle grid alone 28 ms.
 
+## Gameplay HUD state updates
+
+The game writes HUD state every frame, and the multiplayer document carries
+about 1,700 bindings with the Competitive preset. Each changed batch used to
+copy the whole state, evaluate every binding and then reapply every bound
+property. With dependency-tracked evaluation (see
+[bindings](bindings.md#updates-ownership-and-lifetime)) a batch evaluates and
+applies only what it reaches. The native benchmark
+(`openq4-ui-retained-screens-test --hud-bench`, debugoptimized, one variable
+changed per batch) on `remastered_mp.q4ui`:
+
+| Document | State update | Frame after a change |
+| --- | ---: | ---: |
+| Remastered bindings, every binding evaluated | 0.71 ms | 3.1 ms |
+| With Competitive, every binding evaluated | 1.53 ms | 5.3 ms |
+| With Competitive, dependency-tracked | 0.01 ms | 0.38 ms |
+
 ## Remaining requirements
 
 Fractional motion and cold compilation still need optimized-build profiling,

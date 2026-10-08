@@ -8,8 +8,17 @@
 
 namespace openq4::ui {
 namespace {
+// A state variable read: a pending change (the overlay) before the committed value.
+const StateValue* LookupState(const StateValues& variables, const StateValues* overlay, const std::string& name) {
+	if (overlay) {
+		const auto changed = overlay->find(name);
+		if (changed != overlay->end()) return &changed->second;
+	}
+	const auto found = variables.find(name);
+	return found == variables.end() ? nullptr : &found->second;
+}
 StateValue EvaluateExpression(const Expression& e, const StateValues& variables, const PresentationLookup& presentation = {},
-	const StateValue* input = nullptr) {
+	const StateValue* input = nullptr, const StateValues* overlay = nullptr) {
 	if (e.inputValue) {
 		if (!e.op.empty() || !e.state.empty() || !e.presentation.empty() || !e.args.empty() ||
 			!input || input->index() != e.type || !ValidStateValue(*input))
@@ -27,15 +36,14 @@ StateValue EvaluateExpression(const Expression& e, const StateValues& variables,
 		}
 		const StateValue* value = &e.literal;
 		if (!e.state.empty()) {
-			const auto found = variables.find(e.state);
-			if (found == variables.end()) throw std::runtime_error("Missing state variable '"+e.state+"'");
-			value = &found->second;
+			value = LookupState(variables,overlay,e.state);
+			if (!value) throw std::runtime_error("Missing state variable '"+e.state+"'");
 		}
 		if (value->index() != e.type || !ValidStateValue(*value))
 			throw std::runtime_error(e.state.empty() ? "Invalid compiled expression literal" : "Invalid state type/value for '"+e.state+"'");
 		return *value;
 	}
-	auto arg = [&](size_t i) { return EvaluateExpression(e.args.at(i),variables,presentation,input); };
+	auto arg = [&](size_t i) { return EvaluateExpression(e.args.at(i),variables,presentation,input,overlay); };
 	auto number = [&](size_t i) { return std::get<double>(arg(i)); };
 	auto boolean = [&](size_t i) { return std::get<bool>(arg(i)); };
 	// Selection and boolean operations short-circuit. An unused branch cannot
@@ -77,6 +85,25 @@ StateValue EvaluateExpression(const Expression& e, const StateValues& variables,
 	} else throw std::runtime_error("Unknown compiled expression operation");
 	if (!std::isfinite(value)) throw std::runtime_error("Expression produced a non-finite number");
 	return value;
+}
+bool EvaluateTyped(const Expression& expression, const StateValues& variables, const StateValues* overlay, StateValue& value,
+	std::string& error) {
+	error.clear();
+	try {
+		StateValue candidate = EvaluateExpression(expression,variables,{},nullptr,overlay);
+		if (candidate.index() != expression.type || !ValidStateValue(candidate))
+			throw std::runtime_error("Expression result violates its compiled type or supported value range");
+		value = std::move(candidate); return true;
+	} catch (const std::exception& problem) {
+		error = problem.what(); return false;
+	}
+}
+void CollectStateReads(const Expression& expression, std::vector<std::string>& names) {
+	if (!expression.state.empty()) names.push_back(expression.state);
+	for (const auto& arg : expression.args) CollectStateReads(arg,names);
+}
+bool SameValue(const Value& a, const Value& b) {
+	return a.type == b.type && a.data == b.data && a.unit == b.unit && a.text == b.text;
 }
 }
 bool EvaluateStateExpression(const Expression& expression, const StateValues& variables, StateValue& value, std::string& error,
@@ -136,13 +163,17 @@ bool State::Evaluate(const StateValues& candidate, PropertyValues& props, std::m
 			error = "Binding '"+binding.id+"' ("+binding.node+"."+binding.property+"): "+problem.what(); return false;
 		}
 	}
+	return EvaluateDerived(candidate,nullptr,output,readbacks,error);
+}
+bool State::EvaluateDerived(const StateValues& base, const StateValues* overlay, StatePresentationSnapshot& output,
+	std::map<std::string,ControlReadback>& readbacks, std::string& error) const {
 	for (const auto& [id,declaration] : *presentationDeclarations) {
 		auto& cell = output.variables.at(id);
 		if (cell.expressionDisabled || declaration.expressions.empty()) continue;
 		PresentationValue value = declaration.initial;
 		for (size_t i = 0; i < declaration.expressions.size(); ++i) {
 			StateValue result;
-			if (!EvaluateStateExpression(declaration.expressions[i],candidate,result,error)) {
+			if (!EvaluateTyped(declaration.expressions[i],base,overlay,result,error)) {
 				error = "Presentation variable '"+id+"': "+error; return false;
 			}
 			if (const auto* text = std::get_if<std::string>(&result)) value.text = *text;
@@ -156,7 +187,7 @@ bool State::Evaluate(const StateValues& candidate, PropertyValues& props, std::m
 	for (const auto& [id,control] : *controlDeclarations) {
 		ControlReadback value;
 		const auto reject = [&]() { error = "Control '"+id+"': "+error; return false; };
-		if (!control.value || !EvaluateStateExpression(*control.value,candidate,value.value,error)) {
+		if (!control.value || !EvaluateTyped(*control.value,base,overlay,value.value,error)) {
 			if (error.empty()) error = "Missing authoritative value expression";
 			return reject();
 		}
@@ -165,7 +196,7 @@ bool State::Evaluate(const StateValues& candidate, PropertyValues& props, std::m
 			if (!spec || !std::holds_alternative<bool>(value.value)) { error = "Invalid toggle readback type"; return reject(); }
 			if (spec->mixed) {
 				StateValue mixed;
-				if (!EvaluateStateExpression(*spec->mixed,candidate,mixed,error)) return reject();
+				if (!EvaluateTyped(*spec->mixed,base,overlay,mixed,error)) return reject();
 				const auto* flag = std::get_if<bool>(&mixed);
 				if (!flag) { error = "Mixed state must be Boolean"; return reject(); }
 				value.mixed = *flag;
@@ -183,7 +214,7 @@ bool State::Evaluate(const StateValues& candidate, PropertyValues& props, std::m
 			if (!spec) { error = "Invalid choice readback descriptor"; return reject(); }
 			if (spec->optionCount) {
 				StateValue count;
-				if (!EvaluateStateExpression(*spec->optionCount,candidate,count,error)) return reject();
+				if (!EvaluateTyped(*spec->optionCount,base,overlay,count,error)) return reject();
 				const auto* number = std::get_if<double>(&count);
 				if (!number || !std::isfinite(*number)) { error = "A choice's option count must be a finite number"; return reject(); }
 				value.optionCount = static_cast<std::size_t>(std::clamp(std::floor(*number),0.0,static_cast<double>(spec->options.size())));
@@ -193,14 +224,14 @@ bool State::Evaluate(const StateValues& candidate, PropertyValues& props, std::m
 					error = "Choice option differs from the authoritative value type"; return reject();
 				}
 				StateValue available;
-				if (!EvaluateStateExpression(option.enabled,candidate,available,error)) return reject();
+				if (!EvaluateTyped(option.enabled,base,overlay,available,error)) return reject();
 				const auto* flag = std::get_if<bool>(&available);
 				if (!flag) { error = "Choice availability must be Boolean"; return reject(); }
 				value.enabledOptions.push_back(*flag);
 				std::string label;
 				if (!option.labelState.empty()) {
-					const auto found = candidate.find(option.labelState);
-					const auto* text = found == candidate.end() ? nullptr : std::get_if<std::string>(&found->second);
+					const StateValue* found = LookupState(base,overlay,option.labelState);
+					const auto* text = found == nullptr ? nullptr : std::get_if<std::string>(found);
 					if (!text) { error = "A choice option's label state must hold a string"; return reject(); }
 					label = *text;
 				}
@@ -225,6 +256,17 @@ bool State::Reset(const DocumentModel& model, std::string& error) {
 	};
 	collect(collect,model.root);
 	candidate.controlDeclarations = std::move(controls);
+	// openQ4: index the bindings by the state they read, so a change
+	// re-evaluates only its dependents.
+	auto dependents = std::make_shared<std::map<std::string,std::vector<std::size_t>>>();
+	for (std::size_t index = 0; index < model.bindings.size(); ++index) {
+		std::vector<std::string> names;
+		for (const auto& value : model.bindings[index].values) CollectStateReads(value,names);
+		std::sort(names.begin(),names.end());
+		names.erase(std::unique(names.begin(),names.end()),names.end());
+		for (const auto& name : names) (*dependents)[name].push_back(index);
+	}
+	candidate.dependents = std::move(dependents);
 	for (const auto& [id,declaration] : model.presentationVariables)
 		candidate.presentation.variables[id] = {declaration.initial,false};
 	for (const auto& [id,declaration] : model.state) candidate.variables[id] = declaration.initial;
@@ -265,6 +307,14 @@ bool State::SetCombined(const StateValues& application, const StateValues& hostS
 	};
 	if (!validate(application,false) || !validate(hostSources,true)) return false;
 	if (!changed && !presentationDirty) return true;
+	if (!presentationDirty) {
+		// No transient write awaits evaluation: re-evaluate the dependents of
+		// the variables that changed, in place once all of them succeed.
+		StateValues overlay;
+		for (const auto* batch : {&application,&hostSources}) for (const auto& [id,value] : *batch)
+			if (variables.at(id) != value) overlay[id] = value;
+		return SetIncremental(overlay,error);
+	}
 	StateValues candidate = variables;
 	for (const auto* batch : {&application,&hostSources}) for (const auto& [id,value] : *batch) candidate[id] = value;
 	PropertyValues props;
@@ -275,7 +325,68 @@ bool State::SetCombined(const StateValues& application, const StateValues& hostS
 	variables = std::move(candidate); properties = std::move(props); enabled = std::move(controls); ++revision;
 	controlValues = std::move(readbacks);
 	presentation = std::move(nextPresentation); presentationDirty = false;
+	MarkAllChanged();
 	return true;
+}
+bool State::SetIncremental(const StateValues& overlay, std::string& error) {
+	std::vector<std::size_t> affected;
+	for (const auto& [id,value] : overlay) {
+		const auto found = dependents->find(id);
+		if (found != dependents->end()) affected.insert(affected.end(),found->second.begin(),found->second.end());
+	}
+	std::sort(affected.begin(),affected.end());
+	affected.erase(std::unique(affected.begin(),affected.end()),affected.end());
+	std::vector<std::pair<PropertyKey,Value>> updates;
+	std::vector<std::pair<std::string,bool>> controlUpdates;
+	for (const auto index : affected) {
+		const auto& binding = (*bindings)[index];
+		try {
+			if (binding.property == "enabled") {
+				controlUpdates.emplace_back(binding.node,std::get<bool>(EvaluateExpression(binding.values.front(),variables,{},nullptr,&overlay)));
+				continue;
+			}
+			PropertyKey key{binding.node,binding.property};
+			// A disabled expression keeps its written value (no transient write
+			// is pending on this path).
+			const auto override = presentation.properties.find(key);
+			if (override != presentation.properties.end() && override->second.expressionDisabled) continue;
+			Value value = binding.prototype;
+			for (size_t i = 0; i < binding.values.size(); ++i) {
+				const auto result = EvaluateExpression(binding.values[i],variables,{},nullptr,&overlay);
+				if (result.index() == 2) value.text = std::get<std::string>(result);
+				else value.data[i] = std::get<double>(result);
+			}
+			if (!ValidProperty(binding.property,value)) throw std::runtime_error("Result violates the target property's type or range");
+			updates.emplace_back(std::move(key),std::move(value));
+		} catch (const std::exception& problem) {
+			error = "Binding '"+binding.id+"' ("+binding.node+"."+binding.property+"): "+problem.what(); return false;
+		}
+	}
+	const bool derived = !presentationDeclarations->empty() || !controlDeclarations->empty();
+	StatePresentationSnapshot nextPresentation;
+	std::map<std::string,ControlReadback> readbacks;
+	if (derived) {
+		nextPresentation = presentation;
+		if (!EvaluateDerived(variables,&overlay,nextPresentation,readbacks,error)) return false;
+	}
+	for (const auto& [id,value] : overlay) variables[id] = value;
+	for (auto& [key,value] : updates) {
+		auto& current = properties[key];
+		if (SameValue(current,value)) continue;
+		current = std::move(value);
+		if (!allPropertiesChanged) changedProperties.push_back(key);
+	}
+	for (const auto& [node,flag] : controlUpdates) enabled[node] = flag;
+	if (derived) { presentation = std::move(nextPresentation); controlValues = std::move(readbacks); }
+	++revision;
+	if (changedProperties.size() > bindings->size()) MarkAllChanged();
+	return true;
+}
+bool State::TakeChangedProperties(std::vector<PropertyKey>& keys) {
+	const bool precise = !allPropertiesChanged;
+	if (precise) keys.insert(keys.end(),changedProperties.begin(),changedProperties.end());
+	changedProperties.clear(); allPropertiesChanged = false;
+	return precise;
 }
 bool State::Restore(const StateValues& application, const StateValues& hostSources, std::string& error,
 	const StatePresentationSnapshot* restoredPresentation) {
@@ -326,6 +437,7 @@ bool State::Restore(const StateValues& application, const StateValues& hostSourc
 	staged.controlValues = std::move(readbacks);
 	staged.presentation = std::move(evaluated); ++staged.revision;
 	staged.presentationDirty = false;
+	staged.MarkAllChanged();
 	for (const auto& [id,cell] : staged.presentation.variables) staged.presentationDirty = staged.presentationDirty || cell.pending;
 	for (const auto& [key,item] : staged.presentation.properties) staged.presentationDirty = staged.presentationDirty || !item.expressionDisabled;
 	*this = std::move(staged);
@@ -357,7 +469,9 @@ bool State::OverrideProperties(const PropertyValues& values, bool overrideExpres
 		item.expressionDisabled = item.expressionDisabled || overrideExpression;
 		presentationDirty = presentationDirty || !item.expressionDisabled;
 		properties[key] = value;
+		if (!allPropertiesChanged) changedProperties.push_back(key);
 	}
+	if (changedProperties.size() > bindings->size()) MarkAllChanged();
 	if (!values.empty()) ++revision;
 	return true;
 }
