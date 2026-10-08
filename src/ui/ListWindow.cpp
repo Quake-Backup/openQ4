@@ -647,18 +647,28 @@ void idListWindow::Draw(int time, float x, float y) {
 			gui->SetStateInt( va( "%s_hover", listName.c_str() ), i );
 		}
 
+		// The retail order: selection, a greyed row, hover, a highlight fill
+		// (the match summary's top three), then the line band.
+		const rowTint_t *tint = i < rowTints.Num() ? &rowTints[ i ] : NULL;
 		const idMaterial *rowMaterial = NULL;
+		bool highlighted = false;
 		if ( selected ) {
 			rowMaterial = matFocus;
+		} else if ( tint != NULL && tint->greyed ) {
+			rowMaterial = matGreyed;
 		} else if ( rowHovered ) {
 			rowMaterial = matHover;
+		} else if ( tint != NULL && tint->highlighted ) {
+			highlighted = true;
 		} else if ( noEvents ) {
 			rowMaterial = matGreyed;
 		} else {
 			rowMaterial = matLine;
 		}
 
-		if ( rowMaterial != NULL ) {
+		if ( highlighted ) {
+			dc->DrawFilledRect( rowRect.x, rowRect.y + pixelOffset, rowRect.w, rowRect.h - pixelOffset, tint->highlight );
+		} else if ( rowMaterial != NULL ) {
 			dc->DrawMaterial( rowRect.x, rowRect.y + pixelOffset, rowRect.w, rowRect.h, rowMaterial, colorWhite, 1.0f, 1.0f );
 		} else if ( selected ) {
 			dc->DrawFilledRect( rowRect.x, rowRect.y + pixelOffset, rowRect.w, rowRect.h, borderColor );
@@ -804,10 +814,14 @@ void idListWindow::HandleBuddyUpdate(idWindow *buddy) {
 void idListWindow::UpdateList() {
 	idStr str;
 	listItems.Clear();
+	rowTints.Clear();
 	for (int i = 0; i < maxItems; i++) {
 		if (gui->State().GetString( va("%s_item_%i", listName.c_str(), i), "", str) ) {
 			if ( str.Length() ) {
 				listItems.Append(str);
+				rowTint_t &tint = rowTints.Alloc();
+				tint.highlighted = gui->State().GetVec4( va( "%s_item_%i_highlight", listName.c_str(), i ), "0 0 0 0", tint.highlight );
+				tint.greyed = gui->State().GetBool( va( "%s_item_%i_greyed", listName.c_str(), i ) );
 			}
 		} else {
 			break;

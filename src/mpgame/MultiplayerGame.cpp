@@ -10471,13 +10471,22 @@ void idMultiplayerGame::UpdateScoreboard( idUserInterface *scoreBoard ) {
 
 	//statManager->UpdateInGameHud( scoreBoard, true );
 
-	if( gameLocal.IsTeamGame() ) {
+	const bool team = gameLocal.IsTeamGame();
+	if( team ) {
 		UpdateTeamScoreboard( scoreBoard );
 	} else {
 		UpdateDMScoreboard( scoreBoard );
 	}
 
-	return;
+	// openQ4: the match summary's SCOREBOARD tab marks your row with the
+	// corner marker (ui-visual-design.md 14.14) from <list>_you: your row counted
+	// from 1, or 0 when you are not listed. The update has just put each list's
+	// selection on your row; a click on the tab moves the selection, not this.
+	const idDict &state = scoreBoard->State();
+	scoreBoard->SetStateInt( "scores_you", team ? 0 : state.GetInt( "scores_sel_0", "-1" ) + 1 );
+	scoreBoard->SetStateInt( "team_0_scores_you", team ? state.GetInt( "team_0_scores_sel_0", "-1" ) + 1 : 0 );
+	scoreBoard->SetStateInt( "team_1_scores_you", team ? state.GetInt( "team_1_scores_sel_0", "-1" ) + 1 : 0 );
+	scoreBoard->SetStateInt( "spectator_scores_you", state.GetInt( "spectator_scores_sel_0", "-1" ) + 1 );
 }
 
 /*
@@ -11077,8 +11086,17 @@ bool idMultiplayerGame::UpdateManagedSummaryResult( idUserInterface *gui, bool a
 		result = &clientMatchView.publicState.terminalResult;
 	}
 	const bool managed = IsManagedMatch() || result != NULL;
-	gui->SetStateBool( "summary_result_visible", managed );
-	gui->SetStateInt( "summary_result_outcome", result != NULL ? result->outcome : MP_MATCH_VIEW_RESULT_NONE );
+	// openQ4: a tied team match reads Draw over neutral team panels
+	// (ui-visual-design.md 14.14), where the stock summary named the Strogg the
+	// winners of a tie; no one is announced the winner of a draw.
+	const bool tiedTeams = !managed && gameLocal.IsTeamGame() && GetScoreForTeam( TEAM_MARINE ) == GetScoreForTeam( TEAM_STROGG );
+	gui->SetStateBool( "summary_result_visible", managed || tiedTeams );
+	gui->SetStateInt( "summary_result_outcome", result != NULL ? result->outcome : tiedTeams ? MP_MATCH_VIEW_RESULT_DRAW : MP_MATCH_VIEW_RESULT_NONE );
+	if ( tiedTeams ) {
+		gui->SetStateString( "summary_result_text", common->GetLocalizedString( "#str_42871" ) );
+		gui->HandleNamedEvent( "managed_summary" );
+		return true;
+	}
 	if ( !managed ) {
 		gui->SetStateString( "summary_result_text", "" );
 		return false;
@@ -11205,7 +11223,12 @@ void idMultiplayerGame::UpdateSummaryBoard( idUserInterface *scoreBoard ) {
 			}
 		}
 
-		if( playerIndex > 0 ) {
+		// openQ4: your row carries the corner marker beside the brighter band
+		// (ui-visual-design.md 14.14), counted from 1, 0 when you are not
+		// listed; the top of your team is marked too, which the stock skipped.
+		scoreBoard->SetStateInt( "summary_marine_names_you", player->team == TEAM_MARINE ? playerIndex + 1 : 0 );
+		scoreBoard->SetStateInt( "summary_strogg_names_you", player->team == TEAM_STROGG ? playerIndex + 1 : 0 );
+		if( playerIndex >= 0 ) {
 			if( player->team == TEAM_MARINE ) {
 				scoreBoard->SetStateInt( "summary_marine_names_sel_0", playerIndex ); 	
 				scoreBoard->SetStateInt( "summary_strogg_names_sel_0", -1 ); 	
@@ -11259,7 +11282,9 @@ void idMultiplayerGame::UpdateSummaryBoard( idUserInterface *scoreBoard ) {
 			}
 		}
 
-		// highlight who we are (only if not ranked in the top 3)
+		// highlight who we are (only if not ranked in the top 3, whose rows keep
+		// their tint); openQ4 marks your row with the corner marker either way
+		scoreBoard->SetStateInt( "summary_names_you", playerIndex + 1 );
 		if( player->GetRank() >= 0 && player->GetRank() < 3 ) {
 			scoreBoard->SetStateInt( "summary_names_sel_0", -1 ); 
 		} else {

@@ -435,7 +435,7 @@ static void CheckRemasteredMpHud(ScreenHost& host, const char* path) {
 		Shown(runtime,"chatin-pr-send") && Shown(runtime,"chatin-pr-channel") && Shown(runtime,"chatin-pr-cancel") && !Shown(runtime,"chatin-count"),
 		"the input opens under the history with the ALL tag and Send, Channel and Cancel");
 	const auto sendKey = runtime.PresentedValue("chatin-pr-send-key-name","text");
-	Check(sendKey && sendKey->text == "#str_07019","Send names the Enter key");
+	Check(sendKey && sendKey->text == "#str_107019","Send names the Enter key");
 	Check(runtime.GetBounds("chatin-field",field) && runtime.GetBounds("chat0",history) && runtime.GetBounds("chatin-prompts",prompts) &&
 		history.y+history.height <= prompts.y && prompts.y+prompts.height <= field.y && Near(field.height,18*1.5f,.5f),
 		"the history, the prompts and the field stack in that order");

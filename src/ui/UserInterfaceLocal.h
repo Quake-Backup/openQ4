@@ -56,6 +56,7 @@ public:
 	virtual void				SetStateBool( const char *varName, const bool value );
 	virtual void				SetStateInt( const char *varName, const int value );
 	virtual void				SetStateFloat( const char *varName, const float value );
+	virtual void				SetStateVec4( const char *varName, const idVec4& vector );
 
 	// Gets a gui state variable
 	virtual const char*			GetStateString( const char *varName, const char* defaultString = "" ) const;
@@ -127,6 +128,9 @@ private:
 	bool                        DrawRetainedHud();
 	idRemasteredHud*			remastered; // transient Remastered layout peer, never saved
 	bool                        DrawRemasteredHud( int drawTime );
+	// The match summary's exit prompt key last published (-1 none yet); -2
+	// for every other GUI.
+	int							summaryExitKey = -2;
 public:
 	// The Remastered layout draws this stock HUD in place of its own windows.
 	bool                        RemasteredActive() const;

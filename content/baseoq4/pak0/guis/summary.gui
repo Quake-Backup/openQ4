@@ -8,6 +8,7 @@ windowDef Desktop
 	definevec4	"orange"	0.890,0.537,0,1
 	float	"curr"	1
 	float	"itemheight" 15
+	float	"summary_itemheight" 15
 	float	"itemheight_stats" 15
 
 	float	"score_strogg_offset"	0
@@ -115,15 +116,19 @@ windowDef Desktop
 		
 		if ( "gui::num_players" >= 9 ) {
 			set "summary_list::itemheight" "22" ;
+			set "desktop::summary_itemheight" "22" ;
 		} else if ( "gui::num_players" == 7 || "gui::num_players" == 8 ) {
 			set "summary_list::itemheight" "26" ;
+			set "desktop::summary_itemheight" "26" ;
 		} else if ( "gui::num_players" == 5 || "gui::num_players" == 6 ) {
 			set "summary_list::itemheight" "32" ;
+			set "desktop::summary_itemheight" "32" ;
 		} else if ( "gui::num_players" <= 4 ) {
 			set "summary_list::itemheight" "40" ;
+			set "desktop::summary_itemheight" "40" ;
 		} 
 		
-		if ( "gui::gametype" == 4 || "gui::gametype" == 5 || "gui::gametype" == 6 || "gui::gametype" == 8 ) {
+		if ( "gui::gametype" == 4 || "gui::gametype" == 5 || "gui::gametype" == 6 || "gui::gametype" == 7 || "gui::gametype" == 8 ) {
 			set "p_strogg::visible" "1";
 			set "p_marine::visible" "1";
 			set "p_strogg_tdm::visible" "0";
@@ -222,7 +227,7 @@ windowDef Desktop
 				set "desktop::itemheight" "30" ;
 			} 
 			
-		} else if ( "gui::gametype" == 3) {		
+		} else if ( "gui::gametype" == 3 || "gui::gametype" == 10 || "gui::gametype" == 11 || "gui::gametype" == 12 ) {		
 			set "p_strogg::visible" "0";
 			set "p_marine::visible" "0";
 			set "p_strogg_tdm::visible" "1";
@@ -626,11 +631,21 @@ windowDef Desktop
 				backgroundLine	"gfx/guis/mainmenu/bg_line2"
 				backgroundGreyed	"gfx/guis/mainmenu/bg_grey2"
 			}
+			// openQ4: the corner marker beside your row (ui-visual-design.md 14.14)
+			windowDef summary_you
+			{
+				rect	84.5,(62 + ( "gui::summary_names_you" - 0.5 ) * "desktop::summary_itemheight"),14,14
+				visible	( "gui::summary_names_you" > 0 && "gui::summary_names_you" <= 16 )
+				background	"gfx/guis/mainmenu/corner"
+				matcolor	0.890,0.537,0,1
+				noevents	1
+			}
 		}
 		windowDef summ_strogg
 		{
 			rect	93,53,448,118
 			visible	( "gui::gametype" >= 3 )
+			noclip	1
 			windowDef summ_strogg_header
 			{
 				rect	0,0,448,24
@@ -726,11 +741,21 @@ windowDef Desktop
 				backgroundLine	"gfx/guis/mainmenu/bg_line2"
 				backgroundGreyed	"gfx/guis/mainmenu/bg_grey2"
 			}
+			// openQ4: the corner marker beside your row (ui-visual-design.md 14.14)
+			windowDef summ_strogg_you
+			{
+				rect	-8.5,(30 + ( "gui::summary_strogg_names_you" - 0.5 ) * 16),14,14
+				visible	( "gui::summary_strogg_names_you" > 0 && "gui::summary_strogg_names_you" <= 16 )
+				background	"gfx/guis/mainmenu/corner"
+				matcolor	0.890,0.537,0,1
+				noevents	1
+			}
 		}
 		windowDef summ_marine
 		{
 			rect	93,53,448,118
 			visible	( "gui::gametype" >= 3 )
+			noclip	1
 			windowDef summ_marine_header
 			{
 				rect	0,0,448,24
@@ -825,6 +850,15 @@ windowDef Desktop
 				backgroundFocus	"gfx/guis/mainmenu/bg_hover2"
 				backgroundLine	"gfx/guis/mainmenu/bg_line2"
 				backgroundGreyed	"gfx/guis/mainmenu/bg_grey2"
+			}
+			// openQ4: the corner marker beside your row (ui-visual-design.md 14.14)
+			windowDef summ_marine_you
+			{
+				rect	-8.5,(30 + ( "gui::summary_marine_names_you" - 0.5 ) * 16),14,14
+				visible	( "gui::summary_marine_names_you" > 0 && "gui::summary_marine_names_you" <= 16 )
+				background	"gfx/guis/mainmenu/corner"
+				matcolor	0.890,0.537,0,1
+				noevents	1
 			}
 		}
 		windowDef t_chat_history
@@ -956,6 +990,15 @@ windowDef Desktop
 				backgroundLine	"gfx/guis/mainmenu/bg_line2"
 				backgroundGreyed	"gfx/guis/mainmenu/bg_grey2"
 			}
+			// openQ4: the corner marker beside your row (ui-visual-design.md 14.14)
+			windowDef s_you
+			{
+				rect	0.5,(29 + ( "gui::team_1_scores_you" - 0.5 ) * "desktop::itemheight"),14,14
+				visible	( "gui::team_1_scores_you" > 0 && "gui::team_1_scores_you" <= 16 )
+				background	"gfx/guis/mainmenu/corner"
+				matcolor	0.890,0.537,0,1
+				noevents	1
+			}
 			windowDef s_logo
 			{
 				rect	19,6,16,16
@@ -1086,6 +1129,15 @@ windowDef Desktop
 				backgroundLine	"gfx/guis/mainmenu/bg_line2"
 				backgroundGreyed	"gfx/guis/mainmenu/bg_grey2"
 			}
+			// openQ4: the corner marker beside your row (ui-visual-design.md 14.14)
+			windowDef s_tdm_you
+			{
+				rect	0.5,(29 + ( "gui::team_1_scores_you" - 0.5 ) * "desktop::itemheight"),14,14
+				visible	( "gui::team_1_scores_you" > 0 && "gui::team_1_scores_you" <= 16 )
+				background	"gfx/guis/mainmenu/corner"
+				matcolor	0.890,0.537,0,1
+				noevents	1
+			}
 			windowDef s_tdm_logo
 			{
 				rect	19,6,16,16
@@ -1204,6 +1256,15 @@ windowDef Desktop
 				backgroundFocus	"gfx/guis/mainmenu/bg_hover2"
 				backgroundLine	"gfx/guis/mainmenu/bg_line2"
 				backgroundGreyed	"gfx/guis/mainmenu/bg_grey2"
+			}
+			// openQ4: the corner marker beside your row (ui-visual-design.md 14.14)
+			windowDef m_you
+			{
+				rect	0.5,(29 + ( "gui::team_0_scores_you" - 0.5 ) * "desktop::itemheight"),14,14
+				visible	( "gui::team_0_scores_you" > 0 && "gui::team_0_scores_you" <= 16 )
+				background	"gfx/guis/mainmenu/corner"
+				matcolor	0.890,0.537,0,1
+				noevents	1
 			}
 			windowDef m_logo
 			{
@@ -1335,6 +1396,15 @@ windowDef Desktop
 				backgroundLine	"gfx/guis/mainmenu/bg_line2"
 				backgroundGreyed	"gfx/guis/mainmenu/bg_grey2"
 			}
+			// openQ4: the corner marker beside your row (ui-visual-design.md 14.14)
+			windowDef m_tdm_you
+			{
+				rect	0.5,(29 + ( "gui::team_0_scores_you" - 0.5 ) * "desktop::itemheight"),14,14
+				visible	( "gui::team_0_scores_you" > 0 && "gui::team_0_scores_you" <= 16 )
+				background	"gfx/guis/mainmenu/corner"
+				matcolor	0.890,0.537,0,1
+				noevents	1
+			}
 			windowDef m_tdm_logo
 			{
 				rect	19,6,16,16
@@ -1454,6 +1524,15 @@ windowDef Desktop
 				backgroundLine	"gfx/guis/mainmenu/bg_line2"
 				backgroundGreyed	"gfx/guis/mainmenu/bg_grey2"
 			}
+			// openQ4: the corner marker beside your row (ui-visual-design.md 14.14)
+			windowDef sp_you
+			{
+				rect	0.5,(29 + ( "gui::spectator_scores_you" - 0.5 ) * "desktop::itemheight"),14,14
+				visible	( "gui::spectator_scores_you" > 0 && "gui::spectator_scores_you" <= 16 )
+				background	"gfx/guis/mainmenu/corner"
+				matcolor	0.890,0.537,0,1
+				noevents	1
+			}
 			windowDef sp_logo
 			{
 				rect	19,6,16,16
@@ -1551,6 +1630,15 @@ windowDef Desktop
 				backgroundFocus	"gfx/guis/mainmenu/bg_hover2"
 				backgroundLine	"gfx/guis/mainmenu/bg_line2"
 				backgroundGreyed	"gfx/guis/mainmenu/bg_grey2"
+			}
+			// openQ4: the corner marker beside your row (ui-visual-design.md 14.14)
+			windowDef dm_you
+			{
+				rect	0.5,(29 + ( "gui::scores_you" - 0.5 ) * "desktop::itemheight"),14,14
+				visible	( "gui::scores_you" > 0 && "gui::scores_you" <= 16 )
+				background	"gfx/guis/mainmenu/corner"
+				matcolor	0.890,0.537,0,1
+				noevents	1
 			}
 			windowDef dm_logo
 			{
@@ -1660,6 +1748,15 @@ windowDef Desktop
 				backgroundFocus	"gfx/guis/mainmenu/bg_hover2"
 				backgroundLine	"gfx/guis/mainmenu/bg_line2"
 				backgroundGreyed	"gfx/guis/mainmenu/bg_grey2"
+			}
+			// openQ4: the corner marker beside your row (ui-visual-design.md 14.14)
+			windowDef trn_you
+			{
+				rect	0.5,(29 + ( "gui::scores_you" - 0.5 ) * "desktop::itemheight"),14,14
+				visible	( "gui::scores_you" > 0 && "gui::scores_you" <= 16 )
+				background	"gfx/guis/mainmenu/corner"
+				matcolor	0.890,0.537,0,1
+				noevents	1
 			}
 			windowDef trn_logo
 			{
@@ -2522,7 +2619,7 @@ windowDef Desktop
 		rect	0,458,640,20
 		visible	1
 		forecolor	1,1,1,1
-		text	"#str_200916"
+		text	"gui::oq4_summary_exit"
 		textscale	0.25
 		font	"fonts/lowpixel"
 		textalign	1
@@ -2771,7 +2868,7 @@ windowDef Desktop
 			set "award_b_combokill::visible" "1" ;
 			set "award_b_rampage::visible" "1" ;
 			
-			if ( "gui::gametype" == 4 || "gui::gametype" == 5 || "gui::gametype" == 6 || "gui::gametype" == 8 ) {
+			if ( "gui::gametype" == 4 || "gui::gametype" == 5 || "gui::gametype" == 6 || "gui::gametype" == 7 || "gui::gametype" == 8 ) {
 				set "award_b_capture::visible" "1" ;
 				set "award_b_assist::visible" "1" ;
 				set "award_b_defense::visible" "1" ;

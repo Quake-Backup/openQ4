@@ -999,7 +999,7 @@ def chat_box(doc: HudDocument, children: list) -> dict:
 # The channel tag, the prompts and their keys (ENTER, TAB and ESCAPE in the
 # engine's localized key names).
 ALL_TAG, SEND_WORD, CHANNEL_WORD, CANCEL_WORD = "#str_231254", "#str_231255", "#str_231256", "#str_42936"
-KEY_ENTER, KEY_TAB, KEY_ESCAPE = "#str_07019", "#str_07018", "#str_07020"
+KEY_ENTER, KEY_TAB, KEY_ESCAPE = "#str_107019", "#str_107018", "#str_107020"
 
 
 def rect_commands() -> list:

@@ -202,6 +202,42 @@ extra fields beside the stock ones; the stock GUIs ignore them.
   of the scores button opens or closes the display, as the Xbox 360 edition's
   did; the display then shows a HUD prompt naming `oq4_key_scores` and Close.
 
+## Match summary
+
+The match summary (`guis/summary.gui`, section 14.14) keeps the stock layout
+the specification adopts, drawn through the presentation bridge. The bridge
+draws the stock menu furniture as vector reconstructions authored in each
+texture's own texels (`artwork.q4ui`, from `tools/ui/build_retained_hud.py`),
+so each stretches and flips as the stock art does: the soft backing, the three
+tab strips, the list bands (line, hover and greyed), the separators, the header
+band, the light plate, the chat box, the card frame, the backdrop gradient and
+the corner marker. Rails are filled one-texel geometry, never strokes, which
+would thicken unevenly in a stretched tile. openQ4's
+`content/baseoq4/pak0/guis/summary.gui` adds to the stock:
+
+- **Draw.** A team match that ends level reads DRAW over neutral team panels
+  (the managed result's `summary_result_*` presentation), where the stock named
+  the Strogg the winners.
+- **Exit prompt.** The engine publishes `oq4_summary_exit` (`#str_231257`)
+  with the key of the device last used: Escape, or a controller's east button,
+  which menus take as Escape.
+- **Your row.** The corner marker in #E38900 stands 1 u before your row's band
+  on the SUMMARY and SCOREBOARD tabs, beside the brighter band or a top-three
+  tint. The game publishes each list's row as `<list>_you`, counted from 1 (0
+  when you are not listed), apart from the selection that a click on the tab
+  moves; each marker follows its list's `itemheight`. The top of your team,
+  which the stock left unmarked, now gets the brighter band too.
+- **Layouts.** Arena One Flag CTF (7) takes the flag modes' SCOREBOARD and
+  STATISTICS layout, and Clan Arena, Freeze Tag and Red Rover (10–12) Team
+  DM's, as `scoreboard.gui` does. They fell through to the Tourney layout,
+  whose lists the team update never fills.
+
+The engine's list window draws a row's `<list>_item_<i>_highlight` fill and
+`<list>_item_<i>_greyed` band as Quake 4 1.4.2 does, in its order: the
+selection, a greyed row, the hover band, the highlight, then the line band.
+The summary's top three deathmatch rows take their blue, red and yellow tints
+from it, and the classic scoreboard greys eliminated Tourney players.
+
 ## Runtime cost
 
 HUD documents are large (about 7,200 authored values in the Marine document)
@@ -251,13 +287,16 @@ and frame costs for a document.
   `mp-competitive-ctf`, `mp-competitive-spec` (both teams' lists while
   following and flying free) and `mp-competitive-matrix` (eight players a
   team, a long name and the chat input with a long entry; run it at each
-  `--size`), and the `mp-pace`/`sp-pace` profiles.
+  `--size`), `mp-summary`, `mp-summary-team` and `mp-summary-ca` (the match
+  summary once bots reach a frag limit of one, or a Clan Arena duel's round
+  ends, its SCOREBOARD and STATISTICS tabs opened through `openq4_guiAction`),
+  and the `mp-pace`/`sp-pace` profiles. `--gate 0` runs a scenario with the
+  stock GUIs for comparison.
 
 ## Open work
 
-- The match summary (section 14.14), the scoreboard's scrolling past 16
-  rows and The Awakening's GEV display still draw their stock layout through
-  the presentation bridge.
+- The scoreboard's scrolling past 16 rows and The Awakening's GEV display
+  still draw their stock layout through the presentation bridge.
 - The chat input's prompts name the keyboard's keys; controller and touch
   players' platform or on-screen keyboard (section 13.5) is not implemented.
 - The touch control that toggles the objectives display is not implemented.

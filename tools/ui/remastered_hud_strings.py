@@ -134,6 +134,13 @@ ENTRIES = {
     "#str_231255": ("Send", "Enviar", "Odeslat", "Envoyer", "Senden", "Küldés", "Invia", "Wyślij", "Отправить", "Enviar", "Gönder",
                     "Надіслати"),
     "#str_231256": ("Channel", "Canal", "Kanál", "Canal", "Kanal", "Csatorna", "Canale", "Kanał", "Канал", "Canal", "Kanal", "Канал"),
+    # The match summary's way back with the active device's key (14.14).
+    "#str_231257": ("[ Press %s to return to the game ]", "[ Pressione %s para voltar ao jogo ]",
+                    "[ Stiskněte %s pro návrat do hry ]", "[ Appuyez sur %s pour revenir au jeu ]",
+                    "[ Drücke %s, um zum Spiel zurückzukehren ]", "[ Nyomd meg: %s – vissza a játékba ]",
+                    "[ Premi %s per tornare al gioco ]", "[ Naciśnij %s, aby wrócić do gry ]",
+                    "[ Нажмите %s, чтобы вернуться в игру ]", "[ Pulsa %s para volver al juego ]",
+                    "[ Oyuna dönmek için %s tuşuna bas ]", "[ Натисніть %s, щоб повернутися до гри ]"),
     # Settings > Game Options > HUD: the objectives display's hold or toggle (14.11).
     "#str_231247": ("Toggle Objectives", "Alternar objetivos", "Přepínání úkolů", "Objectifs à bascule", "Ziele umschalten",
                     "Célok be/ki", "Obiettivi a commutazione", "Przełącz cele", "Переключать задачи", "Alternar objetivos",

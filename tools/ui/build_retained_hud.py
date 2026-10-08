@@ -190,6 +190,96 @@ def build():
         add('tourney-box'+str(i),[path(f'M1 1H96V31H1Z M97 16H{97+link}V32',(0,0,128,32),None,WHITE,1)])
     add('tourney-link',[path('M0 0H64V128H128',fill=None,stroke=WHITE,width=1)])
     add('score-header',[path('M0 8H122L128 14V104H0Z')])
+    # Stock menu furniture the bridged multiplayer GUIs draw (the match
+    # summary, the Classic scoreboard, HUD and objectives): the measured
+    # constructions of ui-visual-design.md's stock furniture vocabulary,
+    # authored in each texture's own texels so they stretch and flip exactly
+    # as the stock art does. Rails are filled one-texel geometry, never
+    # strokes, which would thicken unevenly in a stretched tile. The art
+    # carries its own colours and alpha; the GUI's tint multiplies them.
+    def texel(d,w,h,fill=WHITE): return path(d,(0,0,w,h),fill=fill)
+    def graded(d,w,h,rgb,stops,vertical=False):
+        p=path(d,(0,0,w,h)); end=[0,{'fraction':1}] if vertical else [{'fraction':1},0]
+        stops=[(0,stops[0][1])]*(stops[0][0]>0)+list(stops)+[(1,stops[-1][1])]*(stops[-1][0]<1)
+        p['fill']=ui.linear([0,0],end,[[at,[*rgb,a]] for at,a in stops]); return p
+    def poly(points): return 'M'+'L'.join(f'{x} {y}' for x,y in points)+'Z'
+    def rect(x0,y0,x1,y1): return poly([(x0,y0),(x1,y0),(x1,y1),(x0,y1)])
+    hexrgb=lambda v:tuple(int(v[i:i+2],16)/255 for i in (1,3,5))
+    # Soft backing (scoregrad2): clear outside a 424x442 texel panel whose
+    # sides feather over 27 and 28 texels.
+    add('soft-backing',[graded(rect(44,34.5,468,476.5),512,512,(1,1,1),[(44/512,0),(71/512,1),(440/512,1),(468/512,0)])])
+    # Tab strips (ctrls_tab1, summ_tab2, summ_tab3): a baseline rail broken
+    # under the active tab, which rises 25 texels with a 4-texel leading flare
+    # and a 13-texel 45-degree trailing shoulder; #5A652A from 1.00 at its top
+    # to 0.60 at the baseline, then a wash across the strip to clear at 54.
+    tab_green=hexrgb('#5A652A')
+    for n,(left,right) in enumerate(((22,145),(183,322),(336,481)),1):
+        shoulder=right-13
+        add('tab-strip-'+str(n),[
+            graded(rect(17,26.5,490,54),512,64,tab_green,[(26.5/64,.6),(54/64,0)],vertical=True),
+            graded(poly([(left-4,26.5),(left,22.5),(left,1.5),(shoulder,1.5),(right,14.5),(right,26.5)]),512,64,tab_green,
+                   [(1.5/64,1),(6/64,1),(26.5/64,.6)],vertical=True),
+            texel(rect(17,26,left-2,27),512,64),texel(poly([(left,22),(left+1,22),(left-2,26),(left-3,26)]),512,64),
+            texel(rect(left,1,left+1,22),512,64),texel(rect(left,1,shoulder,2),512,64),
+            texel(poly([(shoulder,1),(shoulder+1.4,1),(right+1,13.6),(right+1,15)]),512,64),
+            texel(rect(right,14,right+1,26),512,64),texel(rect(right,26,490,27),512,64)])
+    # List bands (bg_line2, bg_hover2, bg_grey2): rows 3-60 of 64, ends fading
+    # over the first 28% and the last 26% of the width.
+    band=[(0,0),(.28,1),(.74,1),(1,0)]
+    for name,rgb,alpha in (('list-line','#9A9C6E',20/255),('list-hover','#9A9C6E',75/255),('list-grey','#787E87',105/255)):
+        add(name,[graded(rect(0,3,512,61),512,64,hexrgb(rgb),[(at,a*alpha) for at,a in band])])
+    # Separators (horiz_line2, vert_line): a two-texel line centered in its
+    # strip; the vertical one fades over its last 6% at each end.
+    add('separator-h',[texel(rect(1,3,255,5),256,8)])
+    add('separator-v',[graded(rect(3,0,5,256),8,256,(1,1,1),[(1/256,0),(17/256,1),(239/256,1),(255/256,0)],vertical=True)])
+    # Header band (scoreheader): an 8-texel upper-leading cut, top and leading
+    # rails, fill 49% to 45% of the width, then fading out at the trailing end.
+    add('header-band',[
+        graded(poly([(2,10),(10,2),(512,2),(512,29),(2,29)]),512,32,(1,1,1),
+               [(0,.486),(.45,.486),(.61,.38),(.735,.25),(.86,.125),(1,0)]),
+        texel(rect(2,10,3,29),512,32),texel(poly([(2,10),(3,10),(10,3),(10,2)]),512,32),
+        graded(rect(10,2,512,3),512,32,(1,1,1),[(0,1),(.45,1),(.61,.76),(.735,.48),(.86,.22),(1,0)])])
+    # Light plate (b3_light): a 24-texel band from texel 23, a lower-leading
+    # 45-degree cut through 56% of it, rails on the leading edge, the cut and
+    # the bottom, fill 49%; fill and bottom rail full to 45% of the width.
+    add('light-plate',[
+        graded(poly([(23,3),(512,3),(512,27),(37,27),(23,13)]),512,32,(1,1,1),
+               [(0,.486),(.45,.486),(.61,.40),(.735,.27),(.86,.087),(1,0)]),
+        texel(rect(23,3,24,13),512,32),texel(poly([(23,12.5),(24,12.5),(38.5,27),(37.5,27)]),512,32),
+        graded(rect(38,27,512,28),512,32,(1,1,1),[(0,1),(.45,1),(.61,.82),(.73,.54),(.86,.22),(1,0)])])
+    # Chat box (chatbox_edge, chatbox_mid): black 0.49 behind #CCCC51 rails on
+    # the leading edge and the top, with a small chamfer between them; the top
+    # rail dissolves toward the open trailing side.
+    rail=hexrgb('#CCCC51')
+    add('chatbox-edge',[
+        texel(poly([(2,16),(2,2),(3,1),(512,1),(512,16)]),512,16,fill=[0,0,0,126/255]),
+        texel(rect(1,3,2,16),512,16,fill=[*rail,1]),texel(poly([(1,3),(1,4.2),(4.2,1),(3,1)]),512,16,fill=[*rail,1]),
+        graded(rect(3,1,512,2),512,16,rail,[(0,1),(.31,1),(.5,.76),(.656,.55),(.78,.38),(.906,.18),(1,0)])])
+    add('chatbox-mid',[texel(rect(2,0,512,8),512,8,fill=[0,0,0,126/255]),texel(rect(1,0,2,8),512,8,fill=[*rail,1])])
+    # Card frame (tooltip_edge, tooltip_mid and their 128-texel variants): a
+    # black body inside #A0A040 rails, a 2-texel top-leading cut and an
+    # 8-texel top-trailing cut; the GUI flips the cap for the bottom.
+    card=hexrgb('#A0A040')
+    for suffix,w in (('',256),('-small',128)):
+        add('card-edge'+suffix,[
+            texel(poly([(3,16),(3,4.5),(4.5,3),(w-10.6,3),(w-3,10.6),(w-3,16)]),w,16,fill=[0,0,0,1]),
+            texel(rect(2,4,3,16),w,16,fill=[*card,1]),texel(poly([(2,4),(2,5.4),(5.4,2),(4,2)]),w,16,fill=[*card,1]),
+            texel(rect(4,2,w-10.5,3),w,16,fill=[*card,1]),
+            texel(poly([(w-11,2),(w-9.6,2),(w-2,9.6),(w-3.4,9.6)]),w,16,fill=[*card,1]),
+            texel(rect(w-3,9.6,w-2,16),w,16,fill=[*card,1])])
+        add('card-mid'+suffix,[texel(rect(3,0,w-3,2),w,2,fill=[0,0,0,1]),texel(rect(2,0,3,2),w,2,fill=[*card,1]),
+                               texel(rect(w-3,0,w-2,2),w,2,fill=[*card,1])])
+    # Backdrop gradient (bg_darkgrad2): clear across the leading 18%, full
+    # from 34% to 91%, clear again by 98%.
+    add('backdrop-grad',[graded(rect(0,0,512,512),512,512,(1,1,1),[(.18,0),(.343,1),(.914,1),(.977,0)])])
+    # Marker (corner): the solid upper-trailing half of a 16-texel square (◥)
+    # in its 32-texel tile, with a halo about 7 texels deep: five widening
+    # copies at 0.11 each, each edge pushed out along its normal.
+    halo=[]
+    for d in (7.5,6,4.5,3,1.5):
+        s=d*math.sqrt(2)
+        halo.append(texel(poly([(8-d-s,8-d),(24+d,8-d),(24+d,24+d+s)]),32,32,fill=[1,1,1,.11]))
+    add('marker-corner',halo+[texel(poly([(8,8),(24,8),(24,24)]),32,32)])
     common={
         'add_box2':'edge-glow','add_lines1':'scanlines','arrow2':'arrow','arrow5':'arrow','bracket1':'bracket','colorstatic':'noise',
         'gradient':'gradient','haz_symb1':'hazard','img_static3':'noise','marine/decal2':'scanlines','marine/scrolltext1faster':'scanlines',
@@ -214,10 +304,11 @@ def build():
     for i in range(1,4):hud['tourney_box'+str(i)]='tourney-box'+str(i)
     for n in ('tourn_bar1','tourn_bar2','tourn_bar3','tourn_sep','tourn_sep2'):hud[n]='tourney-link'
     menu={
-        'b1_dark':'plate','bg_darkgrad2':'gradient','bg_grey2':'plate','bg_hover2':'gradient','bg_line2':'line',
-        'chatbox_edge':'rounded-frame','chatbox_mid':'rounded','corner':'bracket','ctrls_tab1':'plate',
-        'horiz_line2':'line','vert_line':'solid','scoregrad2':'gradient','scoreheader':'score-header','summ_tab2':'plate','summ_tab3':'plate','screen':'solid',
-        'tooltip_edge':'rounded-frame','tooltip_edge2':'rounded-frame','tooltip_mid':'rounded','tooltip_mid2':'rounded'}
+        'b1_dark':'plate','b3_light':'light-plate','bg_darkgrad2':'backdrop-grad','bg_grey2':'list-grey','bg_hover2':'list-hover',
+        'bg_line2':'list-line','chatbox_edge':'chatbox-edge','chatbox_mid':'chatbox-mid','corner':'marker-corner','ctrls_tab1':'tab-strip-1',
+        'horiz_line2':'separator-h','vert_line':'separator-v','scoregrad2':'soft-backing','scoreheader':'header-band',
+        'summ_tab2':'tab-strip-2','summ_tab3':'tab-strip-3','screen':'solid',
+        'tooltip_edge':'card-edge','tooltip_edge2':'card-edge-small','tooltip_mid':'card-mid','tooltip_mid2':'card-mid-small'}
     for prefix,table in [('common',common),('hud',hud),('mainmenu',menu)]:
         for material,artwork in table.items():aliases(artwork,'gfx/guis/'+prefix+'/'+material)
     # Open objective plates have a leading rail and a separate chamfered foot,

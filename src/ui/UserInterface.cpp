@@ -1167,6 +1167,7 @@ bool idUserInterfaceLocal::InitFromFile( const char *qpath, bool rebuild, bool c
 	// Replace only the two stock chat surfaces. Installing the native control
 	// here also supports retail PK4 GUIs without shipping replacement GUI art
 	// or depending on openQ4's optional HUD scripts.
+	summaryExitKey = !idStr::Icmp(qpath, "guis/summary.gui") ? -1 : -2;
 	const bool chatInput = !idStr::Icmp(qpath, "guis/mpmsgmode.gui");
 	const bool chatHud = !idStr::Icmp(qpath, "guis/mphud.gui");
 	if ((chatInput || chatHud) && chatWindow == NULL) {
@@ -1267,6 +1268,17 @@ void idUserInterfaceLocal::Redraw( int _time, bool useAspectCorrection ) {
 		// every display, and it stays correct when aspect correction is disabled
 		// and the canvas is stretched instead of expanded.
 		SetStateFloat( "virtual_screen_aspect", uiManagerLocal.dc.GetCanvasAspect() );
+		// openQ4: the match summary's way back names the active device's key
+		// (ui-visual-design.md 14.14): Escape, or a controller's east button,
+		// which menus take as Escape.
+		if ( summaryExitKey != -2 ) {
+			const int exitKey = idKeyInput::LastInputWasController() ? K_JOY4 : K_ESCAPE;
+			if ( exitKey != summaryExitKey ) {
+				summaryExitKey = exitKey;
+				idStr glyph = va( "^ik%02X", exitKey );
+				SetStateString( "oq4_summary_exit", va( common->GetLanguageDict()->GetString( "#str_231257" ), glyph.c_str() ) );
+			}
+		}
 
 		idRectangle cinematicTopBar;
 		idRectangle cinematicBottomBar;
@@ -1377,6 +1389,12 @@ void idUserInterfaceLocal::SetStateFloat( const char *varName, const float value
 	if ( remastered ) {
 		remastered->ForwardState( varName, state.GetString( varName ) );
 	}
+}
+
+void idUserInterfaceLocal::SetStateVec4( const char *varName, const idVec4 &vector ) {
+	// Stored as two-decimal text, as the retail GUI does. The interface's empty
+	// default dropped it, and with it the match summary's top-three row tints.
+	SetStateString( varName, vector.ToString( 2 ) );
 }
 
 const char* idUserInterfaceLocal::GetStateString( const char *varName, const char* defaultString ) const {

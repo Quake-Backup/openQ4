@@ -189,6 +189,16 @@ def objectives_toggle():
     ]
 
 
+def summary_stages(name, play):
+    """Bots play until the match ends, then the summary's SUMMARY, SCOREBOARD
+    and STATISTICS tabs in turn."""
+    return [
+        'set g_autoExecAfterMapLoad ""', 'waitMsec 2500', *play, shot(f'summary-{name}'),
+        'openq4_guiAction b_score', 'waitMsec 500', shot(f'summary-{name}-scoreboard'),
+        'openq4_guiAction b_stats', 'waitMsec 500', shot(f'summary-{name}-stats'),
+    ]
+
+
 SCENARIOS = {
     'marine': ('game/airdefense1', on_foot('guis/hud.gui')),
     'objectives': ('game/airdefense1', objectives('guis/wristcomm.gui')),
@@ -279,6 +289,14 @@ SCENARIOS = {
         'chatInput Their quad respawns in thirty seconds so hold the lower ramp until it is up and then push through the '
         'teleporter together', 'waitMsec 400', shot('matrix-chat-long'),
     ]),
+    # The match summary (14.14) once three bots reach a frag limit of one
+    # (deathmatch, Team DM), or a Clan Arena duel's single round ends with your
+    # elimination (its round modes share Team DM's layout), held open by
+    # g_gameReviewPause, with its SCOREBOARD and STATISTICS tabs opened as a
+    # click would (openq4_guiAction).
+    'mp-summary': ('mp:mp/q4dm1', summary_stages('dm', ['addbot', 'addbot', 'addbot', 'waitMsec 120000'])),
+    'mp-summary-team': ('mp:mp/q4dm1', summary_stages('team', ['addbot', 'addbot', 'addbot', 'waitMsec 150000'])),
+    'mp-summary-ca': ('mp:mp/q4dm1', summary_stages('ca', ['addbot', 'waitMsec 20000', 'kill 0', 'waitMsec 15000'])),
 }
 
 
@@ -296,12 +314,12 @@ def main() -> int:
     parser.add_argument('--scenario', action='append', choices=sorted(SCENARIOS))
     parser.add_argument('--timeout', type=int, default=240)
     parser.add_argument('--awakening', type=Path, help="content root holding The Awakening's q4xbase (expansion scenarios)")
+    parser.add_argument('--gate', choices=('0', '1'), default='1', help='ui_retained (0 draws the stock GUIs, for comparison)')
     args = parser.parse_args()
     args.output = args.output.resolve()
     if args.output.exists() or not args.output.is_relative_to((ROOT / '.tmp').resolve()):
         parser.error('use a fresh output directory below .tmp')
     args.language = 'english'
-    args.gate = '1'
     results = []
     for scenario in args.scenario or ['marine']:
         capture.SCENARIOS[scenario] = SCENARIOS[scenario]
@@ -310,6 +328,12 @@ def main() -> int:
         capture.SCENARIO_CVARS[scenario].update({'si_warmup': '0', 'si_timeLimit': '10', 'si_fragLimit': '10'})
         if scenario in ('mp-ctf', 'mp-competitive-ctf', 'mp-competitive-spec', 'mp-competitive-matrix'):
             capture.SCENARIO_CVARS[scenario]['si_gameType'] = 'CTF'
+        if scenario.startswith('mp-summary'):
+            capture.SCENARIO_CVARS[scenario].update({'si_fragLimit': '1', 'si_roundLimit': '1', 'g_gameReviewPause': '600'})
+        if scenario == 'mp-summary-team':
+            capture.SCENARIO_CVARS[scenario]['si_gameType'] = 'Team DM'
+        if scenario == 'mp-summary-ca':
+            capture.SCENARIO_CVARS[scenario]['si_gameType'] = 'Clan Arena'
         if scenario == 'mp-competitive-matrix':
             capture.SCENARIO_CVARS[scenario].update({'si_maxPlayers': '16', 'ui_name': 'Lieutenant Matthew Kane of Rhino Squad'})
         if scenario in COMPETITIVE:

@@ -18,7 +18,12 @@
   to eight lines of history. Settings > Game Options > HUD offers the layout,
   size, width and safe-area inset, and Toggle Objectives (`g_objectivesToggle`)
   opens and closes the objectives display with presses, with a Close prompt.
-  [Remastered HUD](ui/remastered-hud.md).
+  The match summary keeps its stock layout over vector reconstructions of the
+  stock menu furniture, marks your row with the corner marker on its SUMMARY
+  and SCOREBOARD tabs, regains the retail list's top-three tints and greyed
+  rows (`SetStateVec4` reached no stock GUI), names the active device's key to
+  return, reads DRAW for a level team match and fills its tabs in every game
+  type. [Remastered HUD](ui/remastered-hud.md).
 
 - [x] Route the screen-space gameplay HUD families through the retained UI,
   including objectives, crosshairs, multiplayer score/chat/summary panels,

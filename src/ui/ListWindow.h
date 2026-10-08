@@ -88,7 +88,17 @@ private:
 	idHashTable<const idMaterial*> iconMaterials;						
 	bool				multipleSel;
 
+	// A row's companion states, as the retail list reads them:
+	// <list>_item_<i>_highlight fills the row in a color in place of its line
+	// band, and <list>_item_<i>_greyed draws the greyed band.
+	struct rowTint_t {
+		idVec4			highlight;
+		bool			highlighted;
+		bool			greyed;
+	};
+
 	idStrList			listItems;
+	idList<rowTint_t>	rowTints;
 	idSliderWindow*		scroller;
 	idList<int>			currentSel;
 	idStr				listName;
