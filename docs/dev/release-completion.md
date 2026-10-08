@@ -23,7 +23,9 @@
   and SCOREBOARD tabs, regains the retail list's top-three tints and greyed
   rows (`SetStateVec4` reached no stock GUI), names the active device's key to
   return, reads DRAW for a level team match and fills its tabs in every game
-  type. [Remastered HUD](ui/remastered-hud.md).
+  type. The held scoreboard scrolls past its height by whole rows on the
+  weapon-cycle controls and the right stick, kept on the client, over a count
+  of the rows below. [Remastered HUD](ui/remastered-hud.md).
 
 - [x] Route the screen-space gameplay HUD families through the retained UI,
   including objectives, crosshairs, multiplayer score/chat/summary panels,

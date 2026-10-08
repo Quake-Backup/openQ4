@@ -1352,6 +1352,16 @@ static void CheckRemasteredScoreboardHud(ScreenHost& host, const char* path) {
 	Check(Shown(runtime,"sb0-band0") && !Shown(runtime,"sb1") && !Shown(runtime,"sb0-h-kills-g") && !Shown(runtime,"sb-timer"),
 		"deathmatch lists the players in one panel without KILLS");
 	Check(runtime.GetBounds("sb0r0",r0) && runtime.GetBounds("sb0r1",r1) && Near(r1.y-r0.y,35*1.5f,1.f),"the deathmatch pitch applies");
+	// Beyond its height the board scrolls, over the count of the rows below.
+	Check(!Shown(runtime,"sb-more"),"a board that fits counts no rows below");
+	Check(runtime.SetState({{"oq4_sb_below",7.0},{"oq4_sb_below_text",std::string("7 MORE")}},error,.26),error.c_str());
+	runtime.Frame(RemasteredViewport(1280,720),.27);
+	const auto more = runtime.PresentedValue("sb-more-text","text"), moreShadow = runtime.PresentedValue("sb-more-sh","text");
+	Check(Shown(runtime,"sb-more") && Shown(runtime,"sb-more-arrow") && more && more->text == "7 MORE" && moreShadow && moreShadow->text == "7 MORE",
+		"a scrolling board counts the rows below");
+	Check(runtime.SetState({{"oq4_sb_below",0.0},{"oq4_sb_below_text",std::string()}},error,.28),error.c_str());
+	runtime.Frame(RemasteredViewport(1280,720),.29);
+	Check(!Shown(runtime,"sb-more"),"the count leaves at the end of the list");
 
 	// Tourney: the bracket tree answers the stock arena events.
 	Check(runtime.SetState({{"gametype",2.0},{"name1_round1_bracket1",std::string("Vex")},{"name2_round1_bracket1",std::string("Kaz")},

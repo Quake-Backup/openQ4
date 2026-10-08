@@ -673,6 +673,8 @@ public:
 	void			ToggleSpectate( void );
 	void			ToggleReady( void );
 	void			ToggleTeam( void );
+	// openQ4: scrolls the held Remastered scoreboard by whole rows
+	void			ScrollScoreboard( int rows );
 
 	void			ClearFrags( int clientNum );
 
@@ -1381,6 +1383,11 @@ private:
 	int				hudMatchState;
 	// the respawn prompt last published (oq4_respawn fades it in as it appears)
 	int				hudRespawn;
+	// the held Remastered scoreboard's scroll in rows, the most it scrolls, and
+	// whether ui_scoreboardScrolls last said it does
+	int				remasteredScoreboardScroll;
+	int				remasteredScoreboardScrollMax;
+	bool			remasteredScoreboardScrolls;
 	void			ResetRemasteredHudAnnouncements( void );
 
 	void			PublishRemasteredHud( idUserInterface *_mphud, idPlayer *localPlayer );

@@ -9,15 +9,18 @@ on server-list bands whose pitch adapts to the entries, and the footer with the
 game type, map, limits and timer. Remastered adds the rank line under the
 header, the ◥ marker on your row, a DEATHS column after KILLS, ping as the
 network-quality bars beside the number, dead players at 0.50 behind a skull and
-a BOT tag for openQ4 bots.
+a BOT tag for openQ4 bots. Beyond its height the rows keep the smallest pitch
+and scroll by whole rows, each panel heading the rows it shows, over a count of
+the rows below.
 
 The game publishes the rows as fields (idMultiplayerGame::PublishRemasteredScoreboard):
 oq4_sb{p}_kind/_score/_count per panel (0 your team or the players, 1 the other
 team, 2 the spectators) and oq4_sb{p}_{r}_name/_clan/_score/_kills/_deaths/
-_time/_ping/_flags per row, oq4_sb_pitch, oq4_sb_kills (the KILLS column shows)
-and oq4_sb_rank. The header and footer read the stock keys (servername,
-serverip, servergametype, servermap, serverlimit, servertimelimit, timeleft,
-infinity).
+_time/_ping/_flags per row, oq4_sb_pitch, oq4_sb_kills (the KILLS column shows),
+oq4_sb_rank and, while the board scrolls, the rows below as oq4_sb_below and
+its text oq4_sb_below_text. The panels it publishes are the window the scroll
+shows. The header and footer read the stock keys (servername, serverip,
+servergametype, servermap, serverlimit, servertimelimit, timeleft, infinity).
 """
 from __future__ import annotations
 
@@ -32,7 +35,16 @@ TEAM_COLOURS = {0: "#8B964B", 1: "#6AA42B", 2: "#FF7B04", 3: "#999999"}   # play
 TITLES = {0: "#str_200038", 1: "#str_200917", 2: "#str_200199", 3: "#str_200281"}
 MARKS = {0: "M12 2a10 10 0 1 0 .01 0zM12 7a5 5 0 1 1-.01 0z", 1: "M12 1L22 7V17L12 23L2 17V7ZM12 6L7 16H17Z",
          2: "M2 6L10 10L12 2L14 10L22 6L16 14L18 22L12 17L6 22L8 14Z", 3: "M12 2a10 10 0 1 0 .01 0zM12 7a5 5 0 1 1-.01 0z"}
-ROWS = (16, 16, 8)            # rows per panel: your team or the players, the other team, the spectators
+# Row slots per panel (your team or the players, the other team, the
+# spectators): the most a panel shows at once, a panel alone at the smallest
+# team pitch between the panels' top and the count of the rows below. The game
+# publishes the window of rows the scroll shows (PublishRemasteredScoreboard).
+ROWS = (20, 20, 16)
+# The panels' viewport (u): from their top to the last row's bottom, with the
+# count of the rows below under it while the board scrolls; Tourney's starts
+# under the bracket tree. The game lays its window out on the same numbers.
+VIEW_TOP, VIEW_BOTTOM, MORE_TOP = 74, 404, 396
+TOURNEY_VIEW_TOP, TOURNEY_VIEW_BOTTOM, TOURNEY_MORE_TOP = 206, 468, 460
 COLUMNS = {"name": 157, "clan": 300, "score": 372, "kills": 408, "deaths": 444, "time": 480}
 PING_RIGHT, BARS_X = 537, 502
 # Flags bits (PublishRemasteredScoreboard).
@@ -428,6 +440,33 @@ def rect_band_fill() -> dict:
         {"id": "e", "op": "close"}]}
 
 
+def more_rows(doc: HudDocument, tourney) -> dict:
+    """While the board scrolls (14.14), under the last row it shows: a
+    downward triangle and the count of the rows below, centred, in the
+    headings' Lowpixel at white 0.40 with their drop shadow."""
+    doc.number("oq4_sb_below")
+    doc.string("oq4_sb_below_text")
+    colour = [1, 1, 1, 0.4]
+    triangle = vec("sb-more-arrow", [pts_path("a", [(0, u(1)), (u(6), u(1)), (u(3), u(4.5))], fill=ui.solid(colour))],
+                   {"position": ui.keyword("relative"), "display": ui.keyword("block"), "width": ui.length(u(6)),
+                    "height": ui.length(u(5.5)), "margin-right": ui.length(u(4))})
+    face = ui.typeface("lowpixel", 11.52, u(10), colour)
+    shadow = ui.label("sb-more-sh", "#str_230007", {**face, **ui.absolute(left=u(1), top=u(1)), "color": ui.colour([0, 0, 0, 0.4]),
+                                                     "white-space": ui.keyword("nowrap"), "display": ui.keyword("block")})
+    text = ui.label("sb-more-text", "#str_230007", {**face, "position": ui.keyword("relative"), "white-space": ui.keyword("nowrap"),
+                                                     "display": ui.keyword("block")})
+    for node in (shadow, text):
+        doc.bind(node["id"] + ".text", node["id"], "text", S("oq4_sb_below_text"))
+    words = ui.group("sb-more-words", {"position": ui.keyword("relative"), "display": ui.keyword("block")}, [shadow, text])
+    more = ui.group("sb-more", {**ui.absolute(left=0, width=u(640), height=u(10)), "top": ui.length(u(MORE_TOP)),
+                                "display": ui.keyword("none"), "flex-direction": ui.keyword("row"),
+                                "justify-content": ui.keyword("center"), "align-items": ui.keyword("center")},
+                    [triangle, words])
+    doc.bind("sb-more.top", "sb-more", "top", sel(tourney, u(TOURNEY_MORE_TOP), u(MORE_TOP)))
+    doc.bind("sb-more.display", "sb-more", "display", sel(op(">", S("oq4_sb_below"), 0), "flex", "none"))
+    return more
+
+
 def scoreboard_document() -> dict:
     doc = HudDocument("openq4.hud.remastered.scoreboard")
     layout_state(doc)
@@ -449,7 +488,7 @@ def scoreboard_document() -> dict:
         doc.bind(node["id"] + ".text", node["id"], "text", S("oq4_sb_rank"))
     rank_group = full("sb-rank-g", rank)
     doc.show("sb-rank-g", op("!=", S("oq4_sb_rank"), ""))
-    panels = ui.group("sb-panels", {**ui.absolute(left=0, top=u(74), width=u(640)), "display": ui.keyword("block")},
+    panels = ui.group("sb-panels", {**ui.absolute(left=0, top=u(VIEW_TOP), width=u(640)), "display": ui.keyword("block")},
                       [panel(doc, 0), panel(doc, 1), panel(doc, 2)])
     footer_rule = vec("sb-foot-rule", [pts_path("rule", [(u(95), u(408)), (u(541), u(408)), (u(541), u(409.3)), (u(95), u(409.3))],
                                                 fill=ui.solid([1, 1, 1, 0.1]))])
@@ -475,10 +514,10 @@ def scoreboard_document() -> dict:
     # bracket tree and lists the players below it.
     doc.number("gametype")
     tourney = op("==", S("gametype"), 2)
-    doc.bind("sb-panels.top", "sb-panels", "top", sel(tourney, u(206), u(74)))
+    doc.bind("sb-panels.top", "sb-panels", "top", sel(tourney, u(TOURNEY_VIEW_TOP), u(VIEW_TOP)))
     board = full("sb", [soft_backing(), *header, rank_group, *footer, timer])
     doc.show("sb", NOT(tourney))
-    board = full("sb-all", [board, tourney_board(doc), panels])
+    board = full("sb-all", [board, tourney_board(doc), panels, more_rows(doc, tourney)])
     doc.on("hudJoin", *doc.joins)
     doc.on("onInit", *doc.joins)
     root = full("scoreboard-root", [anchor(doc, "cc", [board], scale="hud.centerScale")])

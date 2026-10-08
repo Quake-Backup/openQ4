@@ -199,6 +199,17 @@ def summary_stages(name, play):
     ]
 
 
+def scroll_stages(name, bots):
+    """The board held open with more rows than fit, at its top, three rows
+    down and at its end."""
+    return [
+        'set g_autoExecAfterMapLoad ""', 'waitMsec 2500', *['addbot'] * bots, 'waitMsec 8000', 'testScoreboard 30000',
+        'waitMsec 800', 'ui_scoreboardScrolls', shot(f'scroll-{name}-top'),
+        'scoreboardScroll 3', 'waitMsec 400', shot(f'scroll-{name}-3'),
+        'scoreboardScroll 40', 'waitMsec 400', shot(f'scroll-{name}-end'), 'ui_scoreboardScrolls',
+    ]
+
+
 SCENARIOS = {
     'marine': ('game/airdefense1', on_foot('guis/hud.gui')),
     'objectives': ('game/airdefense1', objectives('guis/wristcomm.gui')),
@@ -297,6 +308,12 @@ SCENARIOS = {
     'mp-summary': ('mp:mp/q4dm1', summary_stages('dm', ['addbot', 'addbot', 'addbot', 'waitMsec 120000'])),
     'mp-summary-team': ('mp:mp/q4dm1', summary_stages('team', ['addbot', 'addbot', 'addbot', 'waitMsec 150000'])),
     'mp-summary-ca': ('mp:mp/q4dm1', summary_stages('ca', ['addbot', 'waitMsec 20000', 'kill 0', 'waitMsec 15000'])),
+    # The held scoreboard past its height (14.14): 22 players in deathmatch and
+    # 20 in Team DM at the smallest pitch, scrolled by scoreboardScroll, the
+    # command the weapon-cycle controls and the right stick send while it is
+    # held; ui_scoreboardScrolls prints the engine's switch to the log.
+    'mp-scoreboard-scroll': ('mp:mp/q4dm1', scroll_stages('dm', 21)),
+    'mp-scoreboard-scroll-team': ('mp:mp/q4dm1', scroll_stages('team', 19)),
 }
 
 
@@ -334,6 +351,10 @@ def main() -> int:
             capture.SCENARIO_CVARS[scenario]['si_gameType'] = 'Team DM'
         if scenario == 'mp-summary-ca':
             capture.SCENARIO_CVARS[scenario]['si_gameType'] = 'Clan Arena'
+        if scenario.startswith('mp-scoreboard-scroll'):
+            capture.SCENARIO_CVARS[scenario].update({'si_maxPlayers': '24', 'si_fragLimit': '0', 'si_timeLimit': '0'})
+        if scenario == 'mp-scoreboard-scroll-team':
+            capture.SCENARIO_CVARS[scenario]['si_gameType'] = 'Team DM'
         if scenario == 'mp-competitive-matrix':
             capture.SCENARIO_CVARS[scenario].update({'si_maxPlayers': '16', 'ui_name': 'Lieutenant Matthew Kane of Rhino Squad'})
         if scenario in COMPETITIVE:

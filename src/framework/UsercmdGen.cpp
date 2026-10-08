@@ -44,6 +44,12 @@ static const float JOYSTICK_AXIS_LOOK_SCALE = 1.0f / 127.0f;
 static idCVar ui_weaponWheelOffset( "ui_weaponWheelOffset", "27", CVAR_GUI | CVAR_ARCHIVE | CVAR_INTEGER,
 	"weapon wheel horizontal offset in percent of viewport width; 0 centers, 27 preserves the original position", -40, 40 );
 static idCVar in_weaponWheelSensitivity( "in_weaponWheelSensitivity", "4.0", CVAR_SYSTEM | CVAR_ARCHIVE | CVAR_FLOAT, "controller weapon wheel cursor sensitivity (pixels per look degree)", 0.25f, 16.0f );
+// openQ4: the game sets this while the held Remastered scoreboard lists more
+// rows than it shows (ui-visual-design.md 14.14). The weapon-cycle controls
+// and the right stick then scroll it through the game's scoreboardScroll
+// command, on this client alone, and never reach the server as weapon changes.
+static idCVar ui_scoreboardScrolls( "ui_scoreboardScrolls", "0", CVAR_SYSTEM | CVAR_BOOL | CVAR_ROM | CVAR_NOCHEAT,
+	"set by the game while the held scoreboard scrolls: the weapon-cycle controls and the right stick scroll it" );
 
 /*
 ================
@@ -419,6 +425,8 @@ private:
 
 	void			Key( int keyNum, bool down );
 	void			SetButtonAction( int action, bool down );
+	bool			ScoreboardScrolls( void );
+	void			ScrollScoreboard( int rows );
 
 	idVec3			viewangles;
 	int				flags;
@@ -465,6 +473,8 @@ private:
 	float			mouseFilterBasePitch;
 
 	int				joystickAxis[MAX_JOYSTICK_AXIS];	// set by joystick events
+	int				scoreboardStickDirection;			// the right stick's scroll of the held scoreboard
+	int				scoreboardStickRepeat;				// when the held stick scrolls again
 
 	static idCVar	in_yawSpeed;
 	static idCVar	in_pitchSpeed;
@@ -1103,6 +1113,26 @@ void idUsercmdGenLocal::JoystickMove( void ) {
 	const int moveAxisX = joystickAxis[AXIS_YAW];
 	const int moveAxisY = joystickAxis[AXIS_PITCH];
 
+	// openQ4: while the held scoreboard scrolls (ui-visual-design.md 14.14),
+	// the right stick scrolls it a row on each push past half its travel, then
+	// every 120 ms while held, the way the stick points whatever the look
+	// inversion, and leaves the view's pitch alone.
+	if ( hasDedicatedLookAxis && ScoreboardScrolls() ) {
+		const float stickY = cvarSystem->GetCVarBool( "in_joystickInvertLook" ) ? -lookAxisY : lookAxisY;
+		const int direction = stickY > 0.5f ? 1 : ( stickY < -0.5f ? -1 : 0 );
+		const int now = Sys_Milliseconds();
+		if ( direction == 0 ) {
+			scoreboardStickDirection = 0;
+		} else if ( direction != scoreboardStickDirection || now - scoreboardStickRepeat >= 0 ) {
+			ScrollScoreboard( direction );
+			scoreboardStickRepeat = now + ( direction != scoreboardStickDirection ? 400 : 120 );
+			scoreboardStickDirection = direction;
+		}
+		lookAxisY = 0.0f;
+	} else {
+		scoreboardStickDirection = 0;
+	}
+
 	if ( IsRunButtonActive() ) {
 		anglespeed = usercmdSeconds * in_angleSpeedKey.GetFloat();
 	} else {
@@ -1382,6 +1412,9 @@ void idUsercmdGenLocal::Clear( void ) {
 	mouseDx = mouseDy = 0;
 	mouseButton = 0;
 	mouseDown = false;
+
+	scoreboardStickDirection = 0;
+	scoreboardStickRepeat = 0;
 }
 
 /*
@@ -1475,7 +1508,9 @@ void idUsercmdGenLocal::SetButtonAction( int action, bool down ) {
 		buttonState[ action ]++;
 
 		if ( !Inhibited()  ) {
-			if ( action >= UB_IMPULSE0 && action <= UB_IMPULSE127 ) {
+			if ( ( action == UB_IMPULSE14 || action == UB_IMPULSE15 ) && ScoreboardScrolls() ) {
+				ScrollScoreboard( action == UB_IMPULSE14 ? 1 : -1 );
+			} else if ( action >= UB_IMPULSE0 && action <= UB_IMPULSE127 ) {
 				cmd.impulse = action - UB_IMPULSE0;
 				cmd.flags ^= UCF_IMPULSE_SEQUENCE;
 			}
@@ -1487,6 +1522,27 @@ void idUsercmdGenLocal::SetButtonAction( int action, bool down ) {
 			buttonState[ action ] = 0;
 		}
 	}
+}
+
+/*
+===================
+idUsercmdGenLocal::ScoreboardScrolls
+
+True while the scores control is held and the game reports that the board
+it shows lists more rows than fit (ui_scoreboardScrolls).
+===================
+*/
+bool idUsercmdGenLocal::ScoreboardScrolls( void ) {
+	return ( ButtonState( UB_SHOWSCORES ) || ButtonState( UB_IMPULSE19 ) ) && ui_scoreboardScrolls.GetBool();
+}
+
+/*
+===================
+idUsercmdGenLocal::ScrollScoreboard
+===================
+*/
+void idUsercmdGenLocal::ScrollScoreboard( int rows ) {
+	cmdSystem->BufferCommandText( CMD_EXEC_APPEND, va( "scoreboardScroll %d\n", rows ) );
 }
 
 /*

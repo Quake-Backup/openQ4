@@ -9828,6 +9828,11 @@ void idMultiplayerGame::Clear() {
 	hudTransmitSelf = -1;
 	hudTransmitOther = -2;
 	ResetRemasteredHudAnnouncements();
+	// A board left scrolling must not keep the engine scrolling it. The
+	// constructor clears too, before the engine has handed the game its systems.
+	if ( cvarSystem != NULL ) {
+		cvarSystem->SetCVarBool( "ui_scoreboardScrolls", false );
+	}
 	vote = VOTE_NONE;
 	voteTimeOut = 0;
 	voteExecTime = 0;
@@ -10508,7 +10513,8 @@ void idMultiplayerGame::PublishRemasteredScoreboard( idUserInterface *scoreBoard
 	if ( scoreBoard == NULL || player == NULL ) {
 		return;
 	}
-	static const int panelRows[ 3 ] = { 16, 16, 8 };
+	// The document's row slots per panel (remastered_hud_scoreboard.py ROWS).
+	static const int panelRows[ 3 ] = { 20, 20, 16 };
 	const bool team = gameLocal.IsTeamGame();
 	const bool tourney = gameLocal.gameType == GAME_TOURNEY;
 	const bool roundMode = MPGameTypeHasAny( gameLocal.gameType, GTF_ROUND );
@@ -10516,33 +10522,15 @@ void idMultiplayerGame::PublishRemasteredScoreboard( idUserInterface *scoreBoard
 		gameState->GetMPGameState() == WARMUP;
 	const int firstTeam = ( team && !player->spectating && player->team == TEAM_STROGG ) ? TEAM_STROGG : TEAM_MARINE;
 
-	int counts[ 3 ] = { 0, 0, 0 };
-	int ranked = 0;
-	auto publishRow = [&]( int panel, idPlayer *row, int score, bool eliminated ) {
-		if ( counts[ panel ] >= panelRows[ panel ] ) {
-			return;
-		}
-		const int r = counts[ panel ]++;
-		const int client = row->entityNumber;
-		const rvPlayerStat *stat = statManager != NULL ? statManager->GetPlayerStat( client ) : NULL;
-		int flags = 0;
-		flags |= row == player ? 1 : 0;
-		flags |= ( panel != 2 && !row->spectating && row->health <= 0 ) ? 2 : 0;
-		flags |= botManager.IsBot( client ) ? 4 : 0;
-		flags |= eliminated ? 8 : 0;
-		flags |= ( useReady && panel != 2 ) ? 16 : 0;
-		flags |= ( useReady && row->IsReady() ) ? 32 : 0;
-		flags |= player->IsPlayerMuted( row ) ? 64 : 0;
-		flags |= ( team && row->PowerUpActive( row->team ? POWERUP_CTF_MARINEFLAG : POWERUP_CTF_STROGGFLAG ) ) ? 128 : 0;
-		scoreBoard->SetStateString( va( "oq4_sb%d_%d_name", panel, r ), row->GetUserInfo()->GetString( "ui_name" ) );
-		scoreBoard->SetStateString( va( "oq4_sb%d_%d_clan", panel, r ), row->GetUserInfo()->GetString( "ui_clan" ) );
-		scoreBoard->SetStateInt( va( "oq4_sb%d_%d_score", panel, r ), score );
-		scoreBoard->SetStateInt( va( "oq4_sb%d_%d_kills", panel, r ), playerState[ client ].fragCount );
-		scoreBoard->SetStateInt( va( "oq4_sb%d_%d_deaths", panel, r ), stat != NULL ? stat->deaths : 0 );
-		scoreBoard->SetStateInt( va( "oq4_sb%d_%d_time", panel, r ), GetPlayerTime( row ) );
-		scoreBoard->SetStateInt( va( "oq4_sb%d_%d_ping", panel, r ), playerState[ client ].ping );
-		scoreBoard->SetStateInt( va( "oq4_sb%d_%d_flags", panel, r ), flags );
+	// Every row, panel by panel in the board's order, before the window picks
+	// the ones it shows.
+	struct scoreRow_t {
+		idPlayer *	player;
+		int			score;
+		bool		eliminated;
 	};
+	idStaticList< scoreRow_t, MAX_CLIENTS > rows[ 3 ];
+	int ranked = 0;
 	// Tourney lists the players still in it first, then the eliminated ones.
 	for ( int pass = 0; pass < ( tourney ? 2 : 1 ); pass++ ) {
 		for ( int i = 0; i < rankedPlayers.Num(); i++ ) {
@@ -10561,40 +10549,146 @@ void idMultiplayerGame::PublishRemasteredScoreboard( idUserInterface *scoreBoard
 				}
 				panel = row->team == firstTeam ? 0 : 1;
 			}
-			publishRow( panel, row, rankedPlayers[ i ].Second(), eliminated );
+			const scoreRow_t entry = { row, rankedPlayers[ i ].Second(), eliminated };
+			rows[ panel ].Append( entry );
 			ranked++;
 		}
 	}
 	for ( int i = 0; i < unrankedPlayers.Num(); i++ ) {
 		if ( unrankedPlayers[ i ] != NULL ) {
-			publishRow( 2, unrankedPlayers[ i ], 0, false );
+			const scoreRow_t entry = { unrankedPlayers[ i ], 0, false };
+			rows[ 2 ].Append( entry );
 		}
 	}
+
+	// The pitch adapts to the entries (stock scoreboard.gui): 15-30 u in team
+	// modes, 17-35 u in deathmatch, 13-26 u in Tourney.
+	const int total = rows[ 0 ].Num() + rows[ 1 ].Num() + rows[ 2 ].Num();
+	static const int teamPitch[ 5 ] = { 30, 24, 20, 17, 15 };
+	static const int dmPitch[ 5 ] = { 35, 28, 23, 20, 17 };
+	static const int tourneyPitch[ 5 ] = { 26, 21, 17, 15, 13 };
+	const int *pitches = team ? teamPitch : tourney ? tourneyPitch : dmPitch;
+	const int step = total <= 8 ? 0 : total <= 10 ? 1 : total <= 12 ? 2 : total <= 14 ? 3 : 4;
+	int pitch = pitches[ step ];
+
+	// The window (ui-visual-design.md 14.14), on the document's numbers
+	// (remastered_hud_scoreboard.py VIEW_*): each panel takes its 32 u header
+	// band and 5 u to the next. Beyond the viewport the rows keep the smallest
+	// pitch and scroll by whole rows; each panel then heads the rows it shows,
+	// over the count of the rows below. Your team's panel and the other team's
+	// show while the board fits, the spectators' when there are any.
+	static const int PANEL_FRAME = 37;
+	const int viewTop = tourney ? 206 : 74;
+	const int viewBottom = tourney ? 468 : 404;
+	const int moreTop = tourney ? 460 : 396;
+	const bool listed[ 3 ] = { true, team, rows[ 2 ].Num() > 0 };
+	int height = 0;
+	for ( int p = 0; p < 3; p++ ) {
+		height += listed[ p ] ? PANEL_FRAME + rows[ p ].Num() * pitch : 0;
+	}
+	if ( height > viewBottom - viewTop ) {
+		pitch = pitches[ 4 ];
+		height = 0;
+		for ( int p = 0; p < 3; p++ ) {
+			height += listed[ p ] ? PANEL_FRAME + rows[ p ].Num() * pitch : 0;
+		}
+	}
+	const bool scrolls = height > viewBottom - viewTop;
+	// The rows that fit from the scroll's first row, in the board's order.
+	const int offset[ 3 ] = { 0, rows[ 0 ].Num(), rows[ 0 ].Num() + rows[ 1 ].Num() };
+	auto panelOf = [&]( int i ) -> int {
+		return i < offset[ 1 ] ? 0 : ( i < offset[ 2 ] ? 1 : 2 );
+	};
+	const int view = moreTop - viewTop;
+	auto rowsShown = [&]( int first ) -> int {
+		int y = 0;
+		int lastPanel = -1;
+		int inPanel[ 3 ] = { 0, 0, 0 };
+		int shown = 0;
+		for ( int i = first; i < total; i++ ) {
+			const int p = panelOf( i );
+			const int need = pitch + ( p != lastPanel ? PANEL_FRAME : 0 );
+			if ( y + need > view || inPanel[ p ] >= panelRows[ p ] ) {
+				break;
+			}
+			y += need;
+			lastPanel = p;
+			inPanel[ p ]++;
+			shown++;
+		}
+		return shown;
+	};
+	int first = 0;
+	int shown = total;
+	if ( scrolls ) {
+		int most = 0;
+		while ( most < total && most + rowsShown( most ) < total ) {
+			most++;
+		}
+		// Only the held board scrolls; the match summary's copy stays at the top.
+		if ( scoreBoard == this->scoreBoard ) {
+			remasteredScoreboardScrollMax = most;
+			remasteredScoreboardScroll = idMath::ClampInt( 0, most, remasteredScoreboardScroll );
+			first = remasteredScoreboardScroll;
+		}
+		shown = rowsShown( first );
+	} else if ( scoreBoard == this->scoreBoard ) {
+		remasteredScoreboardScrollMax = 0;
+		remasteredScoreboardScroll = 0;
+	}
+
+	int counts[ 3 ] = { 0, 0, 0 };
+	for ( int i = first; i < first + shown; i++ ) {
+		const int panel = panelOf( i );
+		const scoreRow_t &entry = rows[ panel ][ i - offset[ panel ] ];
+		if ( counts[ panel ] >= panelRows[ panel ] ) {
+			continue;
+		}
+		const int r = counts[ panel ]++;
+		idPlayer *row = entry.player;
+		const int client = row->entityNumber;
+		const rvPlayerStat *stat = statManager != NULL ? statManager->GetPlayerStat( client ) : NULL;
+		int flags = 0;
+		flags |= row == player ? 1 : 0;
+		flags |= ( panel != 2 && !row->spectating && row->health <= 0 ) ? 2 : 0;
+		flags |= botManager.IsBot( client ) ? 4 : 0;
+		flags |= entry.eliminated ? 8 : 0;
+		flags |= ( useReady && panel != 2 ) ? 16 : 0;
+		flags |= ( useReady && row->IsReady() ) ? 32 : 0;
+		flags |= player->IsPlayerMuted( row ) ? 64 : 0;
+		flags |= ( team && row->PowerUpActive( row->team ? POWERUP_CTF_MARINEFLAG : POWERUP_CTF_STROGGFLAG ) ) ? 128 : 0;
+		scoreBoard->SetStateString( va( "oq4_sb%d_%d_name", panel, r ), row->GetUserInfo()->GetString( "ui_name" ) );
+		scoreBoard->SetStateString( va( "oq4_sb%d_%d_clan", panel, r ), row->GetUserInfo()->GetString( "ui_clan" ) );
+		scoreBoard->SetStateInt( va( "oq4_sb%d_%d_score", panel, r ), entry.score );
+		scoreBoard->SetStateInt( va( "oq4_sb%d_%d_kills", panel, r ), playerState[ client ].fragCount );
+		scoreBoard->SetStateInt( va( "oq4_sb%d_%d_deaths", panel, r ), stat != NULL ? stat->deaths : 0 );
+		scoreBoard->SetStateInt( va( "oq4_sb%d_%d_time", panel, r ), GetPlayerTime( row ) );
+		scoreBoard->SetStateInt( va( "oq4_sb%d_%d_ping", panel, r ), playerState[ client ].ping );
+		scoreBoard->SetStateInt( va( "oq4_sb%d_%d_flags", panel, r ), flags );
+	}
 	// Panels: 0 players, 1 Marine, 2 Strogg, 3 spectators; -1 hides a panel.
+	// While the board scrolls, a panel shows only with rows in the window.
+	const bool panelShown[ 3 ] = { scrolls ? counts[ 0 ] > 0 : true, scrolls ? counts[ 1 ] > 0 : team, counts[ 2 ] > 0 };
 	if ( team ) {
-		scoreBoard->SetStateInt( "oq4_sb0_kind", firstTeam == TEAM_STROGG ? 2 : 1 );
-		scoreBoard->SetStateInt( "oq4_sb1_kind", firstTeam == TEAM_STROGG ? 1 : 2 );
+		scoreBoard->SetStateInt( "oq4_sb0_kind", panelShown[ 0 ] ? ( firstTeam == TEAM_STROGG ? 2 : 1 ) : -1 );
+		scoreBoard->SetStateInt( "oq4_sb1_kind", panelShown[ 1 ] ? ( firstTeam == TEAM_STROGG ? 1 : 2 ) : -1 );
 		scoreBoard->SetStateString( "oq4_sb0_score", va( "%d", GetTeamScore( firstTeam ) ) );
 		scoreBoard->SetStateString( "oq4_sb1_score", va( "%d", GetTeamScore( firstTeam == TEAM_STROGG ? TEAM_MARINE : TEAM_STROGG ) ) );
 	} else {
-		scoreBoard->SetStateInt( "oq4_sb0_kind", 0 );
+		scoreBoard->SetStateInt( "oq4_sb0_kind", panelShown[ 0 ] ? 0 : -1 );
 		scoreBoard->SetStateInt( "oq4_sb1_kind", -1 );
 		scoreBoard->SetStateString( "oq4_sb0_score", "" );
 		scoreBoard->SetStateString( "oq4_sb1_score", "" );
 	}
-	scoreBoard->SetStateInt( "oq4_sb2_kind", counts[ 2 ] > 0 ? 3 : -1 );
+	scoreBoard->SetStateInt( "oq4_sb2_kind", panelShown[ 2 ] ? 3 : -1 );
 	scoreBoard->SetStateString( "oq4_sb2_score", "" );
 	for ( int panel = 0; panel < 3; panel++ ) {
 		scoreBoard->SetStateInt( va( "oq4_sb%d_count", panel ), counts[ panel ] );
 	}
-	// The pitch adapts to the entries (stock scoreboard.gui): 15-30 u in team
-	// modes, 17-35 u in deathmatch, 13-26 u in Tourney.
-	const int total = counts[ 0 ] + counts[ 1 ] + counts[ 2 ];
-	static const int teamPitch[ 5 ] = { 30, 24, 20, 17, 15 };
-	static const int dmPitch[ 5 ] = { 35, 28, 23, 20, 17 };
-	static const int tourneyPitch[ 5 ] = { 26, 21, 17, 15, 13 };
-	const int step = total <= 8 ? 0 : total <= 10 ? 1 : total <= 12 ? 2 : total <= 14 ? 3 : 4;
-	scoreBoard->SetStateInt( "oq4_sb_pitch", ( team ? teamPitch : tourney ? tourneyPitch : dmPitch )[ step ] );
+	scoreBoard->SetStateInt( "oq4_sb_pitch", pitch );
+	const int below = total - first - shown;
+	scoreBoard->SetStateInt( "oq4_sb_below", below );
+	scoreBoard->SetStateString( "oq4_sb_below_text", below > 0 ? va( common->GetLocalizedString( "#str_231258" ), below ) : "" );
 	// KILLS shows in the flag modes, as in the stock team board.
 	scoreBoard->SetStateBool( "oq4_sb_kills", team && gameLocal.gameType != GAME_TDM && !roundMode );
 	// "3RD OF 12": your place among the ranked players.
@@ -19541,6 +19635,9 @@ void idMultiplayerGame::ResetRemasteredHudAnnouncements( void ) {
 	hudClockWarn = -1;
 	hudMatchState = -1;
 	hudRespawn = -1;
+	remasteredScoreboardScroll = 0;
+	remasteredScoreboardScrollMax = 0;
+	remasteredScoreboardScrolls = false;
 }
 
 /*
@@ -20036,7 +20133,32 @@ void idMultiplayerGame::DrawScoreBoard( idPlayer *player ) {
 			playerState[ player->entityNumber ].scoreBoardUp = false;
 			player->disableHud = false;
 		}
+		// Each hold opens the board at its top.
+		remasteredScoreboardScroll = 0;
+		remasteredScoreboardScrollMax = 0;
 	}
+	// openQ4: while the held Remastered board lists more rows than it shows,
+	// the engine turns the weapon-cycle controls and the right stick into
+	// scoreboardScroll on this client (ui-visual-design.md 14.14).
+	const bool scrolls = player->scoreBoardOpen && remasteredScoreboardScrollMax > 0 &&
+		cvarSystem->GetCVarBool( "ui_retained" ) && cvarSystem->GetCVarInteger( "ui_hudLayout" ) != 0;
+	if ( scrolls != remasteredScoreboardScrolls ) {
+		remasteredScoreboardScrolls = scrolls;
+		cvarSystem->SetCVarBool( "ui_scoreboardScrolls", scrolls );
+	}
+}
+
+/*
+================
+idMultiplayerGame::ScrollScoreboard
+================
+*/
+void idMultiplayerGame::ScrollScoreboard( int rows ) {
+	idPlayer *player = gameLocal.GetLocalPlayer();
+	if ( player == NULL || !player->scoreBoardOpen ) {
+		return;
+	}
+	remasteredScoreboardScroll = idMath::ClampInt( 0, remasteredScoreboardScrollMax, remasteredScoreboardScroll + rows );
 }
 
 /*

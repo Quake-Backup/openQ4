@@ -141,6 +141,9 @@ ENTRIES = {
                     "[ Premi %s per tornare al gioco ]", "[ Naciśnij %s, aby wrócić do gry ]",
                     "[ Нажмите %s, чтобы вернуться в игру ]", "[ Pulsa %s para volver al juego ]",
                     "[ Oyuna dönmek için %s tuşuna bas ]", "[ Натисніть %s, щоб повернутися до гри ]"),
+    # The held scoreboard's count of the rows below while it scrolls (14.14).
+    "#str_231258": ("%d MORE", "MAIS %d", "DALŠÍ: %d", "%d DE PLUS", "NOCH %d", "MÉG %d", "ANCORA %d", "JESZCZE %d", "ЕЩЁ %d",
+                    "%d MÁS", "%d DAHA", "ЩЕ %d"),
     # Settings > Game Options > HUD: the objectives display's hold or toggle (14.11).
     "#str_231247": ("Toggle Objectives", "Alternar objetivos", "Přepínání úkolů", "Objectifs à bascule", "Ziele umschalten",
                     "Célok be/ki", "Obiettivi a commutazione", "Przełącz cele", "Переключать задачи", "Alternar objetivos",

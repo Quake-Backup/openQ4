@@ -3904,6 +3904,18 @@ static void Cmd_OpenQ4AssertMPClientActive_f( const idCmdArgs &args ) {
 	);
 }
 
+// openQ4: scrolls the held Remastered scoreboard by whole rows
+// (ui-visual-design.md 14.14). The engine sends it in place of the
+// weapon-cycle controls and the right stick while ui_scoreboardScrolls says
+// the board lists more rows than it shows; it never leaves this client.
+static void Cmd_ScoreboardScroll_f( const idCmdArgs &args ) {
+	if ( args.Argc() != 2 ) {
+		common->Printf( "usage: scoreboardScroll <rows>\n" );
+		return;
+	}
+	gameLocal.mpGame.ScrollScoreboard( atoi( args.Argv( 1 ) ) );
+}
+
 // Fixed camera verbs and numeric slots keep the reliable request compact and
 // independent of mutable display names. The server revalidates every target.
 static void Cmd_Follow_f( const idCmdArgs &args ) {
@@ -4103,6 +4115,7 @@ void idGameLocal::InitConsoleCommands( void ) {
 	cmdSystem->AddCommand( "follownext", Cmd_Follow_f, CMD_FL_GAME, "follow the next authorized player" );
 	cmdSystem->AddCommand( "followprev", Cmd_Follow_f, CMD_FL_GAME, "follow the previous authorized player" );
 	cmdSystem->AddCommand( "followfree", Cmd_Follow_f, CMD_FL_GAME, "leave player follow for a free spectator camera" );
+	cmdSystem->AddCommand( "scoreboardScroll", Cmd_ScoreboardScroll_f, CMD_FL_GAME, "scrolls the held scoreboard by whole rows: scoreboardScroll <rows>" );
 	// FIXME: implement
 	cmdSystem->AddCommand( "clientVote",			idMultiplayerGame::Vote_f,	CMD_FL_GAME,				"cast your vote: clientVote yes | no" );
 	cmdSystem->AddCommand( "clientCallVote",		idMultiplayerGame::CallVote_f,	CMD_FL_GAME,			"call a vote: clientCallVote si_.. proposed_value" );
