@@ -935,7 +935,8 @@ def follow_card(doc: HudDocument) -> dict:
     card's ends and the controls below; free-flying, the card drops toward the
     bottom edge and reads SPECTATING over Free camera."""
     declare(doc, {"oq4_spectating": False, "oq4_following": False, "oq4_follow_name": "", "oq4_follow_team": -1,
-                  "oq4_follow_rank": "", "oq4_follow_score": "", "oq4_key_attack": "", "oq4_key_jump": "", "oq4_key_scores": ""})
+                  "oq4_follow_rank": "", "oq4_follow_score": "", "oq4_key_attack": "", "oq4_key_jump": "", "oq4_key_scores": "",
+                  "oq4_key_prev": ""})
     following = S("oq4_following")
     block_m = vec("follow-team-m", [fitted_plate_path("b", u(30), r=u(1), fill=ui.solid(rgb(MAR, 0.9)))],
                   {**ui.absolute(left=0, top=0, width=u(7), height=u(30)), "display": ui.keyword("none")})
@@ -972,6 +973,7 @@ def follow_card(doc: HudDocument) -> dict:
         return flex_row(ident, [key_chip(doc, ident, key_expr), label(ident + "-word", word_key, 8.4, [1, 1, 1, 0.85], line=10)],
                         **{"margin-left": ui.length(u(7)), "margin-right": ui.length(u(7))})
     follow_prompts = flex_row("follow-prompts", [prompt("pr-next", S("oq4_key_attack"), "#str_231215"),
+                                                 prompt("pr-prev", S("oq4_key_prev"), "#str_42885"),
                                                  prompt("pr-free", S("oq4_key_jump"), "#str_231214")], display=ui.keyword("none"))
     doc.bind("follow-prompts.display", "follow-prompts", "display", sel(following, "flex", "none"))
     spec_prompts = flex_row("spec-prompts", [prompt("pr-follow", S("oq4_key_attack"), "#str_231216"),
@@ -983,6 +985,54 @@ def follow_card(doc: HudDocument) -> dict:
     doc.show("follow", S("oq4_spectating"))
     doc.bind("follow.top", "follow", "top", sel(following, u(360), u(404)))
     return group
+
+
+# ================================================================== name tags
+
+TAG_ROWS = 8
+
+
+def name_tags(doc: HudDocument) -> dict:
+    """Free camera (14.9): the players in view carry name tags, nearest first:
+    a sheared plate 13 u tall at 0.50 with a 4 u team-color block at its
+    leading end (none in deathmatch) and the name in Lowpixel 9 u, 10 u in and
+    8 u from the trailing end, and a 6 u pointer at its foot touching the point
+    above the player's head. The game projects and traces the players
+    (oq4_tag{i}_x/_y as fractions of the view); the tag centers on its point."""
+    declare(doc, {"oq4_tags": 0})
+    free = AND(S("oq4_spectating"), NOT(S("oq4_following")))
+    tags = []
+    for i in range(TAG_ROWS):
+        prefix = f"oq4_tag{i}"
+        declare(doc, {prefix + "_x": 0, prefix + "_y": 0, prefix + "_name": "", prefix + "_team": -1, prefix + "_health": 0})
+        ident = f"tag{i}"
+        blocks = []
+        for team, colour in ((0, MAR), (1, STR)):
+            block = vec(f"{ident}-team{team}", [fitted_plate_path("b", u(13), r=u(1), fill=ui.solid(rgb(colour, 0.9)))],
+                        {**ui.absolute(left=0, top=0, width=u(4), height=u(13)), "display": ui.keyword("none")})
+            doc.show(block["id"], op("==", S(prefix + "_team"), team))
+            blocks.append(block)
+        name = bound_label(doc, f"{ident}-name", S(prefix + "_name"), 9, WHITE, line=13, **ellipsis(120))
+        pointer = vec(f"{ident}-point", [{"id": "p", "fill": ui.solid([0, 0, 0, 0.5]), "commands": [
+            {"id": "a", "op": "move", "points": [[{"fraction": 0.5, "dp": -u(3)}, 0]]},
+            {"id": "b", "op": "line", "points": [[{"fraction": 0.5, "dp": u(3)}, 0]]},
+            {"id": "c", "op": "line", "points": [[{"fraction": 0.5}, u(4)]]}, {"id": "d", "op": "close"}]}],
+                      {**ui.absolute(left=0, top=u(13), height=u(4)), "width": ui.length(100, "%")})
+        plate = ui.group(f"{ident}-plate", {"position": ui.keyword("relative"), "display": ui.keyword("flex"),
+                                            "flex-direction": ui.keyword("row"), "align-items": ui.keyword("center"),
+                                            "height": ui.length(u(13)), "padding-left": ui.length(u(10)),
+                                            "padding-right": ui.length(u(8))},
+                         [plate_vec(f"{ident}-back", 13, 0.5), *blocks, name, pointer])
+        # A wide box centered on the point holds the tag, centered in it.
+        holder = ui.group(ident, {**ui.absolute(left=0, top=0, width=u(240), height=u(17)), "display": ui.keyword("none"),
+                                  "flex-direction": ui.keyword("row"), "justify-content": ui.keyword("center"),
+                                  "transform": ui.transform()}, [plate])
+        doc.bind(f"{ident}.show", ident, "display", sel(AND(free, op(">", S("oq4_tags"), i)), "flex", "none"))
+        doc.bind(f"{ident}.place", ident, "transform",
+                 [op("-", op("*", S(prefix + "_x"), S("hud.width")), u(120)), op("-", op("*", S(prefix + "_y"), S("hud.height")), u(17)),
+                  1, 1, 0])
+        tags.append(holder)
+    return ui.group("tags", {**ui.FULL, "display": ui.keyword("block")}, tags)
 
 
 # ================================================================== respawn
@@ -1364,7 +1414,8 @@ def mp_document() -> dict:
     and the timer top-leading, the center column top center, the kill feed
     and the managed-match card top-trailing, aim text under the crosshair,
     the vote at the leading edge, chat and voice at the bottom-leading
-    corner, and the follow card or the respawn prompt over the status bar."""
+    corner, the follow card or the respawn prompt over the status bar, and
+    the free camera's name tags over the players in view."""
     doc = HudDocument("openq4.hud.remastered.mp")
     layout_state(doc)
     doc.number("gametype", 1)
@@ -1384,11 +1435,13 @@ def mp_document() -> dict:
     stats = statistics(doc)
     lag = connection_notice(doc)
     arena = arena_presentation(doc)
+    tags = name_tags(doc)
     doc.on("hudJoin", *doc.joins)
     doc.on("onInit", *doc.joins)
     # Minimal (ui_hudLayout 2) keeps the held statistics, the vote, chat and
     # voice, the follow card, the respawn prompt and the Arena presentation.
     root = full("mp-root", [
+        beyond_minimal(doc, "tags-full", [tags]),
         anchor(doc, "tl", [beyond_minimal(doc, "tl-full", [stand, teams, clock, bar])]),
         anchor(doc, "tc", [beyond_minimal(doc, "tc-full", [strip, column, banners])]),
         anchor(doc, "tr", [beyond_minimal(doc, "tr-full", [feed, ctx, lag])]),

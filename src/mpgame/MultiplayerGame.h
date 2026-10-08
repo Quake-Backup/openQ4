@@ -1377,6 +1377,7 @@ private:
 	void			ResetRemasteredHudAnnouncements( void );
 
 	void			PublishRemasteredHud( idUserInterface *_mphud, idPlayer *localPlayer );
+	void			PublishRemasteredNameTags( idUserInterface *_mphud, idPlayer *localPlayer, bool freeCamera );
 
 	// rcon buffer
 	idStr			rconHistory;

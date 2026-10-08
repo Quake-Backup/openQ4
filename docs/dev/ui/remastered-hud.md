@@ -36,7 +36,7 @@ places.
 | --- | --- | --- |
 | `guis/hud.gui`, `guis/q4xhud.gui` | `remastered_marine.q4ui`, `remastered_marine_awakening.q4ui` | Status bar, weapon strip, pickups, transmission display, boss bar, notices, interactive brackets, damage direction, missile warning; in multiplayer the powerup slots and developer readouts |
 | `guis/hud_strogg.gui`, `guis/q4xhud_strogg.gui` | `remastered_strogg.q4ui`, `remastered_strogg_awakening.q4ui` | The Strogg family of the same groups |
-| `guis/mphud.gui` | `remastered_mp.q4ui` | Kill feed, standing, team panels with flags and zone, timer, center column notices, aim text, vote, voice, chat lines, follow card, respawn prompt, Tourney strip, statistics card, Arena ceremony, lag notice |
+| `guis/mphud.gui` | `remastered_mp.q4ui` | Kill feed, standing, team panels with flags and zone, timer, center column notices, aim text, vote, voice, chat lines, follow card (Next, Previous, Free camera), the free camera's name tags, respawn prompt, Tourney strip, statistics card, Arena ceremony, lag notice |
 | `guis/hud.gui` while riding the flatbed, `guis/hud_strogg.gui` on the tram | (the on-foot documents) | The ride's silhouette gauge replaces the three gauges (`enterFlatbed`/`enterTram`), traced from the stock truck and tram art |
 | `guis/vehicles/airassault/turretplayerhud.gui` | `remastered_turret.q4ui` | The Awakening's space cannon (m03's dropship guns): the transmission display, boss bar, notices, damage direction, brackets and missile warning without gauges, strip or powerups; the ship-status panel under the transmission display (damage sections, spinning objective markers, attack darts, and the view cone relative to the ship's nose); the HUD prompt's Exit |
 | `guis/vehicles/mcc/cannonplayerhud.gui` | `remastered_mcc.q4ui` | The Awakening's MCC cannon (m06): the gun takes no damage, so the readout is the MCC's hull, U.S.S. Hannibal over the stock gauge plate with the hull number (the MCC's health divided by 10), stacked under the transmission display the side gun's HUD lacked, its track filled in proportion and warning at 25%; the HUD prompt's Exit |
@@ -85,6 +85,14 @@ extra fields beside the stock ones; the stock GUIs ignore them.
   vote tally, the followed player and the control keys. `oq4_flags`,
   `oq4_clockWarn` and `oq4_state` are announced as events, so looping motion
   starts only when its state does.
+- Name tags (`PublishRemasteredNameTags`): for a free-flying spectator,
+  `oq4_tags` players in view, nearest first and at most eight, each with
+  `oq4_tag{i}_x`/`_y` (the point above its head as fractions of the view),
+  `_name`, `_team` (-1 outside team modes) and `_health`. The game projects each
+  player through the spectator's render view and traces it, so no tag shows
+  through a wall. `oq4_key_prev` names the control a following spectator steps
+  back with: the weapon-cycle controls now step through the followed players
+  outside Tourney, as Tourney's do.
 - Respawn (`PublishRemasteredHud`): `oq4_respawn` is 1 while you lie dead
   and the attack control would bring you back, 2 while overtime holds the
   respawn with `oq4_respawn_in` seconds left, else 0; the `oq4_respawn` event
@@ -161,7 +169,10 @@ and frame costs for a document.
   on the bike and runs the countdown; the race's checkpoint event, the
   countdown's expiry and the crouch control drive the rest), `mp` (with the
   scoreboard and the respawn
-  prompt after `kill 0`) and `mp-ctf` (with the scoreboard), and the
+  prompt after `kill 0`), `mp-spectator` (in warm-up, so the match is not
+  abandoned when the only human spectates: the follow card through
+  `follownext`, then the free camera's name tags through `followfree`) and
+  `mp-ctf` (with the scoreboard), and the
   `mp-pace`/`sp-pace` profiles.
 
 ## Open work

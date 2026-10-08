@@ -7583,10 +7583,10 @@ void idPlayer::SpectateFreeFly( bool force ) {
 idPlayer::SpectateCycle
 ===============
 */
-void idPlayer::SpectateCycle( void ) {
+void idPlayer::SpectateCycle( int direction ) {
 	if ( gameLocal.time > lastSpectateChange ) {
 		lastSpectateChange = gameLocal.time + 500;
-		CycleSpectatorFollow( 1 );
+		CycleSpectatorFollow( direction );
 	}
 }
 
@@ -10089,6 +10089,10 @@ void idPlayer::PerformImpulse( int impulse ) {
 			NextWeapon();
 			if( gameLocal.isServer && spectating && gameLocal.gameType == GAME_TOURNEY ) {	
 				((rvTourneyGameState*)gameLocal.mpGame.GetGameState())->SpectateCycleNext( this );
+			} else if ( gameLocal.isServer && spectating && spectator != entityNumber ) {
+				// openQ4: a following spectator steps through the players with the
+				// weapon-cycle controls, next and previous, as Tourney's do.
+				SpectateCycle( 1 );
 			}
 			break;
 		}
@@ -10096,6 +10100,8 @@ void idPlayer::PerformImpulse( int impulse ) {
 			PrevWeapon();
 			if( gameLocal.isServer && spectating && gameLocal.gameType == GAME_TOURNEY ) {	
 				((rvTourneyGameState*)gameLocal.mpGame.GetGameState())->SpectateCyclePrev( this );
+			} else if ( gameLocal.isServer && spectating && spectator != entityNumber ) {
+				SpectateCycle( -1 );
 			}
 			break;
 		}

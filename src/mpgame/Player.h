@@ -1158,7 +1158,7 @@ private:
 	void					Weapon_GUI( void );
 	void					Weapon_Vehicle ( void );
 	void					Weapon_Usable ( void );
-	void					SpectateCycle( void );
+	void					SpectateCycle( int direction = 1 );
 	bool					CycleSpectatorFollow( int direction );
 	void					ServerSpectatorFollow( int operation, int targetSlot, int targetSpawnId );
 	idAngles				GunTurningOffset( void );

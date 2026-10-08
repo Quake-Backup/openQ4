@@ -9,7 +9,8 @@
   HUD prompt and the speed streak), flatbed and tram,
   objectives and scoreboard (Tourney included) HUDs answer the stock GUIs' state
   and events from generated retained documents, with the fields the stock GUIs
-  lack published by the game, and multiplayer adds the respawn prompt. The
+  lack published by the game, and multiplayer adds the respawn prompt, the
+  free camera's name tags and Previous on the follow card. The
   Minimal preset (`ui_hudLayout 2`) keeps the readouts, the crosshair and what
   asks for the player's action. Settings > Game Options > HUD offers the layout,
   size, width and safe-area inset, and Toggle Objectives (`g_objectivesToggle`)

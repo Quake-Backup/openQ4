@@ -19526,6 +19526,63 @@ vote tally and the followed player.  The stock windows never read these
 keys, so Classic is unchanged.
 ================
 */
+void idMultiplayerGame::PublishRemasteredNameTags( idUserInterface *_mphud, idPlayer *localPlayer, bool freeCamera ) {
+	const int maxTags = 8;
+	struct nameTag_t { idPlayer *player; float distance, x, y; };
+	idStaticList<nameTag_t, MAX_CLIENTS> tags;
+	const renderView_t *view = freeCamera ? localPlayer->GetRenderView() : NULL;
+	if ( view != NULL && view->fov_x > 0.0f && view->fov_y > 0.0f ) {
+		const float tanX = idMath::Tan( DEG2RAD( view->fov_x ) * 0.5f ), tanY = idMath::Tan( DEG2RAD( view->fov_y ) * 0.5f );
+		for ( int i = 0; i < Min( gameLocal.numClients, MAX_CLIENTS ); i++ ) {
+			idEntity *entity = gameLocal.entities[ i ];
+			if ( entity == NULL || entity == localPlayer || !entity->IsType( idPlayer::GetClassType() ) ) {
+				continue;
+			}
+			idPlayer *player = static_cast<idPlayer *>( entity );
+			if ( player->spectating || player->health <= 0 || player->IsHidden() || player->GetInstance() != localPlayer->GetInstance() ) {
+				continue;
+			}
+			const idBounds &bounds = player->GetPhysics()->GetAbsBounds();
+			const idVec3 head( player->GetPhysics()->GetOrigin().x, player->GetPhysics()->GetOrigin().y, bounds[ 1 ].z + 6.0f );
+			const idVec3 delta = head - view->vieworg;
+			const float forward = delta * view->viewaxis[ 0 ];
+			if ( forward < 16.0f ) {
+				continue;
+			}
+			const float x = 0.5f - 0.5f * ( delta * view->viewaxis[ 1 ] ) / ( forward * tanX );
+			const float y = 0.5f - 0.5f * ( delta * view->viewaxis[ 2 ] ) / ( forward * tanY );
+			if ( x < 0.02f || x > 0.98f || y < 0.06f || y > 0.98f ) {
+				continue;
+			}
+			trace_t trace;
+			gameLocal.TracePoint( localPlayer, trace, view->vieworg, head, MASK_OPAQUE, localPlayer );
+			if ( trace.fraction < 1.0f && gameLocal.entities[ trace.c.entityNum ] != player ) {
+				continue;
+			}
+			nameTag_t tag = { player, delta.LengthFast(), x, y };
+			tags.Append( tag );
+		}
+	}
+	// Nearest first; only the nearest few carry a tag.
+	for ( int i = 1; i < tags.Num(); i++ ) {
+		for ( int j = i; j > 0 && tags[ j ].distance < tags[ j - 1 ].distance; j-- ) {
+			const nameTag_t swap = tags[ j ];
+			tags[ j ] = tags[ j - 1 ];
+			tags[ j - 1 ] = swap;
+		}
+	}
+	const int count = Min( tags.Num(), maxTags );
+	_mphud->SetStateInt( "oq4_tags", count );
+	for ( int i = 0; i < count; i++ ) {
+		idPlayer *player = tags[ i ].player;
+		_mphud->SetStateFloat( va( "oq4_tag%d_x", i ), tags[ i ].x );
+		_mphud->SetStateFloat( va( "oq4_tag%d_y", i ), tags[ i ].y );
+		_mphud->SetStateString( va( "oq4_tag%d_name", i ), OQ4_HudPlain( player->GetUserInfo()->GetString( "ui_name" ) ).c_str() );
+		_mphud->SetStateInt( va( "oq4_tag%d_team", i ), gameLocal.IsTeamGame() ? player->team : -1 );
+		_mphud->SetStateInt( va( "oq4_tag%d_health", i ), Max( 0, player->health ) );
+	}
+}
+
 void idMultiplayerGame::PublishRemasteredHud( idUserInterface *_mphud, idPlayer *localPlayer ) {
 	const int now = gameLocal.realClientTime;
 	const bool tourney = gameLocal.gameType == GAME_TOURNEY;
@@ -19710,6 +19767,12 @@ void idMultiplayerGame::PublishRemasteredHud( idUserInterface *_mphud, idPlayer 
 	_mphud->SetStateString( "oq4_key_attack", common->KeysFromBinding( "_attack" ) );
 	_mphud->SetStateString( "oq4_key_jump", common->KeysFromBinding( "_moveup" ) );
 	_mphud->SetStateString( "oq4_key_scores", common->KeysFromBinding( "_impulse19" ) );
+	_mphud->SetStateString( "oq4_key_prev", common->KeysFromBinding( "_impulse15" ) );
+
+	// Free camera name tags: the players in view, nearest first, each projected
+	// above its head as fractions of the view and traced for visibility, so a
+	// tag never shows through a wall.
+	PublishRemasteredNameTags( _mphud, localPlayer, localPlayer->spectating && followed == NULL && !tourney );
 
 	// The respawn prompt: while you lie dead and CheckRespawns would let you
 	// back in, Respawn on the attack control (1) once the fall is over; while

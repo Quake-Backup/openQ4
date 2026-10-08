@@ -340,6 +340,33 @@ static void CheckRemasteredMpHud(ScreenHost& host, const char* path) {
 	runtime.Frame(RemasteredViewport(1280,720),4.15);
 	Check(Shown(runtime,"vote") && Shown(runtime,"vote-l1") && !Shown(runtime,"vote-l2"),"the vote card lists its fields");
 	Check(Shown(runtime,"follow") && Shown(runtime,"follow-name") && !Shown(runtime,"spec-free"),"the follow card names the followed player");
+	Check(runtime.SetState({{"oq4_key_prev",std::string("MWHEELDOWN")}},error,4.16),error.c_str());
+	runtime.Frame(RemasteredViewport(1280,720),4.17);
+	const auto prev = runtime.PresentedValue("pr-prev-key","text");
+	Check(Shown(runtime,"pr-next") && Shown(runtime,"pr-prev") && Shown(runtime,"pr-free") && prev && prev->text == "MWHEELDOWN",
+		"following, the prompts read Next, Previous and Free camera");
+
+	// Free camera: name tags over the players in view, centred on their points.
+	Check(runtime.SetState({{"oq4_following",false},{"oq4_tags",2.0},{"oq4_tag0_x",0.5},{"oq4_tag0_y",0.4},
+		{"oq4_tag0_name",std::string("Nyx")},{"oq4_tag0_team",1.0},{"oq4_tag1_x",0.25},{"oq4_tag1_y",0.5},
+		{"oq4_tag1_name",std::string("Orin")},{"oq4_tag1_team",-1.0}},error,4.18),error.c_str());
+	runtime.Frame(RemasteredViewport(1280,720),4.19);
+	Bounds tag, pointer;
+	const auto tagName = runtime.PresentedValue("tag0-name","text");
+	Check(Shown(runtime,"tag0") && Shown(runtime,"tag1") && !Shown(runtime,"tag2") && tagName && tagName->text == "Nyx",
+		"the free camera tags the players in view");
+	// The holder moves by transform (bounds are its layout box): the plate's
+	// centre and the pointer's tip land on the projected point.
+	const auto place = runtime.PresentedValue("tag0","transform");
+	Check(place && runtime.GetBounds("tag0-plate",tag) && runtime.GetBounds("tag0-point",pointer) && Near(tag.height,13*1.5f,1.f) &&
+		Near(float(place->data[0])+tag.x+tag.width/2,640,1.5f) && Near(float(place->data[1])+pointer.y+pointer.height,.4f*720,1.5f),
+		"a tag centres over its player with its pointer's tip on the point");
+	Check(Shown(runtime,"tag0-team1") && !Shown(runtime,"tag0-team0") && !Shown(runtime,"tag1-team0") && !Shown(runtime,"tag1-team1"),
+		"a team tag carries its team's block; deathmatch carries none");
+	Check(Shown(runtime,"spec-free") && !Shown(runtime,"follow-name"),"the card reads Free camera");
+	Check(runtime.SetState({{"oq4_following",true}},error,4.195),error.c_str());
+	runtime.Frame(RemasteredViewport(1280,720),4.197);
+	Check(!Shown(runtime,"tag0"),"following, the tags go");
 
 	// Respawn: the attack control's Respawn in the lower third, fading in as it
 	// appears; while overtime holds the respawn, the seconds left instead.

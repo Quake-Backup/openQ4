@@ -212,6 +212,18 @@ SCENARIOS = {
         'set ui_hudLayout 0', 'waitMsec 400', shot('mp-classic'), 'set ui_hudLayout 1', 'waitMsec 400', shot('mp-restored'),
         'set ui_hudLayout 2', 'waitMsec 400', shot('mp-minimal'), 'set ui_hudLayout 1',
     ]),
+    # A spectator follows a bot (the follow card with Next, Previous and Free
+    # camera), then flies free from its view: name tags over the players in
+    # view. Warm-up keeps the match from ending as abandoned when the only
+    # human leaves play.
+    'mp-spectator': ('mp:mp/q4dm1', [
+        'set g_autoExecAfterMapLoad ""', 'waitMsec 2500', 'addbot', 'addbot', 'addbot', 'waitMsec 4000',
+        'set ui_spectate Spectate', 'waitMsec 1500', 'follownext', 'waitMsec 1500', shot('spec-follow'),
+        'followfree', 'waitMsec 400', shot('spec-free-1'), 'waitMsec 1200', shot('spec-free-2'),
+        'follownext', 'waitMsec 2500', 'followfree', 'waitMsec 400', shot('spec-free-3'), 'waitMsec 1300', shot('spec-free-4'),
+        'follownext', 'waitMsec 2500', 'followfree', 'waitMsec 400', shot('spec-free-5'),
+        'set ui_hudLayout 0', 'waitMsec 400', shot('spec-classic'), 'set ui_hudLayout 1', 'set ui_spectate Play',
+    ]),
     'mp-pace': ('mp:mp/q4dm1', [
         'set g_autoExecAfterMapLoad ""', 'waitMsec 2500', 'set ui_hudProfile 2', 'waitMsec 8000', 'set ui_hudProfile 0',
         'echo PACE remastered', 'com_speeds 1', 'waitMsec 1500', 'com_speeds 0',
@@ -265,6 +277,8 @@ def main() -> int:
             capture.SCENARIO_CVARS[scenario]['si_gameType'] = 'CTF'
         if scenario == 'mp-tourney':
             capture.SCENARIO_CVARS[scenario]['si_gameType'] = 'Tourney'
+        if scenario == 'mp-spectator':
+            capture.SCENARIO_CVARS[scenario]['si_warmup'] = '1'
         # The Awakening's scenarios run its game directory over baseoq4.
         args.game_dir = 'q4xbase' if scenario in AWAKENING else 'baseoq4'
         if scenario in AWAKENING:
