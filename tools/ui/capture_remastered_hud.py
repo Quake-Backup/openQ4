@@ -109,7 +109,9 @@ SCENARIOS = {
         'addbot', 'addbot', 'waitMsec 2500', shot('mp-bots'),
         'testScoreboard 1200', 'waitMsec 400', shot('mp-scoreboard'), 'waitMsec 1000',
         'say Remastered chat line from the capture', 'waitMsec 300', shot('mp-chat'),
-        'kill 1', 'waitMsec 400', shot('mp-feed'), 'kill 0', 'waitMsec 400', shot('mp-feed-you'), 'waitMsec 6000', shot('mp-later'),
+        'kill 1', 'waitMsec 400', shot('mp-feed'), 'kill 0', 'waitMsec 400', shot('mp-feed-you'),
+        # The fall holds a respawn for 3 s; then the prompt names the attack control.
+        'waitMsec 3200', shot('mp-respawn'), 'waitMsec 2800', shot('mp-later'),
         *equip(2), 'waitMsec 250', shot('mp-strip'),
         'set ui_hudScale 1.25', 'waitMsec 300', shot('mp-scaled'), 'set ui_hudScale 1',
         'set ui_hudLayout 0', 'waitMsec 400', shot('mp-classic'), 'set ui_hudLayout 1', 'waitMsec 400', shot('mp-restored'),

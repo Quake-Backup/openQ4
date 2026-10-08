@@ -1253,4 +1253,6 @@
 	"#str_231230"	"Vehicle locked"
 	"#str_231231"	"BOT"
 	"#str_231232"	"%s OF %d"
+	"#str_231233"	"Respawn"
+	"#str_231234"	"RESPAWN IN"
 }

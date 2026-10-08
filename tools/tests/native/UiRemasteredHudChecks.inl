@@ -311,6 +311,34 @@ static void CheckRemasteredMpHud(ScreenHost& host, const char* path) {
 	runtime.Frame(RemasteredViewport(1280,720),4.15);
 	Check(Shown(runtime,"vote") && Shown(runtime,"vote-l1") && !Shown(runtime,"vote-l2"),"the vote card lists its fields");
 	Check(Shown(runtime,"follow") && Shown(runtime,"follow-name") && !Shown(runtime,"spec-free"),"the follow card names the followed player");
+
+	// Respawn: the attack control's Respawn in the lower third, fading in as it
+	// appears; while overtime holds the respawn, the seconds left instead.
+	Check(runtime.SetState({{"oq4_spectating",false},{"oq4_following",false},{"oq4_respawn",1.0},
+		{"oq4_key_attack",std::string("MOUSE1")}},error,4.2),error.c_str());
+	Check(runtime.RunEvent("oq4_respawn",4.2,effects,error),"the respawn prompt appears");
+	runtime.Frame(RemasteredViewport(1280,720),4.25);
+	Bounds respawn;
+	const auto rising = runtime.PresentedValue("respawn-c","opacity");
+	Check(rising && float(rising->data[0]) < .5f,"the respawn prompt fades in");
+	runtime.Frame(RemasteredViewport(1280,720),4.5);
+	const auto risen = runtime.PresentedValue("respawn-c","opacity");
+	Check(risen && Near(float(risen->data[0]),1),"the respawn prompt settles opaque");
+	Check(Shown(runtime,"respawn") && Shown(runtime,"respawn-ready") && !Shown(runtime,"respawn-held") && !Shown(runtime,"follow"),
+		"dead, the attack control's Respawn shows instead of the follow card");
+	const auto key = runtime.PresentedValue("respawn-key","text");
+	Check(key && key->text == "MOUSE1","the prompt names the attack control");
+	Check(runtime.GetBounds("respawn-c",respawn) && Near(respawn.x+respawn.width/2,640,1.5f) && respawn.y > 720*2/3.f &&
+		respawn.y+respawn.height < 720-51*1.5f,"the prompt is centred in the lower third, clear of the status bar");
+	Check(runtime.SetState({{"oq4_respawn",2.0},{"oq4_respawn_in",4.0}},error,4.6),error.c_str());
+	runtime.Frame(RemasteredViewport(1280,720),4.65);
+	const auto seconds = runtime.PresentedValue("respawn-in","text");
+	Check(Shown(runtime,"respawn-held") && !Shown(runtime,"respawn-ready") && seconds && seconds->text == "4",
+		"a held respawn counts down its seconds");
+	Check(runtime.SetState({{"oq4_respawn",0.0}},error,4.7),error.c_str());
+	Check(runtime.RunEvent("oq4_respawn",4.7,effects,error),"the respawn prompt leaves");
+	runtime.Frame(RemasteredViewport(1280,720),4.75);
+	Check(!Shown(runtime,"respawn"),"alive again, the prompt goes");
 	Check(host.errors == 0,"no runtime diagnostics across the MP HUD exercise");
 	runtime.Shutdown();
 }

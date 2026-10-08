@@ -15103,6 +15103,15 @@ void idPlayer::ReadFromSnapshot( const idBitMsgDelta &msg ) {
  		}
 		// die
 		pfl.dead = true;
+		// openQ4: mirror the respawn hold Killed() sets on the server - the
+		// fall, longer in overtime - which the Remastered HUD's respawn
+		// prompt counts down.
+		minRespawnTime = gameLocal.time + RAGDOLL_DEATH_TIME;
+		const int overtimeDelay = gameLocal.mpGame.GetOvertimeRespawnDelay();
+		if ( overtimeDelay > 0 ) {
+			minRespawnTime = Max( minRespawnTime, gameLocal.time + overtimeDelay );
+		}
+		maxRespawnTime = minRespawnTime + MAX_RESPAWN_TIME;
 		ClearPowerUps();
 		SetAnimState( ANIMCHANNEL_LEGS, "Legs_Dead", 4 );
 		SetAnimState( ANIMCHANNEL_TORSO, "Torso_Dead", 4 );

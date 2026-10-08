@@ -76,6 +76,12 @@ ENTRIES = {
     "#str_231231": ("BOT", "BOT", "BOT", "BOT", "BOT", "BOT", "BOT", "BOT", "БОТ", "BOT", "BOT", "БОТ"),
     "#str_231232": ("%s OF %d", "%s DE %d", "%s Z %d", "%s SUR %d", "%s VON %d", "%s / %d", "%s SU %d", "%s Z %d", "%s ИЗ %d",
                     "%s DE %d", "%s / %d", "%s З %d"),
+    # The multiplayer respawn prompt (14.9): the attack control's action, and the hold's countdown label.
+    "#str_231233": ("Respawn", "Renascer", "Oživit", "Réapparaître", "Wiedereinstieg", "Újraéledés", "Rinasci", "Odrodzenie",
+                    "Возродиться", "Reaparecer", "Yeniden doğ", "Відродитися"),
+    "#str_231234": ("RESPAWN IN", "RENASCE EM", "OŽIVENÍ ZA", "RÉAPPARITION DANS", "WIEDEREINSTIEG IN", "ÚJRAÉLEDÉSIG",
+                    "RINASCITA TRA", "ODRODZENIE ZA", "ВОЗРОЖДЕНИЕ ЧЕРЕЗ", "REAPARICIÓN EN", "YENİDEN DOĞMAYA",
+                    "ВІДРОДЖЕННЯ ЧЕРЕЗ"),
 }
 
 LINE = re.compile(r'^\s*"(#str_\d+)"\s*"(.*)"\s*$')

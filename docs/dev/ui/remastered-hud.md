@@ -15,7 +15,7 @@ stock layout, drawn through the [HUD presentation bridge](hud-coverage.md).
 | --- | --- | --- |
 | `guis/hud.gui`, `guis/q4xhud.gui` | `remastered_marine.q4ui`, `remastered_marine_awakening.q4ui` | Status bar, weapon strip, pickups, transmission display, boss bar, notices, interactive brackets, damage direction, missile warning; in multiplayer the powerup slots and developer readouts |
 | `guis/hud_strogg.gui`, `guis/q4xhud_strogg.gui` | `remastered_strogg.q4ui`, `remastered_strogg_awakening.q4ui` | The Strogg family of the same groups |
-| `guis/mphud.gui` | `remastered_mp.q4ui` | Kill feed, standing, team panels with flags and zone, timer, center column notices, aim text, vote, voice, chat lines, follow card, Tourney strip, statistics card, Arena ceremony, lag notice |
+| `guis/mphud.gui` | `remastered_mp.q4ui` | Kill feed, standing, team panels with flags and zone, timer, center column notices, aim text, vote, voice, chat lines, follow card, respawn prompt, Tourney strip, statistics card, Arena ceremony, lag notice |
 | `guis/hud.gui` while riding the flatbed, `guis/hud_strogg.gui` on the tram | (the on-foot documents) | The ride's silhouette gauge replaces the three gauges (`enterFlatbed`/`enterTram`), traced from the stock truck and tram art |
 | `guis/vehicles/hud.gui` | `remastered_vehicle.q4ui` | The walker's and hover tank's status bar (ARMOR and SHIELDS gauges, weapon panel, rocket count, charge bar), entry lines, hit flash, electrical warning, HUD prompt (Exit or Vehicle locked), transmission display, boss bar, notices |
 | `guis/wristcomm.gui`, `guis/wristcomm_strogg.gui` | `remastered_objectives.q4ui`, `remastered_objectives_strogg.q4ui` | Objectives display (every objective, three at a time, a COMPLETED section), new-objective and objective-complete notices, OBJECTIVE FAILED |
@@ -53,6 +53,14 @@ extra fields beside the stock ones; the stock GUIs ignore them.
   vote tally, the followed player and the control keys. `oq4_flags`,
   `oq4_clockWarn` and `oq4_state` are announced as events, so looping motion
   starts only when its state does.
+- Respawn (`PublishRemasteredHud`): `oq4_respawn` is 1 while you lie dead
+  and the attack control would bring you back, 2 while overtime holds the
+  respawn with `oq4_respawn_in` seconds left, else 0; the `oq4_respawn` event
+  fades the prompt in as it appears. It follows `CheckRespawns`: round modes
+  keep the eliminated out until the next round, sudden death in deathmatch
+  brings back only the leaders, and Tourney only its arena's two players. A
+  client mirrors the server's hold (the 3 s fall, longer in overtime) when its
+  snapshot reports the death.
 - Scoreboard (`idMultiplayerGame::PublishRemasteredScoreboard`): per panel
   `oq4_sb{p}_kind`, `_score` and `_count`, per row `oq4_sb{p}_{r}_name`, `_clan`,
   `_score`, `_kills`, `_deaths`, `_time`, `_ping` and `_flags` (you, dead, bot,
@@ -97,7 +105,8 @@ and frame costs for a document.
 - `tools/ui/capture_remastered_hud.py --assets <Quake 4> --output .tmp/<dir>
   --scenario <name>` captures windowed gameplay without host input: `marine`,
   `strogg`, `objectives`, `tank` (convoy1, boarding through the actor's
-  `enterVehicle` script event), `mp` and `mp-ctf` (with the scoreboard), and the
+  `enterVehicle` script event), `mp` (with the scoreboard and the respawn
+  prompt after `kill 0`) and `mp-ctf` (with the scoreboard), and the
   `mp-pace`/`sp-pace` profiles.
 
 ## Open work
@@ -106,7 +115,6 @@ and frame costs for a document.
   rows, the air-defence cannon (its exit line needs per-window suppression of
   the stock drawing before a prompt can replace it), The Awakening's space
   cannon, MCC cannon, speeder and GEV displays, the chat entry line (an
-  interactive field, which belongs with the retained menu input) and the
-  respawn prompt still draw their stock layout through the presentation
-  bridge.
+  interactive field, which belongs with the retained menu input) still draw
+  their stock layout through the presentation bridge.
 - The Objectives hold/toggle setting and touch toggle are not implemented.

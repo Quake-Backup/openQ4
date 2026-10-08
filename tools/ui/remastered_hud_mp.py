@@ -3,8 +3,8 @@
 The document receives the stock multiplayer HUD's state and named events plus
 the game's Remastered fields (idMultiplayerGame::PublishRemasteredHud: the kill
 feed and chat as fields, ordinals, the lead gap, the limit, the clock as
-numbers, flags, the zone, alive players, the vote tally and the followed
-player). Constructions follow the design atlas's multiplayer sheet: compact
+numbers, flags, the zone, alive players, the vote tally, the followed
+player and the respawn prompt). Constructions follow the design atlas's multiplayer sheet: compact
 sheared HUD plates at black 0.50, never wider than their content, the ◥ marker
 and the header-band plate for you.
 """
@@ -137,6 +137,20 @@ def flex_row(ident: str, children: list, **props) -> dict:
          "align-items": ui.keyword("center")}
     p.update(props)
     return ui.group(ident, p, children)
+
+
+def key_chip(doc: HudDocument, ident: str, key_expr, *, size: float = 6, h: float = 10) -> dict:
+    """The active control (13.4): its key name in dark ProFont on a white chip
+    at 0.85 with a cut lower-leading corner, `h` u tall."""
+    return ui.group(ident + "-chip", {"position": ui.keyword("relative"), "display": ui.keyword("block"), "height": ui.length(u(h)),
+                                      "padding-left": ui.length(u(4)), "padding-right": ui.length(u(3)),
+                                      "margin-right": ui.length(u(4))},
+                    [vec(ident + "-chipbg", [{"id": "k", "fill": ui.solid([1, 1, 1, 0.85]), "commands": [
+                        {"id": "a", "op": "move", "points": [[0, 0]]}, {"id": "b", "op": "line", "points": [[{"fraction": 1}, 0]]},
+                        {"id": "c", "op": "line", "points": [[{"fraction": 1}, {"fraction": 1}]]},
+                        {"id": "d", "op": "line", "points": [[u(3), {"fraction": 1}]]},
+                        {"id": "e", "op": "line", "points": [[0, {"fraction": 1, "dp": -u(3)}]]}, {"id": "f", "op": "close"}]}]),
+                     bound_label(doc, ident + "-key", key_expr, size, rgb(DARK), face="profont", line=h)])
 
 
 def declare(doc: HudDocument, spec: dict) -> None:
@@ -955,15 +969,7 @@ def follow_card(doc: HudDocument) -> dict:
                     [plate_vec("follow-plate", 30, 0.58), block_m, block_s, heading_f, heading_s, name, free, rank, score, chevrons])
 
     def prompt(ident, key_expr, word_key):
-        chip = ui.group(ident + "-chip", {"position": ui.keyword("relative"), "display": ui.keyword("block"), "height": ui.length(u(10)),
-                                          "padding-left": ui.length(u(4)), "padding-right": ui.length(u(3)), "margin-right": ui.length(u(4))},
-                        [vec(ident + "-chipbg", [{"id": "k", "fill": ui.solid([1, 1, 1, 0.85]), "commands": [
-                            {"id": "a", "op": "move", "points": [[0, 0]]}, {"id": "b", "op": "line", "points": [[{"fraction": 1}, 0]]},
-                            {"id": "c", "op": "line", "points": [[{"fraction": 1}, {"fraction": 1}]]},
-                            {"id": "d", "op": "line", "points": [[u(3), {"fraction": 1}]]},
-                            {"id": "e", "op": "line", "points": [[0, {"fraction": 1, "dp": -u(3)}]]}, {"id": "f", "op": "close"}]}]),
-                         bound_label(doc, ident + "-key", key_expr, 6, rgb(DARK), face="profont", line=10)])
-        return flex_row(ident, [chip, label(ident + "-word", word_key, 8.4, [1, 1, 1, 0.85], line=10)],
+        return flex_row(ident, [key_chip(doc, ident, key_expr), label(ident + "-word", word_key, 8.4, [1, 1, 1, 0.85], line=10)],
                         **{"margin-left": ui.length(u(7)), "margin-right": ui.length(u(7))})
     follow_prompts = flex_row("follow-prompts", [prompt("pr-next", S("oq4_key_attack"), "#str_231215"),
                                                  prompt("pr-free", S("oq4_key_jump"), "#str_231214")], display=ui.keyword("none"))
@@ -976,6 +982,38 @@ def follow_card(doc: HudDocument) -> dict:
     group = ui.group("follow", {**ui.absolute(left=0, top=u(360), width=u(640), height=u(50)), "display": ui.keyword("none")}, [card, prompts])
     doc.show("follow", S("oq4_spectating"))
     doc.bind("follow.top", "follow", "top", sel(following, u(360), u(404)))
+    return group
+
+
+# ================================================================== respawn
+
+def respawn_prompt(doc: HudDocument) -> dict:
+    """While you lie dead and the rules let you back in (14.9 Remastered
+    additions): Respawn with the attack control, centered in the lower third
+    on a HUD plate at 0.50; while the server holds the respawn (overtime's
+    growing delay), RESPAWN IN and the seconds left in Chain instead. The game
+    sends oq4_respawn as the prompt appears or goes; it fades in over 200 ms."""
+    declare(doc, {"oq4_respawn": 0, "oq4_respawn_in": 0, "oq4_key_attack": ""})
+    respawn = S("oq4_respawn")
+    ready = flex_row("respawn-ready", [key_chip(doc, "respawn", S("oq4_key_attack"), size=7.6, h=13),
+                                       label("respawn-word", "#str_231233", 11.5, WHITE, line=13)],
+                     **{"display": ui.keyword("none")})
+    doc.bind("respawn-ready.display", "respawn-ready", "display", sel(op("==", respawn, 1), "flex", "none"))
+    held = flex_row("respawn-held", [
+        label("respawn-held-word", "#str_231234", 7.2, [1, 1, 1, 0.7], line=13,
+              **{"letter-spacing": ui.length(0.75), "margin-right": ui.length(u(5))}),
+        bound_label(doc, "respawn-in", op("numberText", S("oq4_respawn_in")), 13, rgb(VALUE), face="chain", line=13)],
+        **{"display": ui.keyword("none")})
+    doc.bind("respawn-held.display", "respawn-held", "display", sel(op("==", respawn, 2), "flex", "none"))
+    content = flex_row("respawn-c", [plate_vec("respawn-plate", 21), ready, held],
+                       **{"height": ui.length(u(21)), "padding-left": ui.length(u(8)), "padding-right": ui.length(u(9)),
+                          "opacity": num(1)})
+    group = ui.group("respawn", {**ui.absolute(left=0, top=u(372), width=u(640)), "display": ui.keyword("none"),
+                                 "justify-content": ui.keyword("center")}, [content])
+    doc.bind("respawn.display", "respawn", "display", sel(op(">", respawn, 0), "flex", "none"))
+    doc.timeline("respawn-rise", 200, [tr("respawn-c", "opacity", [(0, num(0)), (200, num(1))])])
+    step = when(op(">", respawn, 0), [play("respawn-rise")], [cancel("respawn-rise")])
+    doc.on("oq4_respawn", step)
     return group
 
 
@@ -1326,7 +1364,7 @@ def mp_document() -> dict:
     and the timer top-leading, the center column top center, the kill feed
     and the managed-match card top-trailing, aim text under the crosshair,
     the vote at the leading edge, chat and voice at the bottom-leading
-    corner, and the follow card over the status bar."""
+    corner, and the follow card or the respawn prompt over the status bar."""
     doc = HudDocument("openq4.hud.remastered.mp")
     layout_state(doc)
     doc.number("gametype", 1)
@@ -1341,6 +1379,7 @@ def mp_document() -> dict:
     lines = chat_lines(doc)
     ctx = match_context(doc)
     follow = follow_card(doc)
+    respawn = respawn_prompt(doc)
     strip, bar, banners = tourney(doc)
     stats = statistics(doc)
     lag = connection_notice(doc)
@@ -1355,7 +1394,7 @@ def mp_document() -> dict:
         anchor(doc, "cc", [aim]),
         anchor(doc, "cl", [ballot]),
         anchor(doc, "bl", [chat_box(doc, talkers + lines)]),
-        anchor(doc, "bc", [follow], scale="hud.centerScale"),
+        anchor(doc, "bc", [follow, respawn], scale="hud.centerScale"),
         arena,
     ])
     return doc.build(root, {"canvas": {"height": 720, "minWidth": 960},

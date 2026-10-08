@@ -1253,4 +1253,6 @@
 	"#str_231230"	"Fahrzeug gesperrt"
 	"#str_231231"	"BOT"
 	"#str_231232"	"%s VON %d"
+	"#str_231233"	"Wiedereinstieg"
+	"#str_231234"	"WIEDEREINSTIEG IN"
 }

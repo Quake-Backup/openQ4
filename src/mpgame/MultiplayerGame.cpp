@@ -19511,6 +19511,7 @@ void idMultiplayerGame::ResetRemasteredHudAnnouncements( void ) {
 	}
 	hudClockWarn = -1;
 	hudMatchState = -1;
+	hudRespawn = -1;
 }
 
 /*
@@ -19710,6 +19711,43 @@ void idMultiplayerGame::PublishRemasteredHud( idUserInterface *_mphud, idPlayer 
 	_mphud->SetStateString( "oq4_key_jump", common->KeysFromBinding( "_moveup" ) );
 	_mphud->SetStateString( "oq4_key_scores", common->KeysFromBinding( "_impulse19" ) );
 
+	// The respawn prompt: while you lie dead and CheckRespawns would let you
+	// back in, Respawn on the attack control (1) once the fall is over; while
+	// overtime holds the respawn, the seconds left (2).  Round modes keep the
+	// eliminated out until the next round (the client never hears who is
+	// eliminated, and everyone dead mid-round is), sudden death in deathmatch
+	// brings back only the leaders, and Tourney only its arena's two players.
+	bool mayRespawn = false;
+	if ( !localPlayer->spectating && localPlayer->pfl.dead && localPlayer->health <= 0 ) {
+		if ( state == SUDDENDEATH && !tourney ) {
+			mayRespawn = teamGame || localPlayer->IsLeader() || IsArenaCampaignMatch();
+		} else if ( state == WARMUP || state == COUNTDOWN || state == GAMEON ) {
+			if ( !tourney ) {
+				mayRespawn = gameState->AllowRespawn( localPlayer ) &&
+					!( state == GAMEON && MPGameTypeHasAny( gameLocal.gameType, GTF_ELIMINATION ) );
+			} else if ( localPlayer->GetArena() >= 0 && localPlayer->GetArena() < MAX_ARENAS ) {
+				rvTourneyArena &arena = ((rvTourneyGameState*)gameState)->GetArena( localPlayer->GetArena() );
+				mayRespawn = arena.GetState() != AS_DONE && arena.GetState() != AS_INACTIVE &&
+					( arena.GetPlayers()[ 0 ] == localPlayer || arena.GetPlayers()[ 1 ] == localPlayer );
+			} else {
+				mayRespawn = true;		// the waiting room
+			}
+		}
+	}
+	int respawn = 0;
+	int respawnIn = 0;
+	if ( mayRespawn ) {
+		const int held = localPlayer->minRespawnTime - gameLocal.time;
+		if ( held <= 0 ) {
+			respawn = 1;
+		} else if ( GetOvertimeRespawnDelay() > 0 ) {
+			respawn = 2;
+			respawnIn = ( held + 999 ) / 1000;
+		}
+	}
+	_mphud->SetStateInt( "oq4_respawn", respawn );
+	_mphud->SetStateInt( "oq4_respawn_in", respawnIn );
+
 	// The HUD's looping motion (a taken flag's beat, the last ten seconds'
 	// pulse, the warm-up breathing) starts and stops on these changes only.
 	const int clockWarn = ( countdown || !timed ) ? 0 : clockMs < 10000 ? 2 : clockMs < 60000 ? 1 : 0;
@@ -19724,6 +19762,12 @@ void idMultiplayerGame::PublishRemasteredHud( idUserInterface *_mphud, idPlayer 
 		hudMatchState = (int)state;
 		_mphud->HandleNamedEvent( "oq4_state" );
 	}
+	// The prompt fades in when it appears, not when the countdown gives way
+	// to the control.
+	if ( ( respawn > 0 ) != ( hudRespawn > 0 ) ) {
+		_mphud->HandleNamedEvent( "oq4_respawn" );
+	}
+	hudRespawn = respawn;
 }
 
 /*

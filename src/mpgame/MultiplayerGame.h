@@ -1372,6 +1372,8 @@ private:
 	int				hudFlagStates[ 3 ];
 	int				hudClockWarn;
 	int				hudMatchState;
+	// the respawn prompt last published (oq4_respawn fades it in as it appears)
+	int				hudRespawn;
 	void			ResetRemasteredHudAnnouncements( void );
 
 	void			PublishRemasteredHud( idUserInterface *_mphud, idPlayer *localPlayer );

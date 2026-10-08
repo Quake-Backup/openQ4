@@ -357,7 +357,9 @@ corner, objective notices use the top corners, and multiplayer's kill feed,
 standing, timer and chat keep to the edges. Vehicles get the same centered status
 bar with an Exit prompt naming your jump key, the objectives display lists every
 objective with the completed ones below, and the scoreboard adds your place, ping
-bars and the Tourney bracket.
+bars and the Tourney bracket. After you die in multiplayer, a Respawn prompt
+names your attack key once you can return, with a countdown while overtime
+delays your respawn.
 
 Console settings are saved automatically:
 
