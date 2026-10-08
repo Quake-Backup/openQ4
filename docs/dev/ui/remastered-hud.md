@@ -121,8 +121,11 @@ walking every value:
   place (`Motion::AdvanceUndoable`), rolling the sample back if the event is
   rejected; an event no longer copies the document's values.
 - Vector geometry caches quarter-pixel phases for elements moving by
-  translation; the vehicle gauges drain through transformed clip windows, so
-  a regenerating shield never lays the document out again.
+  translation; the vehicle, ride and MCC gauges drain through transformed clip
+  windows, so a regenerating shield never lays the document out again. RmlUi
+  clips only content that overflows a window toward its trailing or bottom
+  side, so each window's content box reaches past its trailing edge; the
+  native checks measure the drawn fill, not only the window's transform.
 
 `openq4-ui-retained-screens-test --hud-bench <document>` reports event, state
 and frame costs for a document.

@@ -431,6 +431,20 @@ static void CheckRemasteredVehicleHud(ScreenHost& host, const char* path) {
 	// The fill drains toward the trailing end: its window moves, the art stays.
 	const auto shift = runtime.PresentedValue("vhull-win","transform");
 	Check(shift && Near(float(shift->data[0]),(119.6f-79*0.2f)*1.5f,0.1f),"the hull fill's leading edge sits at 20% from the trailing end");
+	// The drawn fill follows the window (RmlUi clips only overflowing content):
+	// at half hull the leading half of the track carries no fill.
+	const auto hullFillLead = [&](double pct, double at) {
+		Check(runtime.SetState({{"vehicle_health",pct},{"vehicle_shield",0.55}},error,at),error.c_str());
+		host.draws.clear(); runtime.Frame(RemasteredViewport(1280,720),at+.005);
+		float lo = 1e9f;
+		for (const auto& draw : host.draws) for (const auto& v : draw.vertices) {
+			if (v.a < .3f || v.a > .4f || std::fabs(v.r/v.a-.702f) > .03f || v.x < hull.x || v.x > hull.x+hull.width) continue;
+			lo = std::min(lo,v.x);
+		}
+		return lo;
+	};
+	const float fullLead = hullFillLead(1.0,.46), halfLead = hullFillLead(0.5,.47);
+	Check(fullLead < hull.x+hull.width && halfLead > fullLead+.3f*hull.width,"a half hull draws only the trailing half of its fill");
 
 	// Entry: the lines begin 2 s after showExitmessage; the prompt shows Exit.
 	Check(runtime.SetState({{"vehicle_weapon",3.0},{"vehicle_health",0.8},{"vehicle_shield",0.55}},error,.5),error.c_str());

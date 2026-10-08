@@ -94,7 +94,10 @@ def moving_window(doc: HudDocument, ident: str, left: float, top: float, width: 
     its content stays put: the window and its content move by opposite
     transforms, so a draining gauge never lays the document out again."""
     shift = op("*", op("-", lead, left), U)
-    content = box(ident + "-content", 0, 0, u(width), u(height), children, transform=ui.transform())
+    # RmlUi clips only content that overflows toward the trailing or bottom side
+    # (as fill_window in remastered_hud_status notes), so the content box reaches
+    # past the window's trailing edge; the paths inside are absolute.
+    content = box(ident + "-content", 0, 0, u(width) + 600, u(height), children, transform=ui.transform())
     window = box(ident, u(left), u(top), u(width), u(height), [content], overflow=ui.keyword("hidden"),
                  transform=ui.transform())
     doc.bind(ident + ".shift", ident, "transform", [shift, 0, 1, 1, 0])
