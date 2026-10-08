@@ -12,7 +12,9 @@
   lack published by the game, and multiplayer adds the respawn prompt. The
   Minimal preset (`ui_hudLayout 2`) keeps the readouts, the crosshair and what
   asks for the player's action. Settings > Game Options > HUD offers the layout,
-  size, width and safe-area inset. [Remastered HUD](ui/remastered-hud.md).
+  size, width and safe-area inset, and Toggle Objectives (`g_objectivesToggle`)
+  opens and closes the objectives display with presses, with a Close prompt.
+  [Remastered HUD](ui/remastered-hud.md).
 
 - [x] Route the screen-space gameplay HUD families through the retained UI,
   including objectives, crosshairs, multiplayer score/chat/summary panels,

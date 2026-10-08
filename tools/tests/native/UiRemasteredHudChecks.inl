@@ -906,9 +906,19 @@ static void CheckRemasteredObjectivesHud(ScreenHost& host, const char* path, boo
 	Check(runtime.SetState({{"oq4_obj_count",0.0},{"oq4_done_count",0.0},{"oq4_obj_scroll",0.0}},error,2.1),error.c_str());
 	runtime.Frame(RemasteredViewport(1280,720),2.15);
 	Check(Shown(runtime,"odisp-empty") && !Shown(runtime,"odisp-scroll"),"no objective shows the empty plate");
+	// Held (the stock), the display has no prompt; with Toggle Objectives the
+	// HUD prompt names the scores control and Close at the trailing corner.
+	Check(!Shown(runtime,"opr"),"a held display shows no Close prompt");
+	Check(runtime.SetState({{"oq4_obj_toggle",true},{"oq4_key_scores",std::string("TAB")}},error,2.16),error.c_str());
+	runtime.Frame(RemasteredViewport(1280,720),2.17);
+	const auto scores = runtime.PresentedValue("opr-key","text");
+	Bounds closePrompt;
+	Check(Shown(runtime,"opr") && scores && scores->text == "TAB" && runtime.GetBounds("opr",closePrompt) &&
+		Near(closePrompt.x+closePrompt.width,320+629*1.5f,1.5f) && Near(closePrompt.y+closePrompt.height,476*1.5f,1.5f),
+		"a toggled display shows the scores key and Close at the bottom-trailing corner");
 	Check(runtime.RunEvent("wristcommHide",2.2,effects,error),"the display closes");
 	runtime.Frame(RemasteredViewport(1280,720),2.25);
-	Check(!Shown(runtime,"odisp"),"the display is gone");
+	Check(!Shown(runtime,"odisp") && !Shown(runtime,"opr"),"the display and its prompt are gone");
 
 	// A failed objective names itself.
 	Check(runtime.SetState({{"oq4_failed_title",std::string("Protect the convoy")}},error,2.3),error.c_str());

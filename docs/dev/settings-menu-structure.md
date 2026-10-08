@@ -219,6 +219,7 @@ The Game Options pane is `p_settings_game` and is included from `content/baseoq4
 | HUD Size | `sliderDef` + `editDef` | `set_game_hudscale_slider_bar`, `set_game_hudscale_value` | `ui_hudScale` | `0.5..2`, step `0.05` | Independent of menu size; narrow screens limit the status bar to keep every gauge visible. |
 | HUD Width | `choiceDef` | `set_game_hudwidth_value` | `ui_hudWidth` | `0 16:9`, `1 21:9`, `2 Full` | How far edge HUD groups spread on wide screens. |
 | Safe Area Inset | `sliderDef` + `editDef` | `set_game_hudinset_slider_bar`, `set_game_hudinset_value` | `ui_hudSafeInset` | `0..10` percent, step `0.5` | Moves the HUD inward from every edge. |
+| Toggle Objectives | `choiceDef` | `set_game_objectivestoggle_value` | `g_objectivesToggle` | `0 No`, `1 Yes` | No shows the objectives display while the scores button is held (stock); Yes opens and closes it with each press, as the Xbox 360 edition did, and the Remastered display adds a Close prompt. |
 
 ### Corpse, Language, Console
 

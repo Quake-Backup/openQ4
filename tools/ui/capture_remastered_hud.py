@@ -176,9 +176,23 @@ def objectives(gui):
     ]
 
 
+def objectives_toggle():
+    """Toggle Objectives (g_objectivesToggle 1): a press of the scores button
+    opens the display, which stays open with its Close prompt until the next
+    press."""
+    return [
+        'set g_autoExecAfterMapLoad ""', 'notarget', 'god', 'set g_objectivesToggle 1', 'waitMsec 12000',
+        'openq4_testInput 150 scores', 'waitMsec 1500', shot('obj-toggle-open'),
+        'openq4_testInput 150 scores', 'waitMsec 700', shot('obj-toggle-closed'),
+        'set ui_hudLayout 0', 'openq4_testInput 150 scores', 'waitMsec 1000', shot('obj-toggle-classic'),
+        'openq4_testInput 150 scores', 'waitMsec 300', 'set ui_hudLayout 1', 'set g_objectivesToggle 0',
+    ]
+
+
 SCENARIOS = {
     'marine': ('game/airdefense1', on_foot('guis/hud.gui')),
     'objectives': ('game/airdefense1', objectives('guis/wristcomm.gui')),
+    'objectives-toggle': ('game/airdefense1', objectives_toggle()),
     'tank': ('game/convoy1', in_vehicle('tank_1')),
     'airdef': ('game/mcc_landing', cannon()),
     'turret': ('game/m03_airassault', space_cannon()),

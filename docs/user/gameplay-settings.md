@@ -362,8 +362,9 @@ bars and the Tourney bracket. After you die in multiplayer, a Respawn prompt
 names your attack key once you can return, with a countdown while overtime
 delays your respawn.
 
-**Settings > Game Options > HUD** sets the layout, size, width and safe area.
-The same settings are console variables, saved automatically:
+**Settings > Game Options > HUD** sets the layout, size, width and safe area,
+and whether the objectives open while you hold the scores button or with one
+press. The same settings are console variables, saved automatically:
 
 | Setting | Default | Range | Effect |
 | --- | --- | --- | --- |
@@ -371,6 +372,7 @@ The same settings are console variables, saved automatically:
 | `ui_hudWidth` | `1` | `0`–`2` | How far edge HUD items spread on wide screens: `0` 16:9, `1` 21:9, `2` the full width |
 | `ui_hudScale` | `1` | `0.5`–`2` | HUD size, independent of menu size |
 | `ui_hudSafeInset` | `0` | `0`–`10` | Distance inward, as a percentage of the viewport |
+| `g_objectivesToggle` | `0` | `0`–`1` | Toggle Objectives: `0` shows the objectives while the scores button is held, `1` opens and closes them with each press (the Remastered display then shows a Close prompt) |
 
 For example, `ui_hudScale 1.25` enlarges the HUD by 25%. On narrow screens the
 status bar's size is limited to keep every gauge visible. `ui_retained 0`

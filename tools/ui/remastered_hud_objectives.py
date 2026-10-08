@@ -360,6 +360,23 @@ def display(doc: HudDocument, strogg: bool) -> tuple:
     return group
 
 
+def close_prompt(doc: HudDocument) -> dict:
+    """With Toggle Objectives (g_objectivesToggle), the HUD prompt (14.8)
+    names the control that closes the open display: the scores key's cap and
+    Close at the bottom-trailing corner, where the hidden HUD leaves room."""
+    from remastered_hud_mp import flex_row, label, plate_vec
+    from remastered_hud_vehicle import prompt_chip
+    doc.boolean("oq4_obj_toggle")
+    doc.string("oq4_key_scores")
+    item = flex_row("opr-close", [prompt_chip(doc, "opr", S("oq4_key_scores")),
+                                  label("opr-close-word", "#str_41537", 10.6, [1, 1, 1, 0.92], line=16)])
+    row = flex_row("opr-row", [plate_vec("opr-plate", 16, 0.5), item],
+                   **{"height": ui.length(u(16)), "padding-left": ui.length(u(5.5)), "padding-right": ui.length(u(5.5))})
+    group = ui.group("opr", {**ui.absolute(right=u(640 - 629), bottom=u(480 - 476)), "display": ui.keyword("none")}, [row])
+    doc.bind("opr.display", "opr", "display", sel(AND(S("oq4.display"), S("oq4_obj_toggle")), "flex", "none"))
+    return group
+
+
 def objectives_document(*, strogg: bool) -> dict:
     doc = HudDocument(f"openq4.hud.remastered.objectives{'.strogg' if strogg else ''}")
     layout_state(doc)
@@ -367,6 +384,7 @@ def objectives_document(*, strogg: bool) -> dict:
     new = new_notice(doc, strogg)
     done = done_notice(doc, strogg)
     failed = failed_notice(doc)
+    close = close_prompt(doc)
     doc.on("hudJoin", *doc.joins)
     doc.on("onInit", *doc.joins)
     root = full("objectives-root", [
@@ -375,6 +393,7 @@ def objectives_document(*, strogg: bool) -> dict:
         anchor(doc, "tl", [beyond_minimal(doc, "tl-full", [new])]),
         anchor(doc, "tr", [beyond_minimal(doc, "tr-full", [done])]),
         anchor(doc, "cc", [failed]),
+        anchor(doc, "br", [close]),
     ])
     return doc.build(root, {"canvas": {"height": 720, "minWidth": 960},
                             "extensions": {"openq4": {"reference": "ui-visual-design.md 14.11",

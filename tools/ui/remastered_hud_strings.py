@@ -112,6 +112,10 @@ ENTRIES = {
     "#str_231245": ("Boosting", "Acelerando", "Zrychlení", "Accélération", "Boost aktiv", "Turbó aktív", "Accelerazione",
                     "Przyspieszanie", "Ускорение", "Acelerando", "Hızlanıyor", "Прискорення"),
     "#str_231246": (".", ",", ",", ",", ",", ",", ",", ",", ",", ",", ",", ","),
+    # Settings > Game Options > HUD: the objectives display's hold or toggle (14.11).
+    "#str_231247": ("Toggle Objectives", "Alternar objetivos", "Přepínání úkolů", "Objectifs à bascule", "Ziele umschalten",
+                    "Célok be/ki", "Obiettivi a commutazione", "Przełącz cele", "Переключать задачи", "Alternar objetivos",
+                    "Görevleri aç/kapat", "Перемикання завдань"),
 }
 
 LINE = re.compile(r'^\s*"(#str_\d+)"\s*"(.*)"\s*$')

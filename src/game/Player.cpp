@@ -5931,6 +5931,13 @@ void idPlayer::UpdateObjectiveInfo( void ) {
 		objectiveSystem->SetStateString( va( "oq4_done%d", i ), inventory.completedObjectives[ completed - 1 - i ].title.c_str() );
 	}
 	objectiveSystem->SetStateInt( "oq4_obj_scroll", 0 );
+	// With the toggle, the Remastered display names the control that closes it.
+	objectiveSystem->SetStateBool( "oq4_obj_toggle", g_objectivesToggle.GetBool() );
+	idStr scoresKeys = common->KeysFromBinding( "_impulse19" );
+	if ( scoresKeys.IsEmpty() ) {
+		scoresKeys = common->KeysFromBinding( "_showScores" );
+	}
+	objectiveSystem->SetStateString( "oq4_key_scores", scoresKeys.c_str() );
 
 	objectiveSystem->StateChanged( gameLocal.time );
 }
@@ -9894,6 +9901,25 @@ void idPlayer::HandleObjectiveInput() {
 		}
 	}
 #else
+	// openQ4: with g_objectivesToggle (Settings > Game Options > HUD > Toggle
+	// Objectives) each press of the scores button opens or closes the display,
+	// as the Xbox 360 edition's did; otherwise it shows while the button is held.
+	if ( g_objectivesToggle.GetBool() ) {
+		if ( gameLocal.inCinematic ) {
+			if ( objectiveSystemOpen ) {
+				ToggleObjectives ( );
+			}
+			objectiveButtonReleased = false;
+		} else if ( !objectiveButtonReleased ) {
+			if ( ( usercmd.buttons & BUTTON_SCORES ) == 0 ) {
+				objectiveButtonReleased = true;
+			}
+		} else if ( ( usercmd.buttons & BUTTON_SCORES ) != 0 ) {
+			ToggleObjectives ( );
+			objectiveButtonReleased = false;
+		}
+		return;
+	}
 	if ( ( usercmd.buttons & BUTTON_SCORES ) != 0 && !objectiveSystemOpen && !gameLocal.inCinematic ) {
 		ToggleObjectives ( );
 	} else if ( ( usercmd.buttons & BUTTON_SCORES ) == 0 && objectiveSystemOpen ) {

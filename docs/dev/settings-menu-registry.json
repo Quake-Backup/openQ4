@@ -3372,6 +3372,29 @@
       "accessibility": "Slider with paired edit field. Moves the HUD inward by a percentage of the view."
     },
     {
+      "id": "game.objectives_toggle",
+      "pane": "Game Options",
+      "section": "HUD",
+      "source": "game",
+      "target_type": "cvar",
+      "restart_required": false,
+      "path": "Settings > Game Options > HUD > Toggle Objectives",
+      "container": "set_game_objectivestoggle",
+      "widgets": [
+        "set_game_objectivestoggle_value"
+      ],
+      "widget_type": "choice",
+      "label_key": "#str_231247",
+      "choices_key": "#str_200059",
+      "values": [
+        "0",
+        "1"
+      ],
+      "target": "g_objectivesToggle",
+      "default": "0",
+      "accessibility": "Focusable choiceDef row. No shows the objectives display while the scores button is held; Yes opens and closes it with each press and adds a Close prompt."
+    },
+    {
       "id": "game.auto_skip_cinematics",
       "pane": "Game Options",
       "section": "Gameplay And View",

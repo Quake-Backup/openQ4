@@ -115,7 +115,10 @@ extra fields beside the stock ones; the stock GUIs ignore them.
   `oq4_failed_title`. Each notice closes on its own timer
   (`oq4_closeNewObjective`, `oq4_closeDoneObjective`), and the completion click
   plays once. While the display is open and holds more than three items, the
-  weapon-cycle controls scroll it.
+  weapon-cycle controls scroll it. `oq4_obj_toggle` reports Toggle Objectives
+  (`g_objectivesToggle`, Settings > Game Options > HUD), under which each press
+  of the scores button opens or closes the display, as the Xbox 360 edition's
+  did; the display then shows a HUD prompt naming `oq4_key_scores` and Close.
 
 ## Runtime cost
 
@@ -152,7 +155,9 @@ and frame costs for a document.
   `enterVehicle` script event), `airdef` (mcc_landing's cannon, boarded the
   same way), `turret` (m03's top gun, with `--awakening <content root holding
   q4xbase>`, after the level's own hand-off from its AI gunner), `mcc` (m06's
-  side gun, the same way), `speeder` (m07_race1, whose script seats the player
+  side gun, the same way), `objectives-toggle` (Toggle Objectives opening,
+  keeping and closing the display with presses), `speeder` (m07_race1, whose
+  script seats the player
   on the bike and runs the countdown; the race's checkpoint event, the
   countdown's expiry and the crouch control drive the rest), `mp` (with the
   scoreboard and the respawn
@@ -165,4 +170,4 @@ and frame costs for a document.
   rows, The Awakening's GEV display, the chat entry line (an
   interactive field, which belongs with the retained menu input) still draw
   their stock layout through the presentation bridge.
-- The Objectives hold/toggle setting and touch toggle are not implemented.
+- The touch control that toggles the objectives display is not implemented.
