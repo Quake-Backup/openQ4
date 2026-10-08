@@ -49,7 +49,7 @@ bool ValidProperty(const std::string& name, const Value& value) {
 			if (name == "backdrop-blur" && value.unit != "dp" && value.unit != "px") valid = false;
 		} else if (colours.contains(name)) valid = value.type == ValueType::Colour;
 		else if (auto entry = keywords.find(name); entry != keywords.end()) valid = value.type == ValueType::Keyword && entry->second.contains(value.text);
-		else if (name == "opacity" || name == "backdrop-saturate") valid = value.type == ValueType::Number && value.data[0] >= 0 && value.data[0] <= 1;
+		else if (name == "opacity" || name == "backdrop-saturate" || name == "backdrop-streak") valid = value.type == ValueType::Number && value.data[0] >= 0 && value.data[0] <= 1;
 		else if (name == "flex-grow" || name == "flex-shrink") valid = value.type == ValueType::Number && value.data[0] >= 0;
 		else if (name == "font-family") valid = value.type == ValueType::Font;
 		else if (name == "text") valid = value.type == ValueType::Text;
@@ -57,11 +57,13 @@ bool ValidProperty(const std::string& name, const Value& value) {
 		else if (name == "image") valid = value.type == ValueType::Image && ValidImageSource(value.text);
 		return valid;
 	}
-std::string BackdropFilterCss(const Value* blur, const Value* saturate) {
+std::string BackdropFilterCss(const Value* blur, const Value* saturate, const Value* streak) {
 	const bool blurs = blur && blur->data[0] > 0, desaturates = saturate && saturate->data[0] < 1;
-	if (!blurs && !desaturates) return "none";
+	const bool streaks = streak && streak->data[0] > 0;
+	if (!blurs && !desaturates && !streaks) return "none";
 	std::string css = blurs ? "blur("+blur->Css()+")" : "";
 	if (desaturates) css += std::string(css.empty() ? "" : " ")+"saturate("+saturate->Css()+")";
+	if (streaks) css += std::string(css.empty() ? "" : " ")+"streak("+streak->Css()+")";
 	return css;
 }
 bool ValidImageSource(const std::string& source) {
@@ -1520,14 +1522,15 @@ void MarkupNode(const Node& node, std::string& output) {
 	if (node.control) output += "position:relative;";
 	if (node.mask) output += "mask-image:q4-mask(alpha);";
 	const auto blur = node.properties.find("backdrop-blur"), saturate = node.properties.find("backdrop-saturate");
-	if (blur != node.properties.end() || saturate != node.properties.end()) {
+	const auto streak = node.properties.find("backdrop-streak");
+	if (blur != node.properties.end() || saturate != node.properties.end() || streak != node.properties.end()) {
 		const auto css = BackdropFilterCss(blur != node.properties.end() ? &blur->second : nullptr,
-			saturate != node.properties.end() ? &saturate->second : nullptr);
+			saturate != node.properties.end() ? &saturate->second : nullptr, streak != node.properties.end() ? &streak->second : nullptr);
 		if (css != "none") output += "backdrop-filter:"+css+";";
 	}
 	for (const auto& [name,value] : node.properties) if (name != "text") {
 		if (name == "opacity") { if (value.data[0] < 1) output += "filter:opacity("+value.Css()+");"; }
-		else if (name == "backdrop-blur" || name == "backdrop-saturate") continue; // Folded into backdrop-filter.
+		else if (name == "backdrop-blur" || name == "backdrop-saturate" || name == "backdrop-streak") continue; // Folded into backdrop-filter.
 		else if (name == "image") output += "decorator:"+ImageDecorator(node,value.text)+";";
 		else if (name == "image-fit" || name == "image-align-x" || name == "image-align-y" || name == "image-blend") continue; // Folded into the decorator.
 		else output += name+":"+value.Css()+";";

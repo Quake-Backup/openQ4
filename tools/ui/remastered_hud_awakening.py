@@ -348,11 +348,6 @@ RACE_PIPS = (215, 241, 267, 293, 319, 374, 400, 426, 452, 478)
 MARINE = 33.5                       # Marine's size at textscale 1, u
 GOLD, RACE_RED = "#E1CC67", "#FF3333"
 BOOST_KEY, BOOSTING_KEY, POINT_KEY = "#str_231244", "#str_231245", "#str_231246"
-# speeder_blur's square frame: the smear's strength from an edge (0) to 25% of
-# the view in (1), measured from the expansion's mask.
-STREAK = [(0, 1.0), (0.125, 0.89), (0.25, 0.745), (0.375, 0.58), (0.5, 0.412), (0.625, 0.263), (0.75, 0.141), (0.875, 0.063),
-          (1, 0.0)]
-STREAK_SIGMA = 5.0                  # u: the atlas's soft streak
 
 
 def race_bar(doc: HudDocument, dy: float = 18.0) -> dict:
@@ -464,30 +459,16 @@ def boost_items(doc: HudDocument) -> list:
 
 
 def speed_streak(doc: HudDocument) -> dict:
-    """While the boost pushes, the expansion's square-frame speed blur (its
-    hs/SpeedBlur window, which the expansion left hidden): the view softens
-    from each edge to a quarter of the way in, along speeder_blur's falloff,
-    with the boost's envelope (the game's oq4_boost_envelope: 500 ms in, held,
-    then 1.5 s out). Never under reduced motion, and not in Minimal."""
+    """While the boost pushes, the expansion's speed blur (its hs/SpeedBlur
+    window, which its HUD left hidden): the view smears toward its centre
+    along the bike's path, from nothing a quarter of the way in to the edges
+    along speeder_blur's square frame, with the boost's envelope (the game's
+    oq4_boost_envelope: 500 ms in, held, then 1.5 s out). The host draws it
+    (backdrop-streak). Never under reduced motion, and not in Minimal."""
     doc.number("oq4_boost_envelope")
-
-    def p(fx, fy):
-        return [{"fraction": fx}, {"fraction": fy}]
-    stops = [{"at": at, "color": ui.colour([1, 1, 1, alpha])} for at, alpha in STREAK]
-
-    def side(ident, corners, a, b):
-        commands = [{"id": f"{ident}{i}", "op": "move" if i == 0 else "line", "points": [p(*corner)]} for i, corner in enumerate(corners)]
-        commands.append({"id": f"{ident}z", "op": "close"})
-        return {"id": ident, "commands": commands, "fill": {"type": "linear", "from": p(*a), "to": p(*b), "stops": stops}}
-    # Four bands meeting on the view's diagonals, as the mask's frame does.
-    bands = [side("t", [(0, 0), (1, 0), (0.75, 0.25), (0.25, 0.25)], (0.5, 0), (0.5, 0.25)),
-             side("b", [(0, 1), (0.25, 0.75), (0.75, 0.75), (1, 1)], (0.5, 1), (0.5, 0.75)),
-             side("l", [(0, 0), (0.25, 0.25), (0.25, 0.75), (0, 1)], (0, 0.5), (0.25, 0.5)),
-             side("r", [(1, 0), (1, 1), (0.75, 0.75), (0.75, 0.25)], (1, 0.5), (0.75, 0.5))]
-    node = ui.group("streak", {**ui.FULL, "display": ui.keyword("block"), "backdrop-blur": ui.length(0)}, mask={"paths": bands})
+    node = ui.group("streak", {**ui.FULL, "display": ui.keyword("block"), "backdrop-streak": num(0)})
     off = OR(S("oq4.reduced"), op("==", S("hud.layout"), 2))
-    doc.bind("streak.blur", "streak", "backdrop-blur",
-             sel(off, 0, op("*", op("clamp", S("oq4_boost_envelope"), 0, 1), u(STREAK_SIGMA))))
+    doc.bind("streak.strength", "streak", "backdrop-streak", sel(off, 0, op("clamp", S("oq4_boost_envelope"), 0, 1)))
     return node
 
 

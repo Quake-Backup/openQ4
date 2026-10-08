@@ -64,6 +64,11 @@ struct ScreenHost final : Host {
 		Check(destination != 0,"the soft focus is drawn into a pushed layer");
 		softened.push_back({sigma,saturation,region}); return softFocus;
 	}
+	std::vector<float> streaks;
+	bool StreakBackdrop(std::uint32_t destination, float strength, const Bounds&) override {
+		Check(destination != 0,"the speed streak is drawn into a pushed layer");
+		streaks.push_back(strength); return softFocus;
+	}
 	void Log(bool error, const std::string& message) override {
 		if (error) { ++errors; std::fprintf(stderr,"retained: %s\n",message.c_str()); }
 	}

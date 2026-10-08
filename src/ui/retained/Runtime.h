@@ -148,6 +148,14 @@ public:
 	// unsupported: the runtime leaves the layer transparent and counts it, and
 	// the document's scrim fallback stands in.
 	virtual bool SoftenBackdrop(std::uint32_t destination, float sigma, float saturation, const Bounds& region) { return false; }
+	// The speed streak (backdrop-filter: streak()), The Awakening's speeder
+	// blur: draw the view into `destination`, opaque within `region`, each pixel
+	// averaging six samples toward the view's centre, 1 to 1.5 times its reach
+	// away. The reach follows the expansion's square frame, from nothing a
+	// quarter of the view in to `strength` times 5% of the view at its edges.
+	// False means unsupported: the layer stays transparent and the view
+	// unchanged, and the runtime counts it.
+	virtual bool StreakBackdrop(std::uint32_t destination, float strength, const Bounds& region) { return false; }
 private:
 	// Target identities must survive a last-context close/reopen within one
 	// host submission frame, even though RmlUi services can be shut down then.

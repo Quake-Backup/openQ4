@@ -13,6 +13,9 @@
 #include <RmlUi/Core/RenderManager.h>
 #include <RmlUi/Core/ElementInstancer.h>
 #include <RmlUi/Core/ElementUtilities.h>
+#include <RmlUi/Core/Filter.h>
+#include <RmlUi/Core/PropertyDefinition.h>
+#include <RmlUi/Core/PropertyDictionary.h>
 #include <json/json.h>
 #include <algorithm>
 #include <atomic>
@@ -255,13 +258,39 @@ struct Geometry {
 	};
 	std::unique_ptr<Submission> submission;
 };
+// The speed streak's RmlUi filter, `streak(<0..1>)` in a backdrop-filter: the
+// renderer compiles it like soft focus and the host draws it.
+class StreakFilter final : public Rml::Filter {
+public:
+	explicit StreakFilter(float strength) : strength(strength) {}
+	Rml::CompiledFilter CompileFilter(Rml::Element* element) const override {
+		return element->GetRenderManager()->CompileFilter("streak",Rml::Dictionary{{"value",Rml::Variant(strength)}});
+	}
+private:
+	float strength;
+};
+class StreakFilterInstancer final : public Rml::FilterInstancer {
+public:
+	StreakFilterInstancer() {
+		value = RegisterProperty("value","0").AddParser("number").GetId();
+		RegisterShorthand("filter","value",Rml::ShorthandType::FallThrough);
+	}
+	Rml::SharedPtr<Rml::Filter> InstanceFilter(const Rml::String&, const Rml::PropertyDictionary& properties) override {
+		const Rml::Property* property = properties.GetProperty(value);
+		return property ? Rml::MakeShared<StreakFilter>(property->Get<float>()) : nullptr;
+	}
+private:
+	Rml::PropertyId value = Rml::PropertyId::Invalid;
+};
+
 struct Filter {
 	float opacity = 1;
 	std::uint32_t mask = 0;
 	int width = 0, height = 0;
 	std::uint64_t generation = 0;
-	// Soft focus: a backdrop blur sigma in physical pixels and a saturation.
-	float blur = 0, saturation = 1;
+	// Soft focus: a backdrop blur sigma in physical pixels and a saturation;
+	// or the speed streak's strength.
+	float blur = 0, saturation = 1, streak = 0;
 	bool backdrop = false;
 };
 
@@ -567,6 +596,14 @@ public:
 			const float opacity = value->second.Get<float>();
 			if (std::isfinite(opacity)) return reinterpret_cast<Rml::CompiledFilterHandle>(new Filter{std::clamp(opacity,0.f,1.f)});
 		}
+		// The speed streak (backdrop-filter: streak()): drawn by the host.
+		if (name == "streak" && value != parameters.end()) {
+			const float strength = value->second.Get<float>();
+			if (std::isfinite(strength)) {
+				auto* filter = new Filter; filter->backdrop = true; filter->streak = std::clamp(strength,0.f,1.f);
+				return reinterpret_cast<Rml::CompiledFilterHandle>(filter);
+			}
+		}
 		// Soft focus (backdrop-filter: blur() saturate()): drawn by the host.
 		const auto sigma = parameters.find("sigma");
 		if ((name == "blur" && sigma != parameters.end()) || (name == "saturate" && value != parameters.end())) {
@@ -604,16 +641,21 @@ public:
 		// backdrop filters into a pushed layer; only the base surface is read.
 		// A host that cannot leaves the layer transparent: nothing changes, and
 		// the document's scrim fallback stands in.
-		float blur = 0, saturation = 1; bool backdrop = false;
+		float blur = 0, saturation = 1, streak = 0; bool backdrop = false;
 		for (auto handle : filters) {
 			const auto* filter = reinterpret_cast<const Filter*>(handle);
-			if (filter && filter->backdrop) { backdrop = true; blur = std::max(blur,filter->blur); saturation = std::min(saturation,filter->saturation); }
+			if (filter && filter->backdrop) {
+				backdrop = true; blur = std::max(blur,filter->blur); saturation = std::min(saturation,filter->saturation);
+				streak = std::max(streak,filter->streak);
+			}
 		}
 		if (backdrop) {
+			// A streak takes the backdrop; soft focus applies otherwise.
 			const Bounds region = ClipBounds();
 			if (auto* target = Find(destination)) Materialize(*target);
 			if (!failed && !source && destination && ActiveLayer(destination) && mode == Rml::BlendMode::Blend && region.width > 0 && region.height > 0 &&
-				host.SoftenBackdrop(Slot(destination),blur,saturation,region)) ++statistics.backdropComposites;
+				(streak > 0 ? host.StreakBackdrop(Slot(destination),streak,region) : host.SoftenBackdrop(Slot(destination),blur,saturation,region)))
+				++statistics.backdropComposites;
 			else ++statistics.backdropFallbacks;
 			return;
 		}
@@ -934,6 +976,7 @@ struct Services {
 	Rml::ElementInstancerGeneric<VectorElement> vectorInstancer;
 	Rml::ElementInstancerGeneric<HudElement> hudInstancer;
 	std::unique_ptr<VectorMaskInstancer> maskInstancer;
+	std::unique_ptr<StreakFilterInstancer> streakInstancer;
 	bool initialized = false;
 	Backend* AcquireBackend() {
 		for (auto& backend : backends) if (!backend->leased) {
@@ -963,15 +1006,18 @@ struct Services {
 		if (!Rml::Initialise()) return false;
 		initialized = true;
 		maskInstancer = std::make_unique<VectorMaskInstancer>();
+		streakInstancer = std::make_unique<StreakFilterInstancer>();
 		Rml::Factory::RegisterElementInstancer("q4-vector",&vectorInstancer);
 		Rml::Factory::RegisterElementInstancer("q4-node",&vectorInstancer);
 		Rml::Factory::RegisterElementInstancer("q4-hud",&hudInstancer);
 		Rml::Factory::RegisterDecoratorInstancer("q4-mask",maskInstancer.get());
+		Rml::Factory::RegisterFilterInstancer("streak",streakInstancer.get());
 		return true;
 	}
 	~Services() {
 		if (initialized) Rml::Shutdown();
 		maskInstancer.reset();
+		streakInstancer.reset();
 		Rml::SetRenderInterface(nullptr);
 		Rml::SetFileInterface(nullptr);
 		Rml::SetSystemInterface(nullptr);
@@ -1510,7 +1556,7 @@ struct Runtime::Impl {
 		bool complete = true;
 		// One input: formats it only when it changed, then applies it.
 		const auto apply = [&](AppliedInput& input, const PropertyKey& key, const Value& animated) -> bool {
-			const bool backdrop = key.second == "backdrop-blur" || key.second == "backdrop-saturate";
+			const bool backdrop = key.second == "backdrop-blur" || key.second == "backdrop-saturate" || key.second == "backdrop-streak";
 			if (!backdrop && animated.type != ValueType::Text && input.key == key && !(stateChanged && input.bound) && input.value.type == animated.type &&
 				std::memcmp(input.value.data.data(),animated.data.data(),sizeof(animated.data)) == 0 &&
 				input.value.unit == animated.unit && input.value.text == animated.text) return true;
@@ -1530,8 +1576,8 @@ struct Runtime::Impl {
 					if (const auto found = motion.Values().find(other); found != motion.Values().end()) return found->second;
 					return std::nullopt;
 				};
-				const auto blur = present("backdrop-blur"), saturate = present("backdrop-saturate");
-				string = BackdropFilterCss(blur ? &*blur : nullptr,saturate ? &*saturate : nullptr);
+				const auto blur = present("backdrop-blur"), saturate = present("backdrop-saturate"), streak = present("backdrop-streak");
+				string = BackdropFilterCss(blur ? &*blur : nullptr,saturate ? &*saturate : nullptr,streak ? &*streak : nullptr);
 			} else string = opacity ? (value.data[0] < 1 ? "opacity("+value.Css()+")" : "none") :
 				value.type == ValueType::Text ? host.Translate(value.text) : value.Css();
 			if(!current())return false;

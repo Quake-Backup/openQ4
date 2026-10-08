@@ -213,6 +213,13 @@ struct TestHost final : Host {
 		if (softFocus) activeLayer = destination;
 		return softFocus;
 	}
+	struct Streaked { std::uint32_t destination; float strength; Bounds region; };
+	std::vector<Streaked> streaked;
+	bool StreakBackdrop(std::uint32_t destination, float strength, const Bounds& region) override {
+		streaked.push_back({destination,strength,region});
+		if (softFocus) activeLayer = destination;
+		return softFocus;
+	}
 	FontMetrics GetFontMetrics(const std::string&, int size) override { return {size*.8f,size*.2f,size*1.2f,size*.5f}; }
 	Glyph GetGlyph(const std::string&, int size, std::uint32_t) override {
 		return {size*.6f,0,-size*.8f,size*.6f,static_cast<float>(size),0,0,1,1,"test-font"};
@@ -259,6 +266,39 @@ static void CheckSoftFocus(TestHost& host) {
 	Check(host.softened.size() == 1 && runtime.Statistics().backdropComposites == 0 && runtime.Statistics().backdropFallbacks == 1 &&
 		host.errors == 0,"a host without soft focus is counted and logs nothing");
 	host.softFocus = true;
+}
+
+// The speed streak: a node's backdrop-streak becomes RmlUi's backdrop-filter
+// streak(), and the renderer asks the host to streak the view into the pushed
+// layer at that strength over the node's box, instead of soft focus. No
+// strength draws nothing.
+static void CheckSpeedStreak(TestHost& host) {
+	const std::string source = R"json({"format":"openq4-ui","version":1,"id":"speed-streak",
+	 "root":{"id":"root","type":"group","properties":{"width":{"type":"length","value":100,"unit":"%"},"height":{"type":"length","value":100,"unit":"%"}},
+	  "children":[{"id":"streak","type":"group","properties":{"position":{"type":"keyword","value":"absolute"},
+	   "left":{"type":"length","value":0,"unit":"dp"},"top":{"type":"length","value":0,"unit":"dp"},
+	   "width":{"type":"length","value":100,"unit":"%"},"height":{"type":"length","value":100,"unit":"%"},
+	   "backdrop-blur":{"type":"length","value":4,"unit":"dp"},"backdrop-streak":{"type":"number","value":0}}}]},
+	 "timelines":[{"id":"boost","durationMs":200,"tracks":[
+	   {"node":"streak","property":"backdrop-streak","keys":[{"atMs":0,"value":{"type":"number","value":0}},{"atMs":200,"value":{"type":"number","value":0.5}}]}]}],
+	 "events":{"boost":[{"op":"playTimeline","timeline":"boost"}]}})json";
+	Document document; std::vector<Diagnostic> diagnostics;
+	Check(document.Load(source,diagnostics),"a streak document compiles");
+	Check(!document.Load(R"json({"format":"openq4-ui","version":1,"id":"speed-streak-range","root":{"id":"root","type":"group",
+		"properties":{"backdrop-streak":{"type":"number","value":1.5}}}})json",diagnostics),"a streak beyond full strength is rejected");
+	Runtime runtime(host);
+	Check(runtime.Initialize() && runtime.LoadDocument(source,"speed-streak.q4ui",diagnostics),"streak document loads");
+	Viewport viewport; viewport.width = 1280; viewport.height = 720;
+	host.softened.clear(); host.streaked.clear();
+	runtime.Frame(viewport,1);
+	Check(host.streaked.empty() && host.softened.size() == 1,"without strength the node keeps its soft focus");
+	Runtime::EventEffects effects; std::string error;
+	Check(runtime.RunEvent("boost",1,effects,error),"start the streak");
+	host.softened.clear();
+	runtime.Frame(viewport,1.3);
+	Check(host.streaked.size() == 1 && host.softened.empty() && Near(host.streaked[0].strength,.5f) && host.streaked[0].destination != 0 &&
+		Near(host.streaked[0].region.width,1280) && Near(host.streaked[0].region.height,720) && host.errors == 0,
+		"a streak replaces the soft focus at its strength over the node's box");
 }
 
 // Timeline completion programs: a fade hides its box when it plays to its end,
@@ -1177,6 +1217,7 @@ int main(int argc, char** argv) {
 	Check(host.errors==0,"no library warnings or errors");
 	CheckCompletionPrograms(host);
 	CheckSoftFocus(host);
+	CheckSpeedStreak(host);
 	CheckRetainedMeshes(host);
 	std::puts("Retained UI: density, layout, input, clipping, motion, bindings, independent contexts, bounded backend reuse, transactional instance snapshots, restart, completion programs, soft focus and retained meshes passed");
 }

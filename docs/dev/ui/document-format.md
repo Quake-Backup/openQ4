@@ -93,6 +93,18 @@ fallback. Documents choose their fallback with the read-only
 `ui_retainedSoftFocus` CVar, which is 0 there and with the opaque-backing
 option (`ui_retainedOpaqueBacking`).
 
+`backdrop-streak` (a number 0–1) instead streaks the view beneath the node's
+border box with *The Awakening*'s speeder blur (`hs/SpeedBlur`): each pixel
+averages six samples toward the view's centre, 1 to 1.5 times its reach away,
+and the reach follows the expansion's square frame from nothing a quarter of
+the view in to the value times 5% of the view at its edges. The frame and the
+centre are the view's wherever the node sits. A streak takes the backdrop in
+place of any soft focus on the same node; it animates and binds like the
+others. The host draws it through `Host::StreakBackdrop`: the engine copies
+the view out of the window capture and runs `glsl/retained_streak.glsl` on
+OpenGL and Vulkan; a host that cannot leaves the view unchanged and counts a
+fallback.
+
 `opacity` applies to the node's complete subtree using
 [isolated composition](composition.md), including when it is animated. Paint
 alpha is separate. Nested group opacities compose inside-out, and subtree paint

@@ -250,8 +250,11 @@ struct Renderer {
 } renderer;
 Renderer* renderSystem=&renderer;
 struct Declarations {
-    idMaterial backdrop{"_retainedBlur/backdrop"},scratch{"_retainedBlur/scratch"};
-    const idMaterial* FindMaterial(const char* name){return std::string(name)==backdrop.name ? &backdrop : std::string(name)==scratch.name ? &scratch : nullptr;}
+    idMaterial backdrop{"_retainedBlur/backdrop"},scratch{"_retainedBlur/scratch"},streak{"_retainedBlur/streak"};
+    const idMaterial* FindMaterial(const char* name){
+        for(idMaterial* material:{&backdrop,&scratch,&streak}) if(std::string(name)==material->name) return material;
+        return nullptr;
+    }
 } declarations;
 Declarations* declManager=&declarations;
 struct Host {
@@ -264,6 +267,7 @@ struct Host {
     idRenderTexture* blurScratch=nullptr;
     const idMaterial* blurBackdropMaterial=nullptr;
     const idMaterial* blurScratchMaterial=nullptr;
+    const idMaterial* blurStreakMaterial=nullptr;
     bool backdropCreated=false;
     int blurWidth=0,blurHeight=0;
     std::vector<int> meshes;
@@ -319,6 +323,34 @@ int main(){
     assert(Near(tall[0].xyz.y,200*sy) && Near(tall[2].xyz.y,300*sy));
     assert(Near(tall[0].st.x,100/1600.f) && Near(tall[0].st.y,1-200/900.f) && Near(tall[2].st.x,400/1600.f) && Near(tall[2].st.y,1-300/900.f));
     for(const auto& vertex:tall) assert(vertex.color[0]==255 && vertex.color[3]==255);
+    // The speed streak copies the whole view out of the window capture into
+    // the scratch target unblurred, then streaks it into the destination layer
+    // in the view's own coordinates, with the strength in parm0.
+    renderer.calls.clear();
+    assert(!host.StreakBackdrop(3,0,region) && !host.StreakBackdrop(3,1.5f,region) && !host.StreakBackdrop(3,NAN,region) &&
+        !host.StreakBackdrop(2,.5f,region) && renderer.calls.empty());
+    assert(host.StreakBackdrop(3,.5f,region));
+    std::vector<Call> streak;
+    for(const auto& call:renderer.calls) if(call.op!="image") streak.push_back(call);
+    const std::vector<std::string> streakOrder{"bind","capture","bind","color","draw","color","bind","color","draw","color"};
+    assert(streak.size()==streakOrder.size());
+    for(size_t i=0;i<streakOrder.size();++i) assert(streak[i].op==streakOrder[i]);
+    assert(streak[0].target==nullptr && streak[1].name=="_retainedBackdrop" && streak[2].target==host.blurScratch &&
+        streak[6].target==&destination && renderer.bound==&destination);
+    assert(streak[4].material==&declarations.backdrop && streak[3].parms[2]==0 && streak[3].parms[3]==1);
+    const auto& copy=streak[4].vertices;
+    assert(Near(copy[0].xyz.x,0) && Near(copy[0].xyz.y,0) && Near(copy[2].xyz.x,1600*sx) && Near(copy[2].xyz.y,900*sy));
+    assert(Near(copy[0].st.x,160/1920.f) && Near(copy[0].st.y,1-90/1080.f) && Near(copy[2].st.x,(160+1600)/1920.f) &&
+        Near(copy[2].st.y,1-(90+900)/1080.f));
+    assert(streak[8].material==&declarations.streak && Near(streak[7].parms[0],.5f) && streak[9].parms[0]==1);
+    const auto& smear=streak[8].vertices;
+    assert(Near(smear[0].xyz.x,100*sx) && Near(smear[0].xyz.y,200*sy) && Near(smear[2].xyz.x,400*sx) && Near(smear[2].xyz.y,300*sy));
+    assert(Near(smear[0].st.x,100/1600.f) && Near(smear[0].st.y,1-200/900.f) && Near(smear[2].st.x,400/1600.f) &&
+        Near(smear[2].st.y,1-300/900.f));
+    // A defaulted streak material fails openly and leaves soft focus working.
+    host.blurStreakMaterial=nullptr;declarations.streak.state=DS_DEFAULTED;renderer.calls.clear();
+    assert(!host.StreakBackdrop(3,.5f,region) && Count("draw")==0 && !host.blurStreakMaterial && host.SoftenBackdrop(3,4,.9f,region));
+    declarations.streak.state=1;
     // A region past the view is clamped to it, reach included.
     renderer.calls.clear();
     assert(host.SoftenBackdrop(3,4,.9f,{-50,-50,1700,1000}) && renderer.images.size()==2 && renderer.targets.size()==1);
@@ -350,7 +382,7 @@ int main(){
     host.layers.resize(1);host.layers[0].target=&destination;
     host.Reset();
     assert(renderer.fontResets==resetsBefore+1 && destination.destroyed && host.layers.empty());
-    std::puts("retained soft focus: capture, separable passes, regions, GL row order, target lifetime and a reset with no renderer passed");
+    std::puts("retained soft focus and speed streak: capture, separable passes, the view copy, regions, GL row order, target lifetime and a reset with no renderer passed");
 }
 '''
 
@@ -387,7 +419,7 @@ def main():
         subprocess.run([str(drawBinary)],check=True)
         soft=Path(temp)/'soft.cpp';softBinary=Path(temp)/'soft.exe'
         soft_bodies=[function_body(source_text,signature).replace(' override','') for signature in (
-            'bool SoftenBackdrop(','bool EnsureBlurTargets(','void DrawBlurPass(','void ClearLayers(','void Reset(')]
+            'bool SoftenBackdrop(','bool StreakBackdrop(','bool EnsureBlurTargets(','void DrawBlurPass(','void ClearLayers(','void Reset(')]
         soft.write_text(SOFT_SUPPORT+'\n'.join(soft_bodies)+SOFT_MAIN,encoding='utf-8')
         subprocess.run([compiler,'-std=c++17',str(soft),'-o',str(softBinary)],check=True)
         subprocess.run([str(softBinary)],check=True)

@@ -4868,6 +4868,13 @@ bool idMaterial::SetDefaultText( void ) {
 			GetName(),GetName()[14] == 'b' || GetName()[14] == 'B' ? "_retainedBackdrop" : "_retainedBlurScratch"));
 		return true;
 	}
+	if ( idStr::Icmp(GetName(),"_retainedBlur/streak") == 0 ) {
+		// Retained speed streak (The Awakening's hs/SpeedBlur): opaque, over the
+		// scratch target's copy of the view. parm0 carries the strength.
+		SetText(va("material %s { sort gui twoSided { blend gl_one, gl_zero glslProgram glsl/retained_streak.glsl "
+			"shaderParm streak parm0, parm1, parm2, parm3 shaderTexture Source linear clamp nopicmip _retainedBlurScratch } }",GetName()));
+		return true;
+	}
 	if ( idStr::Icmp(GetName(),"_retainedSolid") == 0 ) {
 		// RmlUi's native winding differs from legacy GUI quads; UI planes
 		// also remain visible under mirrored document transforms.

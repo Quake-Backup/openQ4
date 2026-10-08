@@ -727,10 +727,10 @@ static void CheckRemasteredSpeederHud(ScreenHost& host, const char* path) {
 		{"vehicle_locked",0.0},{"oq4_key_jump",std::string("SPACE")},{"oq4_key_crouch",std::string("C")},{"oq4_boost",0.0}});
 	Check(runtime.SetState(values,error,0),error.c_str());
 	Check(runtime.RunEvent("hudJoin",0,effects,error),"the join program runs");
-	host.softened.clear(); host.draws.clear();
+	host.streaks.clear(); host.draws.clear();
 	runtime.Frame(RemasteredViewport(1280,720),.1);
 	Check(host.errors == 0,"the speeder HUD frames without runtime errors");
-	Check(host.softened.empty(),"no streak before a boost");
+	Check(host.streaks.empty(),"no streak before a boost");
 
 	// The bike lists its machinegun first: weapon 0 shows the machinegun's
 	// panel without a charge bar, weapon 1 the cannon's with it.
@@ -803,20 +803,18 @@ static void CheckRemasteredSpeederHud(ScreenHost& host, const char* path) {
 		Near(exitItem.x-(boostItem.x+boostItem.width),11*1.5f,.6f) && runtime.GetBounds("vpr",prompt) &&
 		Near(prompt.x+prompt.width,320+629*1.5f,1.5f),"Boost leads Exit by 11 u and the prompt trails at 629 u");
 	Check(runtime.SetState({{"oq4_boost",1.0},{"oq4_boost_envelope",0.5}},error,1.3),error.c_str());
-	host.softened.clear();
+	host.streaks.clear();
 	runtime.Frame(RemasteredViewport(1280,720),1.35);
 	Check(Shown(runtime,"vpr-boosting") && !Shown(runtime,"vpr-boost"),"a pushing boost shows the hazard and Boosting");
-	Check(host.softened.size() == 1 && Near(host.softened[0].sigma,.5f*5*1.5f,.05f) && Near(host.softened[0].saturation,1) &&
-		Near(host.softened[0].region.width,1280,1.f) && Near(host.softened[0].region.height,720,1.f),
-		"the streak softens the view with the boost's envelope");
-	host.reducedMotion = true; host.softened.clear();
+	Check(host.streaks.size() == 1 && Near(host.streaks[0],.5f),"the view streaks with the boost's envelope");
+	host.reducedMotion = true; host.streaks.clear();
 	runtime.Frame(RemasteredViewport(1280,720),1.4);
-	Check(host.softened.empty(),"reduced motion never streaks");
+	Check(host.streaks.empty(),"reduced motion never streaks");
 	host.reducedMotion = false;
 	Check(runtime.SetState({{"oq4_boost",2.0},{"oq4_boost_envelope",0.0}},error,1.45),error.c_str());
-	host.softened.clear();
+	host.streaks.clear();
 	runtime.Frame(RemasteredViewport(1280,720),1.5);
-	Check(!Shown(runtime,"vpr-boosting") && !Shown(runtime,"vpr-boost") && Shown(runtime,"vpr-exit") && host.softened.empty(),
+	Check(!Shown(runtime,"vpr-boosting") && !Shown(runtime,"vpr-boost") && Shown(runtime,"vpr-exit") && host.streaks.empty(),
 		"a recharging boost leaves only Exit and no streak");
 	Check(runtime.SetState({{"vehicle_locked",1.0}},error,1.55),error.c_str());
 	runtime.Frame(RemasteredViewport(1280,720),1.6);
@@ -830,10 +828,10 @@ static void CheckRemasteredSpeederHud(ScreenHost& host, const char* path) {
 	// Minimal keeps the status bar, the race display and the prompt, never the streak.
 	RemasteredLayoutPreference(host,2);
 	Check(runtime.SetState({{"oq4_boost",1.0},{"oq4_boost_envelope",1.0}},error,1.7),error.c_str());
-	host.softened.clear();
+	host.streaks.clear();
 	runtime.Frame(RemasteredViewport(1280,720),1.75);
 	Check(!Shown(runtime,"tr-full") && !Shown(runtime,"hit-full") && Shown(runtime,"race-plate") && Shown(runtime,"vpr") &&
-		runtime.GetBounds("vhull-gauge",hull) && host.softened.empty(),"Minimal keeps the race display, status bar and prompt without the streak");
+		runtime.GetBounds("vhull-gauge",hull) && host.streaks.empty(),"Minimal keeps the race display, status bar and prompt without the streak");
 	RemasteredLayoutPreference(host,1);
 	Check(host.errors == 0,"no runtime diagnostics across the speeder exercise");
 	host.softFocus = false;

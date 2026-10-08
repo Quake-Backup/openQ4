@@ -238,6 +238,32 @@ public:
 			{0,1/bottom,sigma,saturation});
 		return true;
 	}
+	// The speed streak: The Awakening's hs/SpeedBlur over the view. The window
+	// capture holds more than the view, so an unblurred pass first copies the
+	// whole view into the scratch target; the streak pass then samples it in
+	// the view's own coordinates, toward its centre, into the destination layer.
+	bool StreakBackdrop(std::uint32_t destination, float strength, const openq4::ui::Bounds& region) override {
+		if (!softFocus || !destination || destination > layers.size() || !layers[destination-1].target ||
+			!(strength > 0 && strength <= 1)) return false;
+		const float right = static_cast<float>(viewportWidth), bottom = static_cast<float>(viewportHeight);
+		const float x0 = Max(region.x,0.f), x1 = Min(region.x+region.width,right);
+		const float y0 = Max(region.y,0.f), y1 = Min(region.y+region.height,bottom);
+		if (!(x0 < x1 && y0 < y1) || captureWidth <= 0 || captureHeight <= 0 || !EnsureBlurTargets()) return false;
+		if (!blurStreakMaterial) {
+			const idMaterial* material = declManager->FindMaterial("_retainedBlur/streak");
+			if (!material || material->GetState() == DS_DEFAULTED) return false;
+			blurStreakMaterial = material;
+		}
+		renderSystem->BindRenderTexture(nullptr,nullptr);
+		renderSystem->CaptureRenderToImage("_retainedBackdrop");
+		const float w = static_cast<float>(captureWidth), h = static_cast<float>(captureHeight);
+		renderSystem->BindRenderTexture(blurScratch,nullptr);
+		DrawBlurPass(blurBackdropMaterial,{0,0,right,bottom},
+			{viewportX/w,1-viewportY/h,(viewportX+right)/w,1-(viewportY+bottom)/h},{1/w,0,0,1});
+		renderSystem->BindRenderTexture(layers[destination-1].target,nullptr);
+		DrawBlurPass(blurStreakMaterial,{x0,y0,x1-x0,y1-y0},{x0/right,1-y0/bottom,x1/right,1-y1/bottom},{strength,0,0,0});
+		return true;
+	}
 	bool EnsureBlurTargets() {
 		if (blurScratch && blurWidth == viewportWidth && blurHeight == viewportHeight) return true;
 		renderSystem->DestroyRenderTexture(blurScratch); blurScratch = nullptr;
@@ -339,7 +365,7 @@ public:
 			renderSystem->DestroyRenderTexture(blurScratch);
 		}
 		layers.clear(); blurScratch = nullptr;
-		blurBackdropMaterial = blurScratchMaterial = nullptr;
+		blurBackdropMaterial = blurScratchMaterial = blurStreakMaterial = nullptr;
 		backdropCreated = false; blurWidth = blurHeight = 0;
 	}
 	int viewportWidth = 1280, viewportHeight = 720;
@@ -439,6 +465,7 @@ private:
 	idRenderTexture* blurScratch = nullptr;
 	const idMaterial* blurBackdropMaterial = nullptr;
 	const idMaterial* blurScratchMaterial = nullptr;
+	const idMaterial* blurStreakMaterial = nullptr;
 	bool backdropCreated = false;
 	int blurWidth = 0, blurHeight = 0;
 	static std::string FontFamily(const std::string& family) {
