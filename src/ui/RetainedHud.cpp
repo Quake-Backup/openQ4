@@ -147,7 +147,8 @@ bool idRetainedHud::Draw(const char* source,const std::vector<openq4::ui::HudPri
 }
 idCVar ui_hudLayout("ui_hudLayout","1",CVAR_GUI|CVAR_INTEGER|CVAR_ARCHIVE,
 	"HUD layout: 0 Classic (the stock rectangles), 1 Remastered (anchored to the safe area), "
-	"2 Minimal (health, armor, ammunition and the crosshair)",0,2);
+	"2 Minimal (health, armor, ammunition and the crosshair), 3 Competitive (multiplayer: the match bar, "
+	"team status and network quality; elsewhere Remastered)",0,3);
 idCVar ui_hudWidth("ui_hudWidth","1",CVAR_GUI|CVAR_INTEGER|CVAR_ARCHIVE,
 	"how far edge HUD groups spread on wide views: 0 16:9, 1 21:9, 2 the full view",0,2);
 

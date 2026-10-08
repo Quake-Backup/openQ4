@@ -174,6 +174,20 @@ FEED_FIELDS = {"attacker": "", "victim": "", "weapon": -1, "kind": 0, "quad": Fa
                "hasAttacker": False, "live": False, "alpha": 0}
 
 
+# Competitive: on a view too narrow for the kill feed's longest line beside
+# the match bar's network readout (about 16:10 and narrower at any HUD scale),
+# the top-trailing groups step down under the bar by this much.
+UNDER_BAR_DROP = 38
+
+
+def under_match_bar() -> dict:
+    """True in Competitive when the trailing anchor's edge lies within
+    806 u of the view's center (scaled), so the feed's 204 u line, 3 u in
+    from it, would meet the network readout ending 190 u right of center."""
+    room = op("/", op("-", S("hud.width"), op("*", 2, S("hud.right"))), S("hud.scale"))
+    return AND(op("==", S("hud.layout"), 3), op("<", room, u(806)))
+
+
 def kill_feed(doc: HudDocument) -> dict:
     """Top trailing, four lines (two in Tourney, under the strip), each on
     its own plate at 0.35 trailing at 633 u; lines involving you on the
@@ -234,7 +248,11 @@ def kill_feed(doc: HudDocument) -> dict:
                              "flex-direction": ui.keyword("row"), "justify-content": ui.keyword("flex-end"), "opacity": num(1)},
                        [content])
         doc.bind(lid + ".display", lid, "display", sel(S(f("live")), "flex", "none"))
-        doc.bind(lid + ".top", lid, "top", sel(tourney, u(top + 46), u(top)))
+        # The Tourney strip pushes the feed down; Competitive takes the strip
+        # away and steps the feed under its bar on narrow views.
+        competitive = op("==", S("hud.layout"), 3)
+        doc.bind(lid + ".top", lid, "top", sel(under_match_bar(), u(top + UNDER_BAR_DROP),
+                                                 sel(AND(tourney, NOT(competitive)), u(top + 46), u(top))))
         doc.bind(lid + ".opacity", lid, "opacity", S(f("alpha")))
         rows.append(row)
     return full("feed", rows)
@@ -326,7 +344,9 @@ def text_at(doc: HudDocument, ident: str, expr, size: float, colour: list, *, ba
         props.update(ui.absolute(left=u(center - width / 2), top=top, width=u(width), height=size_dp))
         props["text-align"] = ui.keyword("center")
     elif right is not None:
-        props.update(ui.absolute(left=u(right) - u(300), top=top, width=u(300), height=size_dp))
+        # A name cut at a maximum width keeps its box's trailing edge there.
+        span = (extra or {}).get("max-width", {}).get("value", u(300))
+        props.update(ui.absolute(left=u(right) - span, top=top, width=span, height=size_dp))
         props["text-align"] = ui.keyword("right")
     else:
         props.update(ui.absolute(left=u(x), top=top, height=size_dp))
@@ -758,6 +778,10 @@ def vote(doc: HudDocument) -> dict:
                              "padding-bottom": ui.length(u(5))},
                     [plate, head, *lines, tallies, ramp_row])
     doc.bind("vote.display", "vote", "display", sel(op("!=", S("voteNotice"), 0), "flex", "none"))
+    # Competitive: the top-leading corner the standing left (36 u from the top
+    # inset, the card's cl anchor rebased onto tl's), clear of the team status.
+    rebased = op("+", op("/", op("-", S("hud.top"), op("/", S("hud.height"), 2)), S("hud.scale")), u(240) + u(36))
+    doc.bind("vote.top", "vote", "top", sel(op("==", S("hud.layout"), 3), rebased, u(150)))
     return card
 
 
@@ -879,18 +903,30 @@ def chat_box(doc: HudDocument, children: list) -> dict:
     (59 u above the bottom edge); where at least 180 u lie between the
     leading edge and the status bar it spans that space, up to 300 u;
     otherwise it is 200 u wide and rises to 150 u above the bottom edge,
-    clear of the weapon strip. The voice plates sit directly above it."""
+    clear of the weapon strip. The voice plates sit directly above it.
+
+    Competitive grows the status bar, the strip and the pickups by 15% and
+    puts the team status at the leading edge from y 150, where a risen box
+    would meet them: the box keeps its bottom 8 u above the enlarged status
+    bar and, where it is not wide, is 200 u wide or as wide as the space
+    beside the widest strip (eleven weapons), down to 120 u."""
     # Anchor-local dp (the bl anchor is scaled by hud.scale about its corner).
+    from remastered_hud_base import status_scale
     scale = S("hud.scale")
-    status_left = op("/", op("-", op("-", op("/", S("hud.width"), 2), op("*", u(219), S("hud.centerScale"))), S("hud.left")), scale)
-    room = op("-", status_left, u(16))
+    bar_scale = status_scale(True)
+    beside = lambda half: op("/", op("-", op("-", op("/", S("hud.width"), 2), op("*", u(half), bar_scale)), S("hud.left")), scale)
+    room = op("-", beside(219), u(16))
     wide = op(">=", room, u(180))
-    width = sel(wide, op("min", room, u(300)), u(200))
+    competitive = op("==", S("hud.layout"), 3)
+    strip_room = op("clamp", op("-", beside(165), u(14)), u(120), u(200))
+    width = sel(wide, op("min", room, u(300)), sel(competitive, strip_room, u(200)))
+    # Its bottom clears the status bar's top (51 u, 15% higher in Competitive) by 8 u.
+    clearance = op("+", op("/", op("*", u(51), bar_scale), scale), u(8))
     box = ui.group("chatbox", {**ui.absolute(left=u(8), width=u(300), height=u(400)), "bottom": ui.length(u(59)), "display": ui.keyword("flex"),
                                "flex-direction": ui.keyword("column"), "justify-content": ui.keyword("flex-end"),
                                "align-items": ui.keyword("flex-start")}, children)
     doc.bind("chatbox.width", "chatbox", "width", width)
-    doc.bind("chatbox.bottom", "chatbox", "bottom", sel(wide, u(59), u(150)))
+    doc.bind("chatbox.bottom", "chatbox", "bottom", sel(competitive, clearance, sel(wide, u(59), u(150))))
     return box
 
 
@@ -922,7 +958,8 @@ def match_context(doc: HudDocument) -> dict:
                             "flex-direction": ui.keyword("column"), "padding-left": ui.length(u(8)), "padding-top": ui.length(u(3)),
                             "padding-bottom": ui.length(u(4))}, [edge] + rows)
     doc.bind("ctx.display", "ctx", "display", sel(op("==", S("match_context_visible"), 1), "flex", "none"))
-    doc.bind("ctx.top", "ctx", "top", sel(op("==", S("gametype"), 2), u(106), u(90)))
+    tourney = AND(op("==", S("gametype"), 2), op("!=", S("hud.layout"), 3))
+    doc.bind("ctx.top", "ctx", "top", sel(under_match_bar(), u(90 + UNDER_BAR_DROP), sel(tourney, u(106), u(90))))
     return card
 
 
@@ -998,7 +1035,8 @@ def name_tags(doc: HudDocument) -> dict:
     leading end (none in deathmatch) and the name in Lowpixel 9 u, 10 u in and
     8 u from the trailing end, and a 6 u pointer at its foot touching the point
     above the player's head. The game projects and traces the players
-    (oq4_tag{i}_x/_y as fractions of the view); the tag centers on its point."""
+    (oq4_tag{i}_x/_y as fractions of the view); the tag centers on its point.
+    Competitive adds a health line under the plate."""
     declare(doc, {"oq4_tags": 0})
     free = AND(S("oq4_spectating"), NOT(S("oq4_following")))
     tags = []
@@ -1018,11 +1056,25 @@ def name_tags(doc: HudDocument) -> dict:
             {"id": "b", "op": "line", "points": [[{"fraction": 0.5, "dp": u(3)}, 0]]},
             {"id": "c", "op": "line", "points": [[{"fraction": 0.5}, u(4)]]}, {"id": "d", "op": "close"}]}],
                       {**ui.absolute(left=0, top=u(13), height=u(4)), "width": ui.length(100, "%")})
+        # Competitive adds a health line under the plate: a white track at 0.20
+        # filled to the health at 0.85, in the team list's colors (#E46D56 at
+        # 25 and below, #FFBE23 above 100).
+        health = S(prefix + "_health")
+        fill = ui.group(f"{ident}-hp-fill", {"position": ui.keyword("absolute"), "left": ui.length(0), "top": ui.length(0),
+                                              "width": ui.length(0, "%"), "height": ui.length(100, "%"), "display": ui.keyword("block"),
+                                              "background-color": ui.colour([1, 1, 1, 0.85])})
+        doc.bind(f"{ident}-hp-fill.width", fill["id"], "width", op("clamp", health, 0, 100))
+        doc.bind(f"{ident}-hp-fill.bg", fill["id"], "background-color",
+                 colour_of([(op("<=", health, 25), rgb(ERR, 0.85)), (op(">", health, 100), rgb(VALUE, 0.85))], [1, 1, 1, 0.85]))
+        track = ui.group(f"{ident}-hp", {"position": ui.keyword("absolute"), "left": ui.length(u(4)), "right": ui.length(u(4)),
+                                         "top": ui.length(u(15)), "height": ui.length(u(2)), "display": ui.keyword("none"),
+                                         "background-color": ui.colour([1, 1, 1, 0.2])}, [fill])
+        doc.show(track["id"], op("==", S("hud.layout"), 3))
         plate = ui.group(f"{ident}-plate", {"position": ui.keyword("relative"), "display": ui.keyword("flex"),
                                             "flex-direction": ui.keyword("row"), "align-items": ui.keyword("center"),
                                             "height": ui.length(u(13)), "padding-left": ui.length(u(10)),
                                             "padding-right": ui.length(u(8))},
-                         [plate_vec(f"{ident}-back", 13, 0.5), *blocks, name, pointer])
+                         [plate_vec(f"{ident}-back", 13, 0.5), *blocks, name, pointer, track])
         # A wide box centered on the point holds the tag, centered in it.
         holder = ui.group(ident, {**ui.absolute(left=0, top=0, width=u(240), height=u(17)), "display": ui.keyword("none"),
                                   "flex-direction": ui.keyword("row"), "justify-content": ui.keyword("center"),
@@ -1379,12 +1431,23 @@ def match_notes(doc: HudDocument) -> list:
     return out
 
 
+def net_level(doc: HudDocument) -> dict:
+    """Network quality's lit bars (13.13) for your connection: four to 60 ms,
+    three to 120 ms, two to 200 ms and one above, the worse of that and the
+    loss, each 2% of which removes a bar, down to one."""
+    declare(doc, {"oq4_ping": 0, "oq4_loss": 0})
+    ping = S("oq4_ping")
+    by_ping = op("select", op("<=", ping, 60), 4, op("select", op("<=", ping, 120), 3, op("select", op("<=", ping, 200), 2, 1)))
+    return op("max", 1, op("min", by_ping, op("-", 4, op("floor", op("/", S("oq4_loss"), 2)))))
+
+
 def connection_notice(doc: HudDocument) -> dict:
     """A lagging connection (14.9, 13.13): the network symbol, its bars by
-    the ping, and the ping in ms, on a header-band plate under the kill feed."""
-    declare(doc, {"IsLagged": False, "oq4_ping": 0})
+    the ping and loss, and the ping in ms, on a header-band plate under the
+    kill feed."""
+    declare(doc, {"IsLagged": False})
     ping = S("oq4_ping")
-    lit = op("select", op("<=", ping, 60), 4, op("select", op("<=", ping, 120), 3, op("select", op("<=", ping, 200), 2, 1)))
+    lit = net_level(doc)
     bars = []
     for k in range(4):
         h = 2 + k * 1.6
@@ -1404,6 +1467,7 @@ def connection_notice(doc: HudDocument) -> dict:
     holder = ui.group("lag-holder", {**ui.absolute(left=0, top=u(78), width=u(637)), "display": ui.keyword("none"),
                                      "justify-content": ui.keyword("flex-end")}, [row])
     doc.bind("lag-holder.display", "lag-holder", "display", sel(S("IsLagged"), "flex", "none"))
+    doc.bind("lag-holder.top", "lag-holder", "top", sel(under_match_bar(), u(78 + UNDER_BAR_DROP), u(78)))
     return holder
 
 
@@ -1436,18 +1500,27 @@ def mp_document() -> dict:
     lag = connection_notice(doc)
     arena = arena_presentation(doc)
     tags = name_tags(doc)
+    from remastered_hud_competitive import competitive, match_bar, team_status
+    matchbar = match_bar(doc)
+    leading, trailing = team_status(doc)
     doc.on("hudJoin", *doc.joins)
     doc.on("onInit", *doc.joins)
+    # Competitive (ui_hudLayout 3) trades the standing or team panels, the
+    # timer and the Tourney strip for the match bar and the team status.
+    remastered_top = full("tl-rem", [stand, teams, clock, bar])
+    doc.show("tl-rem", NOT(competitive()))
+    strip_slot = full("tc-strip", [strip])
+    doc.show("tc-strip", NOT(competitive()))
     # Minimal (ui_hudLayout 2) keeps the held statistics, the vote, chat and
     # voice, the follow card, the respawn prompt and the Arena presentation.
     root = full("mp-root", [
         beyond_minimal(doc, "tags-full", [tags]),
-        anchor(doc, "tl", [beyond_minimal(doc, "tl-full", [stand, teams, clock, bar])]),
-        anchor(doc, "tc", [beyond_minimal(doc, "tc-full", [strip, column, banners])]),
+        anchor(doc, "tl", [beyond_minimal(doc, "tl-full", [remastered_top])]),
+        anchor(doc, "tc", [beyond_minimal(doc, "tc-full", [strip_slot, column, banners]), matchbar]),
         anchor(doc, "tr", [beyond_minimal(doc, "tr-full", [feed, ctx, lag])]),
-        anchor(doc, "cr", [stats]),
+        anchor(doc, "cr", [trailing, stats]),
         anchor(doc, "cc", [beyond_minimal(doc, "cc-full", [aim])]),
-        anchor(doc, "cl", [ballot]),
+        anchor(doc, "cl", [leading, ballot]),
         anchor(doc, "bl", [chat_box(doc, talkers + lines)]),
         anchor(doc, "bc", [follow, respawn], scale="hud.centerScale"),
         arena,

@@ -340,10 +340,10 @@ ANCHOR_POINTS = {"tl": (0, 0), "tc": (320, 0), "tr": (640, 0), "cl": (0, 240), "
                  "bl": (0, 480), "bc": (320, 480), "br": (640, 480)}
 
 
-def anchor(doc: HudDocument, key: str, children: list, *, scale: str = "hud.scale", ident: str | None = None) -> dict:
+def anchor(doc: HudDocument, key: str, children: list, *, scale="hud.scale", ident: str | None = None) -> dict:
     """A 640x480 u stock canvas placed so its stock anchor point lands on the
-    live anchor (section 14.4) and scaled about it by the HUD scale. Groups
-    inside keep their stock coordinates."""
+    live anchor (section 14.4) and scaled about it by the HUD scale (a state
+    key or an expression). Groups inside keep their stock coordinates."""
     ident = ident or f"anchor-{key}"
     ax, ay = ANCHOR_POINTS[key]
     props = {"position": ui.keyword("absolute"), "width": ui.length(960), "height": ui.length(720),
@@ -368,7 +368,7 @@ def anchor(doc: HudDocument, key: str, children: list, *, scale: str = "hud.scal
         props["top"] = ui.length(50, "%")
         props["margin-top"] = ui.length(-360)
     # Scale about the stock anchor point: t = (a - c)(1 - s), c the box centre.
-    s = S(scale)
+    s = S(scale) if isinstance(scale, str) else scale
     one_minus = op("-", 1, s)
     doc.bind(ident + ".scale", ident, "transform",
              [op("*", u(ax) - 480, one_minus), op("*", u(ay) - 360, one_minus), s, s, 0])
@@ -383,6 +383,16 @@ def layout_state(doc: HudDocument) -> None:
     doc.cvar("oq4.opaque", "ui_retainedOpaqueBacking")
     # 1 Remastered, 2 Minimal (section 13.9); Classic (0) never loads a document.
     doc.cvar("hud.layout", "ui_hudLayout", "number", 1)
+
+
+def status_scale(mp) -> dict:
+    """The status bar's scale (14.4, 13.9): hud.centerScale, which narrow views
+    limit so every gauge shows; multiplayer's Competitive preset (ui_hudLayout
+    3) enlarges it by 15% about the bottom edge within the same limit (the
+    460 u bar across the span between the side screens)."""
+    span = op("-", op("-", S("hud.width"), S("hud.left")), S("hud.right"))
+    enlarged = op("min", op("*", 1.15, S("hud.scale")), op("max", 0.25, op("/", span, u(460))))
+    return sel(AND(mp, op("==", S("hud.layout"), 3)), enlarged, S("hud.centerScale"))
 
 
 def join_events(doc: HudDocument, pairs: list) -> list:

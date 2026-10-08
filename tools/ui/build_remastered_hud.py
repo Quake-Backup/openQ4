@@ -17,7 +17,7 @@ import json
 from pathlib import Path
 
 import build_retained_screens as ui
-from remastered_hud_base import AND, NOT, S, HudDocument, anchor, beyond_minimal, join_events, layout_state, op
+from remastered_hud_base import AND, NOT, S, HudDocument, anchor, beyond_minimal, join_events, layout_state, op, status_scale
 from remastered_hud_groups import (boss_bar, dev_readouts, hit_indicator, interactive_brackets, missile_chevron, notices,
                                    pickup_lines, powerups, transmission, weapon_strip)
 from remastered_hud_lint import lint
@@ -75,7 +75,7 @@ def on_foot_document(*, strogg: bool, awakening: bool) -> dict:
     # brackets, the save notice and the developer readouts a player turned on.
     root = full("hud-root", [
         center_box("hud-world", [brackets]),
-        anchor(doc, "bc", gauges + [ride, beyond_minimal(doc, "bc-full", [pickups, strip])], scale="hud.centerScale"),
+        anchor(doc, "bc", gauges + [ride, beyond_minimal(doc, "bc-full", [pickups, strip])], scale=status_scale(S("mp"))),
         anchor(doc, "tr", [beyond_minimal(doc, "tr-full", [radio]), speed, *ship]),
         anchor(doc, "tc", [beyond_minimal(doc, "tc-full", [boss, missile_text, exit_notice]), saved]),
         anchor(doc, "cc", [beyond_minimal(doc, "cc-full", [hit, missile])]),

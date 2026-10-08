@@ -1378,6 +1378,7 @@ private:
 
 	void			PublishRemasteredHud( idUserInterface *_mphud, idPlayer *localPlayer );
 	void			PublishRemasteredNameTags( idUserInterface *_mphud, idPlayer *localPlayer, bool freeCamera );
+	void			PublishRemasteredCompetitive( idUserInterface *_mphud, idPlayer *localPlayer, idPlayer *followed, int limit );
 
 	// rcon buffer
 	idStr			rconHistory;

@@ -1460,7 +1460,7 @@ int main(int argc, char** argv) {
          const std::string path = argv[i];
          const bool strogg = path.find("strogg") != std::string::npos, awakening = path.find("awakening") != std::string::npos;
          ScreenHost host;
-         if (path.find("_mp") != std::string::npos) { CheckRemasteredMpHud(host,argv[i]); continue; }
+         if (path.find("_mp") != std::string::npos) { CheckRemasteredMpHud(host,argv[i]); CheckRemasteredCompetitiveHud(host,argv[i]); continue; }
          if (path.find("_vehicle") != std::string::npos) { CheckRemasteredVehicleHud(host,argv[i]); continue; }
          if (path.find("_airdef") != std::string::npos) { CheckRemasteredAirdefHud(host,argv[i]); continue; }
          if (path.find("_turret") != std::string::npos) { CheckRemasteredTurretHud(host,argv[i]); continue; }

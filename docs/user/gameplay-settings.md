@@ -368,7 +368,7 @@ press. The same settings are console variables, saved automatically:
 
 | Setting | Default | Range | Effect |
 | --- | --- | --- | --- |
-| `ui_hudLayout` | `1` | `0`–`2` | `1` Remastered layout, `2` Minimal (health, armor, ammunition and the crosshair, keeping prompts, chat and votes), `0` Classic (the original Quake 4 positions) |
+| `ui_hudLayout` | `1` | `0`–`3` | `1` Remastered layout, `2` Minimal (health, armor, ammunition and the crosshair, keeping prompts, chat and votes), `3` Competitive (multiplayer: a match bar at the top with both sides' scores, the timer and network quality, your team's health and armor at the left edge and a larger status bar), `0` Classic (the original Quake 4 positions) |
 | `ui_hudWidth` | `1` | `0`–`2` | How far edge HUD items spread on wide screens: `0` 16:9, `1` 21:9, `2` the full width |
 | `ui_hudScale` | `1` | `0.5`–`2` | HUD size, independent of menu size |
 | `ui_hudSafeInset` | `0` | `0`–`10` | Distance inward, as a percentage of the viewport |

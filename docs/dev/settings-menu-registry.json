@@ -3273,11 +3273,12 @@
       "values": [
         "0",
         "1",
-        "2"
+        "2",
+        "3"
       ],
       "target": "ui_hudLayout",
       "default": "1",
-      "accessibility": "Focusable choiceDef row. Classic keeps the stock HUD, Remastered anchors it to the screen edges and Minimal keeps health, armor, ammunition and the crosshair."
+      "accessibility": "Focusable choiceDef row. Classic keeps the stock HUD, Remastered anchors it to the screen edges, Minimal keeps health, armor, ammunition and the crosshair, and Competitive adds the multiplayer match bar, team status and network quality."
     },
     {
       "id": "game.hud_scale",

@@ -19583,6 +19583,104 @@ void idMultiplayerGame::PublishRemasteredNameTags( idUserInterface *_mphud, idPl
 	}
 }
 
+/*
+================
+idMultiplayerGame::PublishRemasteredCompetitive
+
+openQ4: the Competitive HUD (ui_hudLayout 3; ui-visual-design.md 13.9, 14.9).
+The match bar faces two sides: in deathmatch you, or the player you follow,
+against the leader, or 2nd place when that side leads (a free spectator sees
+the leader and 2nd); in Tourney your arena's two players.  Under the timer it
+names the limit, the round or the arena.  The team status lists each team's
+players, best score first: the weapon, health, armor and whether they are
+dead, you or followed.
+================
+*/
+void idMultiplayerGame::PublishRemasteredCompetitive( idUserInterface *_mphud, idPlayer *localPlayer, idPlayer *followed, int limit ) {
+	const bool tourney = gameLocal.gameType == GAME_TOURNEY;
+	const bool teamGame = gameLocal.IsTeamGame();
+	idPlayer *viewer = followed ? followed : localPlayer;
+	idPlayer *sides[ 2 ] = { NULL, NULL };
+	if ( tourney ) {
+		const int arena = viewer->GetArena();
+		if ( arena >= 0 && arena < MAX_ARENAS ) {
+			idPlayer **players = ((rvTourneyGameState*)gameState)->GetArena( arena ).GetPlayers();
+			const bool second = players[ 1 ] != NULL && players[ 1 ] == viewer;
+			sides[ 0 ] = players[ second ? 1 : 0 ];
+			sides[ 1 ] = players[ second ? 0 : 1 ];
+		}
+	} else if ( !teamGame && rankedPlayers.Num() ) {
+		idPlayer *leader = rankedPlayers[ 0 ].First();
+		idPlayer *second = rankedPlayers.Num() > 1 ? rankedPlayers[ 1 ].First() : NULL;
+		if ( localPlayer->spectating && followed == NULL ) {
+			sides[ 0 ] = leader;
+			sides[ 1 ] = second;
+		} else {
+			sides[ 0 ] = viewer;
+			sides[ 1 ] = viewer == leader ? second : leader;
+		}
+	}
+	const int round = tourney ? ((rvTourneyGameState*)gameState)->GetRound() : 0;
+	for ( int side = 0; side < 2; side++ ) {
+		idPlayer *player = sides[ side ];
+		const char *prefix = side ? "oq4_mb1" : "oq4_mb0";
+		_mphud->SetStateString( va( "%s_name", prefix ), player ? OQ4_HudPlain( player->GetUserInfo()->GetString( "ui_name" ) ).c_str() : "" );
+		_mphud->SetStateString( va( "%s_rank", prefix ), player == NULL ? "" : tourney
+			? va( common->GetLocalizedString( "#str_231249" ), va( "%d", round ) ) : OQ4_HudOrdinal( player->GetRank() + 1 ).c_str() );
+		_mphud->SetStateInt( va( "%s_score", prefix ), player ? GetScore( player ) : 0 );
+		_mphud->SetStateBool( va( "%s_you", prefix ), player != NULL && player == localPlayer && !localPlayer->spectating );
+		_mphud->SetStateBool( va( "%s_lead", prefix ), player != NULL && !tourney && player->GetRank() == 0 );
+	}
+	// Under the timer: the limit, the round or the arena.
+	idStr sub;
+	if ( tourney ) {
+		const int arena = viewer->GetArena();
+		if ( arena >= 0 && arena < MAX_ARENAS ) {
+			sub = va( "%s %d", common->GetLocalizedString( "#str_42002" ), arena + 1 );
+		}
+	} else if ( gameLocal.IsRoundGameType() && gameState != NULL ) {
+		sub = va( common->GetLocalizedString( "#str_41330" ), va( "%d", static_cast< rvRoundGameState * >( gameState )->GetRoundNumber() ) );
+	} else if ( limit > 0 ) {
+		sub = va( common->GetLocalizedString( "#str_231248" ), va( "%d", limit ) );
+	}
+	_mphud->SetStateString( "oq4_mb_sub", sub.c_str() );
+	_mphud->SetStateString( "oq4_mb_ready", va( common->GetLocalizedString( "#str_231250" ), va( "%d", readyPlayerCount ), va( "%d", eligiblePlayerCount ) ) );
+
+	// Team status: up to eight players a team, best score first.
+	const int maxRows = 8;
+	for ( int team = 0; team < 2; team++ ) {
+		idStaticList<idPlayer *, MAX_CLIENTS> members;
+		if ( teamGame ) {
+			for ( int i = 0; i < Min( gameLocal.numClients, MAX_CLIENTS ); i++ ) {
+				idPlayer *player = OQ4_HudClient( i );
+				if ( player != NULL && !player->spectating && player->team == ( team ? TEAM_STROGG : TEAM_MARINE ) ) {
+					members.Append( player );
+				}
+			}
+		}
+		for ( int i = 1; i < members.Num(); i++ ) {
+			for ( int j = i; j > 0 && GetScore( members[ j ] ) > GetScore( members[ j - 1 ] ); j-- ) {
+				idPlayer *swap = members[ j ];
+				members[ j ] = members[ j - 1 ];
+				members[ j - 1 ] = swap;
+			}
+		}
+		const int count = Min( members.Num(), maxRows );
+		_mphud->SetStateInt( va( "oq4_ts%d_count", team ), count );
+		for ( int i = 0; i < count; i++ ) {
+			idPlayer *player = members[ i ];
+			const bool dead = player->health <= 0 || player->pfl.dead;
+			_mphud->SetStateString( va( "oq4_ts%d_%d_name", team, i ), OQ4_HudPlain( player->GetUserInfo()->GetString( "ui_name" ) ).c_str() );
+			_mphud->SetStateInt( va( "oq4_ts%d_%d_weapon", team, i ), player->GetCurrentWeapon() );
+			_mphud->SetStateInt( va( "oq4_ts%d_%d_health", team, i ), Max( 0, player->health ) );
+			_mphud->SetStateInt( va( "oq4_ts%d_%d_armor", team, i ), Max( 0, player->inventory.armor ) );
+			_mphud->SetStateBool( va( "oq4_ts%d_%d_dead", team, i ), dead );
+			_mphud->SetStateBool( va( "oq4_ts%d_%d_you", team, i ), player == localPlayer );
+			_mphud->SetStateBool( va( "oq4_ts%d_%d_followed", team, i ), player == followed );
+		}
+	}
+}
+
 void idMultiplayerGame::PublishRemasteredHud( idUserInterface *_mphud, idPlayer *localPlayer ) {
 	const int now = gameLocal.realClientTime;
 	const bool tourney = gameLocal.gameType == GAME_TOURNEY;
@@ -19642,6 +19740,8 @@ void idMultiplayerGame::PublishRemasteredHud( idUserInterface *_mphud, idPlayer 
 	_mphud->SetStateBool( "oq4_gap_show", showGap );
 	_mphud->SetStateBool( "oq4_tied", rankedPlayers.Num() > 1 && rankedPlayers[ 0 ].Second() == rankedPlayers[ 1 ].Second() );
 
+	PublishRemasteredCompetitive( _mphud, localPlayer, followed, limit );
+
 	// The clock as numbers: the countdown, or the time left in a timed match
 	// and the time played in an untimed one, as GameTime() measures it.
 	bool countdown = false;
@@ -19669,6 +19769,9 @@ void idMultiplayerGame::PublishRemasteredHud( idUserInterface *_mphud, idPlayer 
 	_mphud->SetStateInt( "oq4_clock_warn", ( countdown || !timed ) ? 0 : clockMs < 10000 ? 2 : clockMs < 60000 ? 1 : 0 );
 	_mphud->SetStateString( "oq4_clock", va( "%d:%02d", clockSeconds / 60, clockSeconds % 60 ) );
 	_mphud->SetStateInt( "oq4_ping", playerState[ localPlayer->entityNumber ].ping );
+	// Network quality's loss (13.13): this client's incoming packet loss, in
+	// percent over the channel's five-second window. A listen server has none.
+	_mphud->SetStateInt( "oq4_loss", gameLocal.isClient ? idMath::FtoiFast( networkSystem->ClientGetIncomingPacketLoss() ) : 0 );
 
 	// Flags: at base 0, taken 1, dropped 2, with the carrier.  Slot 2 is One
 	// Flag CTF's neutral flag.

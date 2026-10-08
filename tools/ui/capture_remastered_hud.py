@@ -245,10 +245,39 @@ SCENARIOS = {
         'sayTeam team line from the capture', 'waitMsec 300', shot('ctf-chat'),
         'set ui_hudLayout 0', 'waitMsec 400', shot('ctf-classic'), 'set ui_hudLayout 1', 'waitMsec 400',
     ]),
+    # Competitive (ui_hudLayout 3): the match bar with network quality, the
+    # team status and the enlarged status bar; Remastered again for contrast.
+    'mp-competitive': ('mp:mp/q4dm1', [
+        'set g_autoExecAfterMapLoad ""', 'waitMsec 2500', 'addbot', 'addbot', 'addbot', 'waitMsec 4000', shot('comp-dm'),
+        'say Competitive chat line from the capture', 'waitMsec 300', shot('comp-dm-chat'),
+        'kill 1', 'waitMsec 400', shot('comp-dm-feed'), 'waitMsec 6000', shot('comp-dm-later'),
+        'set ui_hudLayout 1', 'waitMsec 400', shot('comp-dm-remastered'), 'set ui_hudLayout 3',
+    ]),
+    'mp-competitive-ctf': ('mp:mp/q4ctf1', [
+        'set g_autoExecAfterMapLoad ""', 'waitMsec 2500', 'addbot', 'addbot', 'addbot', 'waitMsec 4000', shot('comp-ctf'),
+        'waitMsec 8000', shot('comp-ctf-later'), 'kill 0', 'waitMsec 400', shot('comp-ctf-dead'),
+    ]),
+    # Spectating in warm-up (the only human spectating a live match abandons
+    # it): both teams' lists, the followed row lit, then the free camera's tags
+    # with their health lines.
+    'mp-competitive-spec': ('mp:mp/q4ctf1', [
+        'set g_autoExecAfterMapLoad ""', 'waitMsec 2500', 'addbot', 'addbot', 'addbot', 'waitMsec 4000',
+        'set ui_spectate Spectate', 'waitMsec 1500', 'follownext', 'waitMsec 1500', shot('comp-spec-follow'),
+        'followfree', 'waitMsec 400', shot('comp-spec-free-1'), 'waitMsec 1200', shot('comp-spec-free-2'),
+        'follownext', 'waitMsec 2500', 'followfree', 'waitMsec 400', shot('comp-spec-free-3'), 'set ui_spectate Play',
+    ]),
+    # FLOW-058's evidence at each --size: eight players a team, a long name
+    # and the chat input open. (A vote called by the only human passes at
+    # once; the native checks place the vote card.)
+    'mp-competitive-matrix': ('mp:mp/q4ctf1', [
+        'set g_autoExecAfterMapLoad ""', 'waitMsec 2500', *['addbot'] * 15, 'waitMsec 6000', shot('matrix-ctf'),
+        'clientMessageMode', 'waitMsec 600', shot('matrix-chat'),
+    ]),
 }
 
 
 AWAKENING = {'turret', 'mcc', 'speeder'}
+COMPETITIVE = {'mp-competitive', 'mp-competitive-ctf', 'mp-competitive-spec', 'mp-competitive-matrix'}
 
 
 def main() -> int:
@@ -273,11 +302,15 @@ def main() -> int:
         capture.SCENARIO_CVARS[scenario] = {'ui_hudLayout': '1', 'ui_hudScale': '1', 'ui_hudSafeInset': '0', 'ui_hudWidth': '1'}
         # A live match at once (no warm-up), timed, so the feed, notices and clock run.
         capture.SCENARIO_CVARS[scenario].update({'si_warmup': '0', 'si_timeLimit': '10', 'si_fragLimit': '10'})
-        if scenario == 'mp-ctf':
+        if scenario in ('mp-ctf', 'mp-competitive-ctf', 'mp-competitive-spec', 'mp-competitive-matrix'):
             capture.SCENARIO_CVARS[scenario]['si_gameType'] = 'CTF'
+        if scenario == 'mp-competitive-matrix':
+            capture.SCENARIO_CVARS[scenario].update({'si_maxPlayers': '16', 'ui_name': 'Lieutenant Matthew Kane of Rhino Squad'})
+        if scenario in COMPETITIVE:
+            capture.SCENARIO_CVARS[scenario]['ui_hudLayout'] = '3'
         if scenario == 'mp-tourney':
             capture.SCENARIO_CVARS[scenario]['si_gameType'] = 'Tourney'
-        if scenario == 'mp-spectator':
+        if scenario in ('mp-spectator', 'mp-competitive-spec'):
             capture.SCENARIO_CVARS[scenario]['si_warmup'] = '1'
         # The Awakening's scenarios run its game directory over baseoq4.
         args.game_dir = 'q4xbase' if scenario in AWAKENING else 'baseoq4'

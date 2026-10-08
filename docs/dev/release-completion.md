@@ -12,7 +12,9 @@
   lack published by the game, and multiplayer adds the respawn prompt, the
   free camera's name tags and Previous on the follow card. The
   Minimal preset (`ui_hudLayout 2`) keeps the readouts, the crosshair and what
-  asks for the player's action. Settings > Game Options > HUD offers the layout,
+  asks for the player's action; the Competitive preset (`ui_hudLayout 3`) gives
+  multiplayer the match bar with network quality, the team status lists and a
+  15% larger status bar. Settings > Game Options > HUD offers the layout,
   size, width and safe-area inset, and Toggle Objectives (`g_objectivesToggle`)
   opens and closes the objectives display with presses, with a Close prompt.
   [Remastered HUD](ui/remastered-hud.md).

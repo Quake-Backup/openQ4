@@ -2655,7 +2655,7 @@
 						textscale	0.24
 						font	"fonts/lowpixel"
 						choices	"#str_231237"
-						values	"0;1;2"
+						values	"0;1;2;3"
 						choiceType	1
 
 						onAction {

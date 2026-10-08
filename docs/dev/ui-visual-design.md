@@ -2409,12 +2409,18 @@ and the managed-match card keep their places.
   in Chain (#E46D56 at 25 and below, #FFBE23 above 100) and armor at 0.60. Your
   row uses the header-band plate and the marker; the dead keep their row at 0.40
   under an ✕.
-- **Readouts.** The status bar grows by 15% about the bottom edge, and the chat
-  box keeps its 8 u clearance above it.
+- **Readouts.** The status bar grows by 15% about the bottom edge, with the
+  weapon strip and pickups above it, and the chat box keeps its 8 u clearance
+  above it. The box never rises toward the team status: where it cannot span
+  the space beside the status bar it is 200 u wide, or as wide as the space
+  beside the widest strip allows, down to 120 u (4:3).
 - **Vote.** The vote takes the top-leading corner that the standing left, clear
   of the team status.
 - **Tourney.** The bracket strip leaves the top; the scoreboard's bracket tree
   (section 14.14) holds it.
+- **Narrow views.** Below about 16:9 at the HUD scale in use, the kill feed's
+  longest line would meet network quality, so the kill feed, the managed-match
+  card and the lag notice step 38 u down, under the bar.
 
 **Spectators (Remastered).** Spectators get a follow camera presentation instead
 of the stock's breathing lines in the center column.
