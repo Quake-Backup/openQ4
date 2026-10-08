@@ -5,16 +5,19 @@ dropship guns: the on-foot HUD's radio, boss bar and notices without its
 gauges, strip and powerups, and the ship-status panel top-trailing directly
 below the transmission display. The same panel joins the expansion's on-foot
 HUD, which receives the script's markers, damage and warnings but cannot
-show them. Constructions are the design atlas's (awakening sheet), measured
-from the expansion's GUIs; the stock coordinates are the 640x480 canvas.
+show them. The MCC cannon reports the MCC's hull, and the speeder bike keeps
+the vehicle status bar under the m07 race display. Constructions are the
+design atlas's (awakening sheet), measured from the expansion's GUIs; the
+stock coordinates are the 640x480 canvas.
 """
 from __future__ import annotations
 
 import math
 
 import build_retained_screens as ui
-from remastered_hud_base import (S, HudDocument, anchor, beyond_minimal, box, join_events, layout_state, num, op, play, pts_path,
-                                 rgb, sel, stroke, tr, transform_value, u, vec)
+from remastered_hud_base import (AND, BOUND_TEXT, NOT, OR, S, HudDocument, anchor, beyond_minimal, box, face_metrics, join_events,
+                                 layout_state, num, op, play, pts_path, rgb, sel, stroke, text_box, tr, transform_value, u, vec,
+                                 when)
 
 # The dropship from above, nose up (hud_ship_01), in the panel's 128 u box.
 SHIP = [(62.7, 17.0), (58.6, 20.5), (56.9, 28.0), (51.0, 33.5), (47.5, 38.5), (47.5, 40.0), (34.0, 49.5), (34.6, 61.5),
@@ -328,3 +331,224 @@ def mcc_document() -> dict:
     return doc.build(root, {"canvas": {"height": 720, "minWidth": 960},
                             "extensions": {"openq4": {"reference": "ui-visual-design.md 14.12",
                                                       "stock": "guis/vehicles/mcc/cannonplayerhud.gui"}}})
+
+
+# ------------------------------------------------------------ the speeder bike
+
+# The bike lists its machinegun first (vehicle_weapon 0) and its cannon second,
+# which recharges between shots; the expansion's HUD showed the hover tank's
+# panels for them. The entry lines name the other weapon first.
+SPEEDER_WEAPONS = [("veh_mgun", "veh_shell"), ("veh_shell", "veh_mgun")]
+SPEEDER_LINES = [("#str_200940", "#str_200939"), ("#str_200939", "#str_200940")]
+# speederplayerhud.gui's progress bar (its group sits 1 u high): the plate with
+# its raised tab, and the pip leaning forward, repeated at each pip's x.
+RACE_PLATE = [(68.1, 59.6), (554.6, 60.5), (571.4, 23.5), (125.0, 22.5), (115.9, 15.0), (85.4, 15.0), (83.4, 16.4)]
+RACE_PIP = [(238.0, 26.4), (230.5, 55.0), (251.6, 55.5), (259.1, 26.9)]
+RACE_PIPS = (215, 241, 267, 293, 319, 374, 400, 426, 452, 478)
+MARINE = 33.5                       # Marine's size at textscale 1, u
+GOLD, RACE_RED = "#E1CC67", "#FF3333"
+BOOST_KEY, BOOSTING_KEY, POINT_KEY = "#str_231244", "#str_231245", "#str_231246"
+# speeder_blur's square frame: the smear's strength from an edge (0) to 25% of
+# the view in (1), measured from the expansion's mask.
+STREAK = [(0, 1.0), (0.125, 0.89), (0.25, 0.745), (0.375, 0.58), (0.5, 0.412), (0.625, 0.263), (0.75, 0.141), (0.875, 0.063),
+          (1, 0.0)]
+STREAK_SIGMA = 5.0                  # u: the atlas's soft streak
+
+
+def race_bar(doc: HudDocument, dy: float = 18.0) -> dict:
+    """The m07 race display (14.12): a black plate at 0.454 whose raised tab
+    carries the race timer, and ten forward-leaning pips in two groups of
+    five, #4E5B1C dark and #798D2A lit, lit one per checkpoint (the script's
+    showprogress0..100). The timer reads the script's countdown in gold Marine
+    0.65 seconds and Marine 0.55 hundredths; Remastered keeps the hundredths
+    two digits wide, turns the seconds #FF3333 over 100 ms in the last 10 s,
+    shows the timer only while the race runs it (the stock's first frame
+    showed a placeholder) and sets the bar `dy` u lower, clear of the
+    transmission display at 4:3."""
+    doc.number("oq4.race.progress")
+    doc.number("currenttime")
+    doc.number("currenttime2")
+    for key in ("oq4.race.timer", "oq4.race.timer2", "oq4.race.red"):
+        doc.boolean(key)
+
+    def place(points, dx=0.0):
+        return [(u(x + dx), u(y + dy)) for x, y in points]
+    plate = vec("race-plate", [pts_path("plate", place(RACE_PLATE), fill=ui.solid([0, 0, 0, 0.454]))])
+    opaque = vec("race-plate-opaque", [pts_path("plate", place(RACE_PLATE), fill=ui.solid([0, 0, 0, 0.85]))],
+                 {"display": ui.keyword("none")})
+    doc.show("race-plate", NOT(S("oq4.opaque")))
+    doc.show("race-plate-opaque", S("oq4.opaque"))
+    dark = vec("race-pips", [pts_path(f"pip{i}", place(RACE_PIP, x - 215), fill=ui.solid(rgb("#4E5B1C", 0.768)),
+                                      stroke=stroke(rgb("#4E5B1C", 0.5), u(1.2))) for i, x in enumerate(RACE_PIPS)])
+    lit = []
+    for i, x in enumerate(RACE_PIPS):
+        node = vec(f"race-pip{i}", [pts_path("lit", place(RACE_PIP, x - 215), fill=ui.solid(rgb("#798D2A", 0.76)),
+                                             stroke=stroke(rgb("#B9CF62", 0.55), u(1.2)))], {"display": ui.keyword("none")})
+        doc.show(node["id"], op(">=", S("oq4.race.progress"), i + 1))
+        lit.append(node)
+    spacing = {"letter-spacing": ui.length(u(1))}
+    seconds = text_box("race-sec", BOUND_TEXT, face="marine", size=u(0.65 * MARINE), colour=rgb(GOLD), baseline=u(54 + dy),
+                       right=u(158), width=u(90), extra={**spacing, "display": ui.keyword("none")})
+    doc.bind("race-sec.text", "race-sec", "text", op("numberText", op("max", 0, op("floor", S("currenttime")))))
+    doc.show("race-sec", S("oq4.race.timer"))
+    point = text_box("race-point", POINT_KEY, face="marine", size=u(0.55 * MARINE), colour=rgb("#E2CC68"), baseline=u(54 + dy),
+                     x=u(156), width=u(10), extra={"display": ui.keyword("none")})
+    doc.show("race-point", S("oq4.race.timer2"))
+    # The hundredths, always two digits: the tens, then the units.
+    size = u(0.55 * MARINE)
+    hundredths = op("clamp", op("floor", S("currenttime2")), 0, 99)
+
+    def digits(ident, expr):
+        node = ui.label(ident, BOUND_TEXT, {**ui.typeface("marine", size, size, rgb("#DFCC66")), **spacing,
+                                            "white-space": ui.keyword("nowrap"), "position": ui.keyword("relative"),
+                                            "display": ui.keyword("block")})
+        doc.bind(ident + ".text", ident, "text", expr)
+        return node
+    hundredth_row = ui.group("race-hun", {**ui.absolute(left=u(164), top=u(54 + dy) - size * face_metrics("marine")["ascent"],
+                                                        height=size), "display": ui.keyword("none"),
+                                          "flex-direction": ui.keyword("row")},
+                             [digits("race-hun-tens", op("numberText", op("floor", op("/", hundredths, 10)))),
+                              digits("race-hun-units", op("numberText", op("%", hundredths, 10)))])
+    doc.show("race-hun", S("oq4.race.timer2"), "flex")
+    gold, red = ui.colour(rgb(GOLD)), ui.colour(rgb(RACE_RED))
+    doc.timeline("race-red", 100, [tr("race-sec", "color", [(0, gold), (100, red)])], essential=True)
+    doc.timeline("race-gold", 100, [tr("race-sec", "color", [(0, red), (100, gold)])], essential=True)
+    last = op("<", S("currenttime"), 10)
+    # The script runs the timer by events: the seconds and hundredths show
+    # with their show events or as the countdown updates them.
+    doc.on("showspeedertimer", {"op": "setState", "values": {"oq4.race.timer": True}})
+    doc.on("hidespeedertimer", {"op": "setState", "values": {"oq4.race.timer": False}})
+    doc.on("showspeedertimer2", {"op": "setState", "values": {"oq4.race.timer2": True}})
+    doc.on("hidespeedertimer2", {"op": "setState", "values": {"oq4.race.timer2": False}})
+    doc.on("updatetimer", {"op": "setState", "values": {"oq4.race.timer": True}},
+           when(AND(last, NOT(S("oq4.race.red"))), [{"op": "setState", "values": {"oq4.race.red": True}}, play("race-red")]),
+           when(AND(NOT(last), S("oq4.race.red")), [{"op": "setState", "values": {"oq4.race.red": False}}, play("race-gold")]))
+    doc.on("updatetimer2", {"op": "setState", "values": {"oq4.race.timer2": True}})
+    for n in range(0, 101, 10):
+        doc.on(f"showprogress{n}", {"op": "setState", "values": {"oq4.race.progress": n // 10}})
+    return box("race", 0, 0, u(640), u(480), [plate, opaque, dark, *lit, seconds, point, hundredth_row])
+
+
+def hazard_icon(ident: str) -> dict:
+    """The boost hazard (atlas hudPrompt): an #E62323 triangle edged in
+    #1C0202 with its exclamation mark, 9 u wide on the prompt's line."""
+    m = 5.3
+    ink = stroke(rgb("#1C0202"), u(1.1), cap="round")
+    paths = [pts_path("tri", scaled([(4.5, m - 4.6), (9, m + 3.8), (0, m + 3.8)]), fill=ui.solid(rgb("#E62323")),
+                      stroke=stroke(rgb("#1C0202"), u(0.6), join="round")),
+             pts_path("bar", scaled([(4.5, m - 1.5), (4.5, m + 1)]), stroke=ink, closed=False),
+             pts_path("dot", scaled([(4.5, m + 2.3), (4.5, m + 2.6)]), stroke=ink, closed=False)]
+    return ui.group(ident, {"position": ui.keyword("relative"), "display": ui.keyword("block"), "width": ui.length(u(9)),
+                            "height": ui.length(u(10.6)), "margin-right": ui.length(u(4))}, [vec(ident + "-g", paths)])
+
+
+def boost_items(doc: HudDocument) -> list:
+    """The boost in the HUD prompt (14.8, 14.12): the crouch control's cap
+    and Boost while a boost is ready (the game's oq4_boost 0), the hazard and
+    Boosting in #FF3333 while it pushes (1), nothing while it recharges (2).
+    The expansion's "[ Press CROUCH to boost ]" took the exit line's window;
+    Exit follows these at the prompt's trailing end."""
+    from remastered_hud_mp import flex_row, label
+    from remastered_hud_vehicle import prompt_chip
+    doc.number("oq4_boost")
+    doc.string("oq4_key_crouch")
+    gap = {"margin-right": ui.length(u(11))}
+    ready = flex_row("vpr-boost", [prompt_chip(doc, "vpr-boost", S("oq4_key_crouch")),
+                                   label("vpr-boost-word", BOOST_KEY, 10.6, [1, 1, 1, 0.92], line=16)],
+                     **{"display": ui.keyword("none"), **gap})
+    doc.bind("vpr-boost.display", "vpr-boost", "display", sel(op("==", S("oq4_boost"), 0), "flex", "none"))
+    pushing = flex_row("vpr-boosting", [hazard_icon("vpr-hazard"), label("vpr-boosting-word", BOOSTING_KEY, 10.6, rgb(RACE_RED), line=16)],
+                       **{"display": ui.keyword("none"), **gap})
+    doc.bind("vpr-boosting.display", "vpr-boosting", "display", sel(op("==", S("oq4_boost"), 1), "flex", "none"))
+    return [ready, pushing]
+
+
+def speed_streak(doc: HudDocument) -> dict:
+    """While the boost pushes, the expansion's square-frame speed blur (its
+    hs/SpeedBlur window, which the expansion left hidden): the view softens
+    from each edge to a quarter of the way in, along speeder_blur's falloff,
+    with the boost's envelope (the game's oq4_boost_envelope: 500 ms in, held,
+    then 1.5 s out). Never under reduced motion, and not in Minimal."""
+    doc.number("oq4_boost_envelope")
+
+    def p(fx, fy):
+        return [{"fraction": fx}, {"fraction": fy}]
+    stops = [{"at": at, "color": ui.colour([1, 1, 1, alpha])} for at, alpha in STREAK]
+
+    def side(ident, corners, a, b):
+        commands = [{"id": f"{ident}{i}", "op": "move" if i == 0 else "line", "points": [p(*corner)]} for i, corner in enumerate(corners)]
+        commands.append({"id": f"{ident}z", "op": "close"})
+        return {"id": ident, "commands": commands, "fill": {"type": "linear", "from": p(*a), "to": p(*b), "stops": stops}}
+    # Four bands meeting on the view's diagonals, as the mask's frame does.
+    bands = [side("t", [(0, 0), (1, 0), (0.75, 0.25), (0.25, 0.25)], (0.5, 0), (0.5, 0.25)),
+             side("b", [(0, 1), (0.25, 0.75), (0.75, 0.75), (1, 1)], (0.5, 1), (0.5, 0.75)),
+             side("l", [(0, 0), (0.25, 0.25), (0.25, 0.75), (0, 1)], (0, 0.5), (0.25, 0.5)),
+             side("r", [(1, 0), (1, 1), (0.75, 0.75), (0.75, 0.25)], (1, 0.5), (0.75, 0.5))]
+    node = ui.group("streak", {**ui.FULL, "display": ui.keyword("block"), "backdrop-blur": ui.length(0)}, mask={"paths": bands})
+    off = OR(S("oq4.reduced"), op("==", S("hud.layout"), 2))
+    doc.bind("streak.blur", "streak", "backdrop-blur",
+             sel(off, 0, op("*", op("clamp", S("oq4_boost_envelope"), 0, 1), u(STREAK_SIGMA))))
+    return node
+
+
+def speeder_document() -> dict:
+    """The speeder bike (guis/vehicles/speederplayerhud.gui, 14.12): the
+    vehicle status bar centred on the bottom edge with the bike's own glyphs
+    and entry lines and the gauges' warnings the expansion removed, the race
+    display at the top centre, the HUD prompt with the boost and Exit (which
+    the expansion's HUD lost), and the speed streak while boosting."""
+    from remastered_hud_groups import boss_bar, missile_chevron, notices, transmission
+    from remastered_hud_status import full
+    from remastered_hud_vehicle import electric_warning, hit_flash, hud_prompt, vehicle_gauge, weapon_lines, weapon_panel
+    doc = HudDocument("openq4.hud.remastered.speeder")
+    layout_state(doc)
+    for key in ("vehicle_health", "vehicle_shield", "vehicle_weaponcharge", "vehicle_weaponammo"):
+        doc.number(key, 1 if key in ("vehicle_health", "vehicle_shield") else 0)
+    hull_warn = op("<=", S("vehicle_health"), 0.25)
+    shield_warn = NOT(op(">", S("vehicle_shield"), 0))
+    gauges = [vehicle_gauge(doc, "hull", 71, "#B3D06E", 0.35, "#str_200911", "health", "vehicle_health", hull_warn, True),
+              vehicle_gauge(doc, "shield", 164, "#B2CF6D", 0.349, "#str_200912", "armor", "vehicle_shield", shield_warn, False)]
+    panel = weapon_panel(doc, SPEEDER_WEAPONS, charged=(1,), counted=())
+    lines, show_lines, hide_lines = weapon_lines(doc, SPEEDER_LINES)
+    # The status bar spans 11-288 u in the stock; Remastered centres it on 320.
+    bar = box("vbar", u(170.5), 0, u(640), u(480), panel + gauges + lines)
+    race = race_bar(doc)
+    radio = transmission(doc)
+    boss = boss_bar(doc, offset=20.0)
+    exit_notice, saved, missile_text = notices(doc)
+    missile = missile_chevron(doc)
+    prompt = hud_prompt(doc, boost_items(doc))
+    hit = hit_flash(doc)
+    elec_l, elec_r = electric_warning(doc)
+    streak = speed_streak(doc)
+    # The expansion sent its entry animation to no handler; Remastered plays
+    # the stock vehicle's lines.
+    doc.on("showExitmessage", {"op": "setState", "values": {"oq4.vehicle": True}}, *show_lines)
+    doc.on("hideExitmessage", {"op": "setState", "values": {"oq4.vehicle": False}}, *hide_lines)
+    doc.on("showLockmessage", {"op": "setState", "values": {"oq4.locked": True}})
+    doc.on("hideLockmessage", {"op": "setState", "values": {"oq4.locked": False}})
+    # The HUD draws only while the bike is ridden, so a joining peer rides.
+    doc.joins.append({"op": "setState", "values": {"oq4.vehicle": True}})
+    doc.on("hudJoin", *doc.joins)
+    doc.on("onInit", *doc.joins)
+    # Minimal (ui_hudLayout 2) keeps the status bar, the race display, the
+    # prompt and the save notice.
+    root = full("hud-root", [
+        streak,
+        beyond_minimal(doc, "hit-full", [hit]),
+        anchor(doc, "cl", [beyond_minimal(doc, "cl-full", [elec_l])]),
+        anchor(doc, "cr", [beyond_minimal(doc, "cr-full", [elec_r])]),
+        anchor(doc, "bc", [bar], scale="hud.centerScale"),
+        anchor(doc, "tr", [beyond_minimal(doc, "tr-full", [radio])]),
+        anchor(doc, "tc", [race, beyond_minimal(doc, "tc-full", [boss, missile_text, exit_notice]), saved]),
+        anchor(doc, "cc", [beyond_minimal(doc, "cc-full", [missile])]),
+        anchor(doc, "br", [prompt]),
+    ])
+    pairs = [("p_radio::visible", "radioChatterUp"), ("missile_indicator::visible", "missileThreatUp"),
+             ("left_elecwarn::visible", "electricWarningOn"), ("Bossbar::visible", "showBossBar"),
+             ("p_boss_shield_bar_left::visible", "showBossShieldBar")]
+    pairs += [(f"progress_{n}_on::visible", f"showprogress{n}") for n in range(10, 101, 10)]
+    joins = join_events(doc, pairs)
+    return doc.build(root, {"canvas": {"height": 720, "minWidth": 960},
+                            "extensions": {"openq4": {"reference": "ui-visual-design.md 14.8, 14.12",
+                                                      "stock": "guis/vehicles/speederplayerhud.gui", "joinEvents": joins}}})

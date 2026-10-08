@@ -157,18 +157,19 @@ def vehicle_gauge(doc: HudDocument, kind: str, gx: float, colour: str, fill_alph
     return box(ident + "-gauge", u(gx), u(420), u(w), u(h), [sheared, text, text_warn, icon, icon_warn])
 
 
-def weapon_panel(doc: HudDocument) -> list:
+def weapon_panel(doc: HudDocument, weapons: list = WEAPONS, charged: tuple = (0, 3), counted: tuple = (3,)) -> list:
     """The chamfered panel (stock ammo_backbar, sheared about y 440) with the
     current weapon's traced glyph and the other's at 0.40, both upright, the
     rocket pods' count in Chain and the #FF9E1A charge bar for the cannon and
-    the rocket pods."""
+    the rocket pods. `weapons` maps vehicle_weapon to (current, other) glyphs;
+    `charged` and `counted` are the indexes with a charge bar and a count."""
     weapon = S("vehicle_weapon")
     nodes = [vec("vpanel-back", [pts_path("back", scaled(sheared_points(flatten(PANEL), -0.22, 440)), fill=ui.solid([0, 0, 0, 0.5]))]),
              vec("vpanel-back-opaque", [pts_path("back", scaled(sheared_points(flatten(PANEL), -0.22, 440)),
                                                  fill=ui.solid([0, 0, 0, 0.85]))], {"display": ui.keyword("none")})]
     doc.show("vpanel-back", NOT(S("oq4.opaque")))
     doc.show("vpanel-back-opaque", S("oq4.opaque"))
-    for index, (current, other) in enumerate(WEAPONS):
+    for index, (current, other) in enumerate(weapons):
         x, y, h, alpha = GLYPHS[current]
         parts = hud_svg.icon_nodes(current, f"vweap{index}-cur", u(x), u(y), u(h), tint=rgb(INK, alpha))
         parts += hud_svg.icon_nodes(other, f"vweap{index}-oth", u(23), u(409), u(17), tint=rgb(INK, 0.4))
@@ -180,7 +181,7 @@ def weapon_panel(doc: HudDocument) -> list:
     doc.bind("vcount-text.text", "vcount-text", "text", op("numberText", op("max", 0, op("floor", S("vehicle_weaponammo")))))
     count_box = shear_group("vcount", 0, u(429), u(110), u(41), -0.22, [count])
     count_box["properties"]["display"] = ui.keyword("none")
-    doc.show("vcount", op("==", weapon, 3))
+    doc.show("vcount", OR(*[op("==", weapon, i) for i in counted]) if counted else False)
     nodes.append(count_box)
     # The charge bar: its track and the fill growing from the leading end.
     track = vec("vcharge-track", [pts_path("track", scaled(rounded_rect(9, 465, 85, 8, 4, -0.22, 440)),
@@ -192,7 +193,7 @@ def weapon_panel(doc: HudDocument) -> list:
     doc.bind("vcharge-fill.scale", "vcharge-fill", "transform", [op("*", u(-37), op("-", 1, charge)), 0, charge, 1, 0])
     fill_shear = shear_group("vcharge-shear", 0, u(400), u(640), u(80), -0.22, [bar_box])
     charging = full("vcharge", [track, fill_shear], display=ui.keyword("none"))
-    doc.show("vcharge", OR(op("==", weapon, 0), op("==", weapon, 3)))
+    doc.show("vcharge", OR(*[op("==", weapon, i) for i in charged]))
     nodes.append(charging)
     return nodes
 
@@ -219,7 +220,7 @@ def bracket_value(base: tuple, rect: tuple) -> dict:
     return transform_value(u(x + w / 2 - (bx + 6)), u(y + h / 2 - (by + 16)), w / 12, h / 32)
 
 
-def weapon_lines(doc: HudDocument) -> list:
+def weapon_lines(doc: HudDocument, lines: list = LINES) -> list:
     """On entry (showWeapMsg, which showExitmessage sends): after 2 s the
     other weapon's line wipes open in Marine 0.22 #FF8000 while orange
     brackets slide out around its glyph; it rises 12 u and turns white, the
@@ -234,9 +235,9 @@ def weapon_lines(doc: HudDocument) -> list:
         ident = f"vmsg{line}"
         text = shadowed(ident + "-text", "", face="marine", size=15.84, colour=[1, 1, 1, 1], baseline=u(14), x=0, width=u(348))
         del text[1]["properties"]["color"]       # the line's colour, which the timeline turns white
-        key = op("select", op("==", S("oq4.weapMsg"), 0), LINES[0][line - 1],
-                 op("select", op("==", S("oq4.weapMsg"), 1), LINES[1][line - 1],
-                    op("select", op("==", S("oq4.weapMsg"), 2), LINES[2][line - 1], LINES[3][line - 1])))
+        key = lines[-1][line - 1]
+        for index in range(len(lines) - 2, -1, -1):
+            key = op("select", op("==", S("oq4.weapMsg"), index), lines[index][line - 1], key)
         for node in text:
             doc.bind(node["id"] + ".text", node["id"], "text", key)
         content = box(ident + "-content", 0, 0, u(348), u(19), text, transform=transform_value(u(348)),
@@ -273,7 +274,7 @@ def weapon_lines(doc: HudDocument) -> list:
     ])
     group = full("vmsg", nodes + [brackets], display=ui.keyword("none"))
     doc.show("vmsg", S("oq4.weapMsgOn"))
-    show = [{"op": "setState", "values": {"oq4.weapMsg": op("clamp", S("vehicle_weapon"), 0, 3), "oq4.weapMsgOn": True}},
+    show = [{"op": "setState", "values": {"oq4.weapMsg": op("clamp", S("vehicle_weapon"), 0, len(lines) - 1), "oq4.weapMsgOn": True}},
             play("vmsg-run"), play("vbr-run")]
     hide = [cancel("vmsg-run"), cancel("vbr-run"), {"op": "setState", "values": {"oq4.weapMsgOn": False}}]
     doc.on("showWeapMsg", *show)
@@ -373,31 +374,37 @@ def lock_icon(ident: str, colour: list) -> dict:
                             "height": ui.length(u(10.6)), "margin-right": ui.length(u(4))}, [vec(ident + "-g", paths)])
 
 
-def hud_prompt(doc: HudDocument) -> dict:
+def prompt_chip(doc: HudDocument, ident: str, key_expr) -> dict:
+    """The active control's cap (13.4): its key name in dark ProFont 6.4 u on
+    a white chip at 0.85, 10.6 u tall with a cut lower-leading corner."""
+    return ui.group(ident + "-chip", {"position": ui.keyword("relative"), "display": ui.keyword("block"), "height": ui.length(u(10.6)),
+                                      "min-width": ui.length(u(10.6)), "padding-left": ui.length(u(3)), "padding-right": ui.length(u(3)),
+                                      "margin-right": ui.length(u(4)), "text-align": ui.keyword("center")},
+                    [vec(ident + "-chip-bg", [{"id": "k", "fill": ui.solid([1, 1, 1, 0.85]), "commands": [
+                        {"id": "a", "op": "move", "points": [[0, 0]]}, {"id": "b", "op": "line", "points": [[{"fraction": 1}, 0]]},
+                        {"id": "c", "op": "line", "points": [[{"fraction": 1}, {"fraction": 1}]]},
+                        {"id": "d", "op": "line", "points": [[u(2.6), {"fraction": 1}]]},
+                        {"id": "e", "op": "line", "points": [[0, {"fraction": 1, "dp": -u(2.6)}]]}, {"id": "f", "op": "close"}]}]),
+                     bound_label(doc, ident + "-key", key_expr, 6.4, rgb("#10140A"), face="profont", line=10.6)])
+
+
+def hud_prompt(doc: HudDocument, lead: list = ()) -> dict:
     """The HUD prompt (14.8): bottom-trailing, one sheared plate at black 0.50
     never wider than its content. In a vehicle it shows the jump key's cap and
     Exit; while a script locks the vehicle, a lock and Vehicle locked in
-    #FF8000 instead."""
+    #FF8000 instead. `lead` items (the speeder's boost) come first, 11 u
+    apart."""
     doc.string("oq4_key_jump")
     doc.number("vehicle_locked")
     doc.boolean("oq4.vehicle")
     doc.boolean("oq4.locked")
     locked = OR(op("!=", S("vehicle_locked"), 0), S("oq4.locked"))
-    chip = ui.group("vpr-chip", {"position": ui.keyword("relative"), "display": ui.keyword("block"), "height": ui.length(u(10.6)),
-                                 "min-width": ui.length(u(10.6)), "padding-left": ui.length(u(3)), "padding-right": ui.length(u(3)),
-                                 "margin-right": ui.length(u(4)), "text-align": ui.keyword("center")},
-                    [vec("vpr-chip-bg", [{"id": "k", "fill": ui.solid([1, 1, 1, 0.85]), "commands": [
-                        {"id": "a", "op": "move", "points": [[0, 0]]}, {"id": "b", "op": "line", "points": [[{"fraction": 1}, 0]]},
-                        {"id": "c", "op": "line", "points": [[{"fraction": 1}, {"fraction": 1}]]},
-                        {"id": "d", "op": "line", "points": [[u(2.6), {"fraction": 1}]]},
-                        {"id": "e", "op": "line", "points": [[0, {"fraction": 1, "dp": -u(2.6)}]]}, {"id": "f", "op": "close"}]}]),
-                     bound_label(doc, "vpr-key", S("oq4_key_jump"), 6.4, rgb("#10140A"), face="profont", line=10.6)])
-    exit_item = flex_row("vpr-exit", [chip, label("vpr-exit-word", EXIT_KEY, 10.6, [1, 1, 1, 0.92], line=16)])
+    exit_item = flex_row("vpr-exit", [prompt_chip(doc, "vpr", S("oq4_key_jump")), label("vpr-exit-word", EXIT_KEY, 10.6, [1, 1, 1, 0.92], line=16)])
     doc.bind("vpr-exit.display", "vpr-exit", "display", sel(locked, "none", "flex"))
     lock_item = flex_row("vpr-lock", [lock_icon("vpr-lock-icon", rgb(LINE)), label("vpr-lock-word", LOCKED_KEY, 10.6, rgb(LINE), line=16)],
                          display=ui.keyword("none"))
     doc.bind("vpr-lock.display", "vpr-lock", "display", sel(locked, "flex", "none"))
-    row = flex_row("vpr-row", [plate_vec("vpr-plate", 16, 0.5), exit_item, lock_item],
+    row = flex_row("vpr-row", [plate_vec("vpr-plate", 16, 0.5), *lead, exit_item, lock_item],
                    **{"height": ui.length(u(16)), "padding-left": ui.length(u(5.5)), "padding-right": ui.length(u(5.5))})
     group = ui.group("vpr", {**ui.absolute(right=u(640 - 629), bottom=u(480 - 476)), "display": ui.keyword("none")}, [row])
     doc.bind("vpr.display", "vpr", "display", sel(S("oq4.vehicle"), "flex", "none"))

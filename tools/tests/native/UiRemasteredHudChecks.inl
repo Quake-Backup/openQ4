@@ -707,6 +707,139 @@ static void CheckRemasteredMccHud(ScreenHost& host, const char* path) {
 	runtime.Shutdown();
 }
 
+// The Awakening's speeder bike (speederplayerhud.gui, 14.12): the vehicle status
+// bar with the bike's own glyphs, the race display 18 u lower with its padded
+// timer and last-10-seconds red, the boost in the HUD prompt and the streak.
+static void CheckRemasteredSpeederHud(ScreenHost& host, const char* path) {
+	const auto source = Read(path);
+	Document document; std::vector<Diagnostic> diagnostics;
+	if (!document.Load(source,diagnostics)) for (const auto& d : diagnostics) std::fprintf(stderr,"%s %u:%u %s\n",path,unsigned(d.line),unsigned(d.column),d.message.c_str());
+	Check(diagnostics.empty() && document.Model().id == "openq4.hud.remastered.speeder","Remastered speeder HUD validates");
+	RemasteredLayoutPreference(host,1);
+	Runtime runtime(host);
+	Check(runtime.Initialize(),"retained runtime");
+	Check(runtime.LoadDocument(source,"guis/hud/remastered_speeder.q4ui",diagnostics),"Remastered speeder HUD loads into a runtime");
+	std::string error;
+	Runtime::EventEffects effects;
+	host.softFocus = true;
+	StateValues values = RemasteredLayout(1280,720);
+	values.insert({{"vehicle_health",0.8},{"vehicle_shield",0.55},{"vehicle_weapon",0.0},{"vehicle_weaponcharge",0.5},
+		{"vehicle_locked",0.0},{"oq4_key_jump",std::string("SPACE")},{"oq4_key_crouch",std::string("C")},{"oq4_boost",0.0}});
+	Check(runtime.SetState(values,error,0),error.c_str());
+	Check(runtime.RunEvent("hudJoin",0,effects,error),"the join program runs");
+	host.softened.clear(); host.draws.clear();
+	runtime.Frame(RemasteredViewport(1280,720),.1);
+	Check(host.errors == 0,"the speeder HUD frames without runtime errors");
+	Check(host.softened.empty(),"no streak before a boost");
+
+	// The bike lists its machinegun first: weapon 0 shows the machinegun's
+	// panel without a charge bar, weapon 1 the cannon's with it.
+	Bounds hull;
+	Check(runtime.GetBounds("vhull-gauge",hull) && Near(hull.x,160+241.5f*1.5f,1.f),"the status bar centres on the bottom edge");
+	Check(Shown(runtime,"vweap0") && !Shown(runtime,"vweap1") && !Shown(runtime,"vcharge") && !Shown(runtime,"vcount"),
+		"the machinegun shows its panel, no charge bar and no count");
+	Check(runtime.SetState({{"vehicle_weapon",1.0}},error,.2),error.c_str());
+	runtime.Frame(RemasteredViewport(1280,720),.25);
+	Check(Shown(runtime,"vweap1") && Shown(runtime,"vcharge") && !Shown(runtime,"vcount"),"the cannon shows its recharge");
+	Check(runtime.SetState({{"vehicle_health",0.2}},error,.3),error.c_str());
+	runtime.Frame(RemasteredViewport(1280,720),.35);
+	Check(Shown(runtime,"vhull-track-warn") && Shown(runtime,"vhull-label-warn"),"the hull warning the expansion removed is back");
+	Check(runtime.SetState({{"vehicle_health",0.8}},error,.4),error.c_str());
+
+	// The race display: the plate 18 u below the stock, the pips lit per checkpoint.
+	host.draws.clear(); runtime.Frame(RemasteredViewport(1280,720),.45);
+	float top = 1e9f, bottom = -1e9f, left = 1e9f, right = -1e9f;
+	for (const auto& draw : host.draws) for (const auto& v : draw.vertices) {
+		// The plate's black at 0.454, in the top half (the status bar's backing is lower).
+		if (std::fabs(v.a-.454f) > .003f || v.r > .01f || v.y > 360) continue;
+		top = std::min(top,v.y); bottom = std::max(bottom,v.y); left = std::min(left,v.x); right = std::max(right,v.x);
+	}
+	Check(Near(top,(15+18)*1.5f,1.5f) && Near(bottom,(60.5f+18)*1.5f,1.5f) && Near(left,160+68.1f*1.5f,1.5f) &&
+		Near(right,160+571.4f*1.5f,1.5f),"the race plate sits 18 u lower at the top centre");
+	Check(!Shown(runtime,"race-pip0"),"no checkpoint lights no pip");
+	Check(runtime.RunEvent("showprogress30",.5,effects,error),"a checkpoint runs");
+	runtime.Frame(RemasteredViewport(1280,720),.55);
+	Check(Shown(runtime,"race-pip0") && Shown(runtime,"race-pip2") && !Shown(runtime,"race-pip3"),"three checkpoints light three pips");
+
+	// The timer shows as the script runs it, the hundredths two digits wide.
+	Check(!Shown(runtime,"race-sec") && !Shown(runtime,"race-hun"),"no placeholder timer before the race");
+	Check(runtime.SetState({{"currenttime",42.0},{"currenttime2",5.0}},error,.6),error.c_str());
+	Check(runtime.RunEvent("updatetimer",.6,effects,error) && runtime.RunEvent("updatetimer2",.6,effects,error),"the countdown runs");
+	runtime.Frame(RemasteredViewport(1280,720),.65);
+	const auto seconds = runtime.PresentedValue("race-sec","text"), tens = runtime.PresentedValue("race-hun-tens","text"),
+		units = runtime.PresentedValue("race-hun-units","text");
+	Check(Shown(runtime,"race-sec") && Shown(runtime,"race-hun") && Shown(runtime,"race-point") && seconds && seconds->text == "42" &&
+		tens && tens->text == "0" && units && units->text == "5","the timer reads 42.05");
+	Bounds sec;
+	Check(runtime.GetBounds("race-sec",sec) && Near(sec.x+sec.width,160+158*1.5f,1.f),"the seconds trail at 158 u");
+	// The last 10 s turn the seconds #FF3333 over 100 ms, and back.
+	Check(runtime.SetState({{"currenttime",9.0}},error,.7),error.c_str());
+	Check(runtime.RunEvent("updatetimer",.7,effects,error),"the countdown runs into its last 10 s");
+	runtime.Frame(RemasteredViewport(1280,720),.75);
+	auto colour = runtime.PresentedValue("race-sec","color");
+	Check(colour && colour->data[1] < .8 && colour->data[1] > .2,"the seconds are turning red");
+	runtime.Frame(RemasteredViewport(1280,720),.85);
+	colour = runtime.PresentedValue("race-sec","color");
+	Check(colour && Near(float(colour->data[0]),1) && Near(float(colour->data[1]),.2f,.01f) && Near(float(colour->data[2]),.2f,.01f),
+		"the last 10 s read #FF3333");
+	Check(runtime.SetState({{"currenttime",30.0}},error,.9),error.c_str());
+	Check(runtime.RunEvent("updatetimer",.9,effects,error),"a new area adds time");
+	runtime.Frame(RemasteredViewport(1280,720),1.05);
+	colour = runtime.PresentedValue("race-sec","color");
+	Check(colour && Near(float(colour->data[0]),.882f,.01f) && Near(float(colour->data[2]),.404f,.01f),"more time turns the seconds gold");
+	Check(runtime.RunEvent("hidespeedertimer",1.1,effects,error) && runtime.RunEvent("hidespeedertimer2",1.1,effects,error),"the timer hides");
+	runtime.Frame(RemasteredViewport(1280,720),1.15);
+	Check(!Shown(runtime,"race-sec") && !Shown(runtime,"race-hun"),"a hidden timer leaves the plate");
+
+	// The prompt: Boost with the crouch key while ready, Boosting while it
+	// pushes, nothing while it recharges; Exit (or the lock) trails.
+	Check(runtime.RunEvent("showExitmessage",1.2,effects,error),"boarding runs");
+	runtime.Frame(RemasteredViewport(1280,720),1.25);
+	const auto crouch = runtime.PresentedValue("vpr-boost-key","text");
+	Check(Shown(runtime,"vpr") && Shown(runtime,"vpr-boost") && !Shown(runtime,"vpr-boosting") && Shown(runtime,"vpr-exit") && crouch &&
+		crouch->text == "C","a ready boost shows the crouch key before Exit");
+	Bounds boostItem, exitItem, prompt;
+	Check(runtime.GetBounds("vpr-boost",boostItem) && runtime.GetBounds("vpr-exit",exitItem) && boostItem.x < exitItem.x &&
+		Near(exitItem.x-(boostItem.x+boostItem.width),11*1.5f,.6f) && runtime.GetBounds("vpr",prompt) &&
+		Near(prompt.x+prompt.width,320+629*1.5f,1.5f),"Boost leads Exit by 11 u and the prompt trails at 629 u");
+	Check(runtime.SetState({{"oq4_boost",1.0},{"oq4_boost_envelope",0.5}},error,1.3),error.c_str());
+	host.softened.clear();
+	runtime.Frame(RemasteredViewport(1280,720),1.35);
+	Check(Shown(runtime,"vpr-boosting") && !Shown(runtime,"vpr-boost"),"a pushing boost shows the hazard and Boosting");
+	Check(host.softened.size() == 1 && Near(host.softened[0].sigma,.5f*5*1.5f,.05f) && Near(host.softened[0].saturation,1) &&
+		Near(host.softened[0].region.width,1280,1.f) && Near(host.softened[0].region.height,720,1.f),
+		"the streak softens the view with the boost's envelope");
+	host.reducedMotion = true; host.softened.clear();
+	runtime.Frame(RemasteredViewport(1280,720),1.4);
+	Check(host.softened.empty(),"reduced motion never streaks");
+	host.reducedMotion = false;
+	Check(runtime.SetState({{"oq4_boost",2.0},{"oq4_boost_envelope",0.0}},error,1.45),error.c_str());
+	host.softened.clear();
+	runtime.Frame(RemasteredViewport(1280,720),1.5);
+	Check(!Shown(runtime,"vpr-boosting") && !Shown(runtime,"vpr-boost") && Shown(runtime,"vpr-exit") && host.softened.empty(),
+		"a recharging boost leaves only Exit and no streak");
+	Check(runtime.SetState({{"vehicle_locked",1.0}},error,1.55),error.c_str());
+	runtime.Frame(RemasteredViewport(1280,720),1.6);
+	Check(Shown(runtime,"vpr-lock") && !Shown(runtime,"vpr-exit"),"the race's lock shows Vehicle locked");
+
+	// The entry lines the expansion's HUD never played: the cannon's first.
+	const auto line1 = runtime.PresentedValue("vmsg1-text","text"), line2 = runtime.PresentedValue("vmsg2-text","text");
+	Check(Shown(runtime,"vmsg") && line1 && line1->text == "#str_200939" && line2 && line2->text == "#str_200940",
+		"boarding with the cannon names the machinegun first");
+
+	// Minimal keeps the status bar, the race display and the prompt, never the streak.
+	RemasteredLayoutPreference(host,2);
+	Check(runtime.SetState({{"oq4_boost",1.0},{"oq4_boost_envelope",1.0}},error,1.7),error.c_str());
+	host.softened.clear();
+	runtime.Frame(RemasteredViewport(1280,720),1.75);
+	Check(!Shown(runtime,"tr-full") && !Shown(runtime,"hit-full") && Shown(runtime,"race-plate") && Shown(runtime,"vpr") &&
+		runtime.GetBounds("vhull-gauge",hull) && host.softened.empty(),"Minimal keeps the race display, status bar and prompt without the streak");
+	RemasteredLayoutPreference(host,1);
+	Check(host.errors == 0,"no runtime diagnostics across the speeder exercise");
+	host.softFocus = false;
+	runtime.Shutdown();
+}
+
 // The objectives display and notices (wristcomm.gui, 14.11).
 static void CheckRemasteredObjectivesHud(ScreenHost& host, const char* path, bool strogg) {
 	const auto source = Read(path);

@@ -139,6 +139,25 @@ def mcc_cannon():
     ]
 
 
+def speeder():
+    """The Awakening's speeder bike (guis/vehicles/speederplayerhud.gui): m07's
+    race seats the player on the bike and runs the timer itself; the race's
+    checkpoint event and the expiry it counts toward give the progress and the
+    last 10 s, and the crouch control fires a boost."""
+    gui = 'guis/vehicles/speederplayerhud.gui'
+    return [
+        'set g_autoExecAfterMapLoad ""', 'notarget', 'god', 'waitMsec 6000', shot('speeder'),
+        *hud(gui, 'event showprogress30'), 'waitMsec 200', shot('speeder-progress'),
+        'openq4_testInput 300 crouch', 'waitMsec 450', shot('speeder-boost'), 'waitMsec 900', shot('speeder-boost-full'),
+        'waitMsec 2400', shot('speeder-recharge'),
+        'script "AREA1_TIME_EXPIRED = sys.getTime() + 9.6"', 'waitMsec 500', shot('speeder-last10'),
+        *hud(gui, 'state rhinochatter 1', 'event radioChatterUp'), 'waitMsec 700', shot('speeder-radio'),
+        *hud(gui, 'event radioChatterDown'),
+        'set ui_hudLayout 0', 'waitMsec 400', shot('speeder-classic'), 'set ui_hudLayout 1', 'waitMsec 400', shot('speeder-restored'),
+        'set ui_hudLayout 2', 'waitMsec 400', shot('speeder-minimal'), 'set ui_hudLayout 1',
+    ]
+
+
 def objectives(gui):
     """The objectives display through the held scores button (the game
     publishes the list), then the notices and a failure through the stock
@@ -164,6 +183,7 @@ SCENARIOS = {
     'airdef': ('game/mcc_landing', cannon()),
     'turret': ('game/m03_airassault', space_cannon()),
     'mcc': ('game/m06_mcc_invasion', mcc_cannon()),
+    'speeder': ('game/m07_race1', speeder()),
     'strogg': ('game/recomp', on_foot('guis/hud_strogg.gui')),
     'mp': ('mp:mp/q4dm1', [
         'set g_autoExecAfterMapLoad ""', 'waitMsec 2500', shot('mp-base'),
@@ -202,7 +222,7 @@ SCENARIOS = {
 }
 
 
-AWAKENING = {'turret', 'mcc'}
+AWAKENING = {'turret', 'mcc', 'speeder'}
 
 
 def main() -> int:

@@ -18,9 +18,12 @@ everything but health, armor, ammunition and the crosshair family left out.
 What answers or asks for the player's action stays: the vehicle's Exit or
 locked prompt, the save notice, chat, voice and votes, the respawn prompt,
 the follow card, an objective failure and the held displays (objectives,
-scoreboard, statistics). It leaves out the weapon strip, pickups,
+scoreboard, statistics). A vehicle keeps its own display: the cannon's optic,
+the ship panel, the MCC's hull readout and the speeder's race display. It
+leaves out the weapon strip, pickups,
 transmissions, the boss bar, damage direction, missile warnings, objective
-notices, powerups, the vehicle's hit flash and electrical warnings, and in
+notices, powerups, the vehicle's hit flash, electrical warnings and the
+speeder's speed streak, and in
 multiplayer the standings, team panels, timer, center notices, kill feed, aim
 text, the Tourney strip, the match card and the lag notice. Each document reads
 the preference as `hud.layout` and wraps the groups Minimal drops in a
@@ -37,6 +40,7 @@ places.
 | `guis/hud.gui` while riding the flatbed, `guis/hud_strogg.gui` on the tram | (the on-foot documents) | The ride's silhouette gauge replaces the three gauges (`enterFlatbed`/`enterTram`), traced from the stock truck and tram art |
 | `guis/vehicles/airassault/turretplayerhud.gui` | `remastered_turret.q4ui` | The Awakening's space cannon (m03's dropship guns): the transmission display, boss bar, notices, damage direction, brackets and missile warning without gauges, strip or powerups; the ship-status panel under the transmission display (damage sections, spinning objective markers, attack darts, and the view cone relative to the ship's nose); the HUD prompt's Exit |
 | `guis/vehicles/mcc/cannonplayerhud.gui` | `remastered_mcc.q4ui` | The Awakening's MCC cannon (m06): the gun takes no damage, so the readout is the MCC's hull, U.S.S. Hannibal over the stock gauge plate with the hull number (the MCC's health divided by 10), stacked under the transmission display the side gun's HUD lacked, its track filled in proportion and warning at 25%; the HUD prompt's Exit |
+| `guis/vehicles/speederplayerhud.gui` | `remastered_speeder.q4ui` | The Awakening's speeder bike (m07's races): the vehicle status bar with the bike's own glyphs (its machinegun first, then the cannon with its recharge bar), the hull and shield warnings the expansion removed and the entry lines its HUD never played; the race display 18 u lower (the plate, ten checkpoint pips, the countdown with two-digit hundredths and its seconds #FF3333 in the last 10 s, shown only while the race runs it); the HUD prompt (Boost on the crouch control while a boost is ready, the hazard and Boosting while it pushes, then Exit or Vehicle locked); the speed streak while boosting; transmission display, boss bar, notices |
 | `guis/vehicles/hud.gui` | `remastered_vehicle.q4ui` | The walker's and hover tank's status bar (ARMOR and SHIELDS gauges, weapon panel, rocket count, charge bar), entry lines, hit flash, electrical warning, HUD prompt (Exit or Vehicle locked), transmission display, boss bar, notices |
 | `guis/vehicles/airdef_cannon.gui` | `remastered_airdef.q4ui` | The air-defence cannon: the retained nailgun lens held still (Gaussian focus beyond the aperture) with its two crescent load bars and amber reticle, the transmission display the stock lacks, the HUD prompt (Exit or Vehicle locked) in place of the centered exit line, and the save notice |
 | `guis/wristcomm.gui`, `guis/wristcomm_strogg.gui` | `remastered_objectives.q4ui`, `remastered_objectives_strogg.q4ui` | Objectives display (every objective, three at a time, a COMPLETED section), new-objective and objective-complete notices, OBJECTIVE FAILED |
@@ -98,6 +102,11 @@ extra fields beside the stock ones; the stock GUIs ignore them.
 - Vehicles (`rvVehicle::UpdateHUD`): `oq4_key_jump`, the control that leaves,
   and `oq4_shipYaw`, the heading of whatever carries the vehicle (m03's
   dropship), against which the ship panel's cone shows the gun's heading.
+- The speeder bike's boost (`riVehiclePartBoost`): `oq4_boost` (0 ready, 1
+  pushing, 2 recharging), `oq4_boost_envelope` (the push's strength, 0 to 1,
+  which the speed streak follows) and `oq4_key_crouch`, the control that fires
+  it. The race's timer, checkpoints and countdown come from m07's scripts
+  through the vehicle's script GUI events.
 - The Awakening's on-foot documents carry the ship panel too, shown once m03's
   script sends the player's HUD a marker, damage or warning.
 - Objectives (`idPlayer`): `oq4_new_title`/`oq4_new_shot` and `oq4_done_title`
@@ -143,14 +152,17 @@ and frame costs for a document.
   `enterVehicle` script event), `airdef` (mcc_landing's cannon, boarded the
   same way), `turret` (m03's top gun, with `--awakening <content root holding
   q4xbase>`, after the level's own hand-off from its AI gunner), `mcc` (m06's
-  side gun, the same way), `mp` (with the scoreboard and the respawn
+  side gun, the same way), `speeder` (m07_race1, whose script seats the player
+  on the bike and runs the countdown; the race's checkpoint event, the
+  countdown's expiry and the crouch control drive the rest), `mp` (with the
+  scoreboard and the respawn
   prompt after `kill 0`) and `mp-ctf` (with the scoreboard), and the
   `mp-pace`/`sp-pace` profiles.
 
 ## Open work
 
 - The match summary (section 14.14), the scoreboard's scrolling past 16
-  rows, The Awakening's speeder and GEV displays, the chat entry line (an
+  rows, The Awakening's GEV display, the chat entry line (an
   interactive field, which belongs with the retained menu input) still draw
   their stock layout through the presentation bridge.
 - The Objectives hold/toggle setting and touch toggle are not implemented.

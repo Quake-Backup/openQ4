@@ -109,6 +109,10 @@ alpha's own code:
   the same panel appears on your own HUD while you move about the dropship. The
   MCC cannon (m06) shows the MCC's hull under the radio display, its gauge
   filling with the hull and turning red at a quarter, with an Exit prompt.
+  The speeder bike (m07) shows its race clock and checkpoints at the top, the
+  clock turning red in the last ten seconds; its prompt names your crouch key
+  while a boost is ready and warns while it fires, the screen's edges streak
+  as you boost, and its gauges warn when the hull or shields run low.
 
 ## Fixes to the alpha
 

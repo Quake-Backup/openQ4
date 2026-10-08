@@ -1460,6 +1460,7 @@ int main(int argc, char** argv) {
          if (path.find("_airdef") != std::string::npos) { CheckRemasteredAirdefHud(host,argv[i]); continue; }
          if (path.find("_turret") != std::string::npos) { CheckRemasteredTurretHud(host,argv[i]); continue; }
          if (path.find("_mcc") != std::string::npos) { CheckRemasteredMccHud(host,argv[i]); continue; }
+         if (path.find("_speeder") != std::string::npos) { CheckRemasteredSpeederHud(host,argv[i]); continue; }
          if (path.find("_objectives") != std::string::npos) { CheckRemasteredObjectivesHud(host,argv[i],strogg); continue; }
          if (path.find("_scoreboard") != std::string::npos) { CheckRemasteredScoreboardHud(host,argv[i]); continue; }
          CheckRemasteredHud(host,argv[i],std::string("openq4.hud.remastered.")+(strogg ? "strogg" : "marine")+(awakening ? ".awakening" : ""),strogg);

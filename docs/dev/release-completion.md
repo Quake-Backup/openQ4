@@ -4,8 +4,9 @@
 
 - [x] Lay out the gameplay HUD in visual specification section 14's Remastered
   layout: the on-foot, multiplayer, walker and hover tank, air-defence cannon,
-  Awakening space cannon (with its ship-status panel) and MCC cannon (with the
-  MCC's hull readout), flatbed and tram,
+  Awakening space cannon (with its ship-status panel), MCC cannon (with the
+  MCC's hull readout) and speeder bike (with the race display, the boost in the
+  HUD prompt and the speed streak), flatbed and tram,
   objectives and scoreboard (Tourney included) HUDs answer the stock GUIs' state
   and events from generated retained documents, with the fields the stock GUIs
   lack published by the game, and multiplayer adds the respawn prompt. The

@@ -105,6 +105,13 @@ ENTRIES = {
     "#str_231241": ("Safe Area Inset", "Margem da área segura", "Okraj bezpečné oblasti", "Marge de zone sûre",
                     "Sicherheitsrand", "Biztonsági margó", "Margine area sicura", "Margines obszaru bezpiecznego",
                     "Отступ безопасной зоны", "Margen de zona segura", "Güvenli alan boşluğu", "Відступ безпечної зони"),
+    # The speeder bike (14.12): the boost in the HUD prompt, and the race
+    # timer's decimal separator.
+    "#str_231244": ("Boost", "Acelerar", "Zrychlit", "Accélérer", "Boost", "Turbó", "Accelera", "Przyspiesz", "Ускориться",
+                    "Acelerar", "Hızlan", "Прискоритися"),
+    "#str_231245": ("Boosting", "Acelerando", "Zrychlení", "Accélération", "Boost aktiv", "Turbó aktív", "Accelerazione",
+                    "Przyspieszanie", "Ускорение", "Acelerando", "Hızlanıyor", "Прискорення"),
+    "#str_231246": (".", ",", ",", ",", ",", ",", ",", ",", ",", ",", ",", ","),
 }
 
 LINE = re.compile(r'^\s*"(#str_\d+)"\s*"(.*)"\s*$')

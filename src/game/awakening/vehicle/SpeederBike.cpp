@@ -139,7 +139,8 @@ void riVehicleSpeederBike::Event_SetBoostEnabled( float enabled ) {
 	up to "boostFovIncreaseMax" degrees. It is ready again
 	"boostEnvelopeRefreshSeconds" after the push ends. The vehicle HUD's
 	"boost_active" is set while it pushes, with "snd_boost" and
-	"snd_boostEnd" at either end.
+	"snd_boostEnd" at either end; the Remastered HUD also reads the state
+	("oq4_boost"), the push's envelope and the crouch control.
 
 	The expansion widened the view by writing g_fov, and left it at 90
 	afterwards whatever the player had chosen; this sets the vehicle's FOV
@@ -348,5 +349,14 @@ void riVehiclePartBoost::RunPostPhysics( void ) {
 				state = BOOST_READY;
 			}
 			break;
+	}
+
+	// openQ4: the Remastered HUD prompt shows Boost on the crouch control while
+	// a boost is ready and Boosting while it pushes, and the view streaks with
+	// the push's envelope. The expansion's HUD named only CROUCH, in text.
+	if ( idUserInterface *hud = vehicle->GetHud() ) {
+		hud->SetStateInt( "oq4_boost", state );
+		hud->SetStateFloat( "oq4_boost_envelope", state == BOOST_PUSHING ? Envelope( gameLocal.time - startTime ) : 0.0f );
+		hud->SetStateString( "oq4_key_crouch", common->KeysFromBinding( "_movedown" ) );
 	}
 }
