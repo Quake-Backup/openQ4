@@ -61,7 +61,9 @@ ENTRIES = {
     # Symbols the HUD composes around numbers and names; the same in every language.
     "#str_231222": ("/",) * 12,
     "#str_231223": ("+",) * 12,
-    "#str_231224": ("−",) * 12,
+    # The deficit sign: an en dash, which every font page carries (U+2212 lies outside the
+    # blocks the font rasteriser builds; tools/tests/lang_table_encoding.py).
+    "#str_231224": ("–",) * 12,
     "#str_231225": ("!",) * 12,
     "#str_231226": ("?",) * 12,
     "#str_231227": (": ",) * 12,
