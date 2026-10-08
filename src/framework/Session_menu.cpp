@@ -211,7 +211,15 @@ static bool Session_RetainedMultiplayerEnabled( bool welcome ) {
 	return ui_retainedMultiplayer.GetBool() || ( Session_RetainedScreensEnabled() && missing[0] == NULL );
 }
 
+// The match summary card (section 14.14) covers the game's summary at the end
+// of a match as the menu cards cover its menu; all its pages are built.
+static const char *const RETAINED_MP_SUMMARY_GUI = "guis/menu/mp_summary.q4ui";
+
 #ifndef ID_DEDICATED
+static bool Session_RetainedSummaryEnabled( void ) {
+	return ui_retainedMultiplayer.GetBool() || Session_RetainedScreensEnabled();
+}
+
 // The stock button a card's hand-off to `page` presses, or NULL; `joinPanel`
 // says whether the stock menu shows the join panel.
 static const char *Session_RetainedMultiplayerStockPage( bool welcome, int page, bool joinPanel ) {
@@ -4367,6 +4375,11 @@ void idSessionLocal::MenuEvent( const sysEvent_t *event ) {
 	}
 
 	if ( RetainedMultiplayerCovers() ) {
+		// The summary card's chat field takes the keyboard while the player
+		// types.
+		if ( RetainedSummaryChatEvent( event ) ) {
+			return;
+		}
 		// The card owns input while it covers the game's menu. A function key
 		// it leaves alone runs its binding, as over the stock menu (F1 and F2
 		// vote).
@@ -5623,11 +5636,17 @@ void idSessionLocal::PrepareRetainedLevel( const char *mapPath, bool multiplayer
 		if ( Session_RetainedMultiplayerEnabled( true ) && guiRetainedWelcome == NULL ) {
 			guiRetainedWelcome = FindRetainedGui( RETAINED_MP_WELCOME_GUI, false, false );
 		}
+		if ( Session_RetainedSummaryEnabled() && guiRetainedSummary == NULL ) {
+			guiRetainedSummary = FindRetainedGui( RETAINED_MP_SUMMARY_GUI, false, false );
+		}
 		if ( guiRetainedEscape != NULL ) {
 			guiRetainedEscape->SetStateInt( "card.tab", 0 );
 		}
 		if ( guiRetainedWelcome != NULL ) {
 			guiRetainedWelcome->SetStateInt( "card.tab", 0 );
+		}
+		if ( guiRetainedSummary != NULL ) {
+			guiRetainedSummary->SetStateInt( "card.tab", 0 );
 		}
 		return;
 	}
@@ -5651,13 +5670,27 @@ void idSessionLocal::PrepareRetainedLevel( const char *mapPath, bool multiplayer
 }
 
 // The game's in-match menu: its multiplayer menu, drawn over the game. The
-// chat, buy and summary screens are other GUIs and are never covered.
+// chat and buy screens are other GUIs and are never covered.
 static bool Session_IsGameMenu( idUserInterface *gui ) {
 	return gui != NULL && gui->State().GetBool( "gameDraw" ) && !idStr::Icmp( gui->Name(), "guis/mpmain.gui" );
 }
 
+// The game's match summary, which the summary card covers (section 14.14).
+static bool Session_IsGameSummary( idUserInterface *gui ) {
+	return gui != NULL && gui->State().GetBool( "gameDraw" ) && !idStr::Icmp( gui->Name(), "guis/summary.gui" );
+}
+
+// A game GUI a multiplayer card covers.
+static bool Session_IsCoveredGameGui( idUserInterface *gui ) {
+	return Session_IsGameMenu( gui ) || Session_IsGameSummary( gui );
+}
+
 bool idSessionLocal::RetainedMultiplayerCovers() const {
-	return guiRetainedMultiplayer != NULL && Session_IsGameMenu( guiActive );
+	return guiRetainedMultiplayer != NULL && Session_IsCoveredGameGui( guiActive );
+}
+
+bool idSessionLocal::RetainedSummaryCovers() const {
+	return retainedMultiplayerSummary && RetainedMultiplayerCovers() && Session_IsGameSummary( guiActive );
 }
 
 /*
@@ -5800,7 +5833,17 @@ card hands off to keeps the menu until it closes.
 void idSessionLocal::UpdateRetainedMultiplayer() {
 #ifndef ID_DEDICATED
 	const int now = common->GetPresentationTime();
-	if ( !Session_IsGameMenu( guiActive ) ) {
+	// A card covers one game GUI, the menu or the summary: another taking the
+	// screen (the summary closing into the menu) ends that cover and asks
+	// again.
+	if ( guiActive != retainedMultiplayerTarget ) {
+		if ( guiRetainedMultiplayer != NULL ) {
+			RetireRetainedMultiplayer( guiActive == NULL && mapSpawned );
+		}
+		retainedMultiplayerUncovered = false;
+		retainedMultiplayerTarget = guiActive;
+	}
+	if ( !Session_IsCoveredGameGui( guiActive ) ) {
 		// The menu closing ends a stock page's takeover.
 		retainedMultiplayerUncovered = false;
 		retainedMultiplayerHandoff = -1;
@@ -5820,9 +5863,9 @@ void idSessionLocal::UpdateRetainedMultiplayer() {
 			retainedMultiplayerHandoff = -1;
 		}
 	}
-	const bool context = ( Session_RetainedMultiplayerEnabled( false ) || Session_RetainedMultiplayerEnabled( true ) ) && game != NULL &&
-		mapSpawned && IsMultiplayer() && Session_IsGameMenu( guiActive ) && guiTest == NULL && !RetainedUI_IsOpen() &&
-		!retainedMultiplayerUncovered;
+	const bool context = ( Session_RetainedMultiplayerEnabled( false ) || Session_RetainedMultiplayerEnabled( true ) ||
+		Session_RetainedSummaryEnabled() ) && game != NULL && mapSpawned && IsMultiplayer() && Session_IsCoveredGameGui( guiActive ) &&
+		guiTest == NULL && !RetainedUI_IsOpen() && !retainedMultiplayerUncovered;
 	if ( !context ) {
 		if ( guiRetainedMultiplayer != NULL ) {
 			// Closing the menu releases the softened view over the running game;
@@ -5832,22 +5875,29 @@ void idSessionLocal::UpdateRetainedMultiplayer() {
 		return;
 	}
 	if ( guiRetainedMultiplayer == NULL ) {
-		// The game names the card; a game module that does not answer gets
-		// Escape, which its join offer refuses.
-		guiActive->SetStateBool( "mp.welcome", false );
-		game->HandleMainMenuCommands( "retainedMultiplayerVariant", guiActive );
-		const bool welcome = guiActive->State().GetBool( "mp.welcome" );
-		const char *path = welcome ? RETAINED_MP_WELCOME_GUI : RETAINED_MP_ESCAPE_GUI;
-		idUserInterface *&document = welcome ? guiRetainedWelcome : guiRetainedEscape;
+		// The summary takes its own card. For the menu the game names the
+		// card; a game module that does not answer gets Escape, which its join
+		// offer refuses.
+		const bool summary = Session_IsGameSummary( guiActive );
+		bool welcome = false;
+		if ( !summary ) {
+			guiActive->SetStateBool( "mp.welcome", false );
+			game->HandleMainMenuCommands( "retainedMultiplayerVariant", guiActive );
+			welcome = guiActive->State().GetBool( "mp.welcome" );
+		}
+		const char *path = summary ? RETAINED_MP_SUMMARY_GUI : welcome ? RETAINED_MP_WELCOME_GUI : RETAINED_MP_ESCAPE_GUI;
+		idUserInterface *&document = summary ? guiRetainedSummary : welcome ? guiRetainedWelcome : guiRetainedEscape;
 		// Whatever keeps the stock menu below keeps it for this opening (a
 		// card still waiting for its pages, a fallback, an Arena Campaign
 		// match); the next opening asks again.
 		retainedMultiplayerUncovered = true;
-		if ( !Session_RetainedMultiplayerEnabled( welcome ) || retainedStock.FindIndex( path ) >= 0 ) {
+		const bool enabled = summary ? Session_RetainedSummaryEnabled() : Session_RetainedMultiplayerEnabled( welcome );
+		if ( !enabled || retainedStock.FindIndex( path ) >= 0 ) {
 			return;
 		}
-		if ( Session_ModSuppliesFile( "guis/mpmain.gui" ) ) {
-			common->DPrintf( "retained UI: the mod supplies its own multiplayer menu, so it presents instead of '%s'\n", path );
+		const char *stockGui = summary ? "guis/summary.gui" : "guis/mpmain.gui";
+		if ( Session_ModSuppliesFile( stockGui ) ) {
+			common->DPrintf( "retained UI: the mod supplies its own '%s', so it presents instead of '%s'\n", stockGui, path );
 			retainedStock.Append( path );
 			return;
 		}
@@ -5877,7 +5927,13 @@ void idSessionLocal::UpdateRetainedMultiplayer() {
 		retainedMultiplayerUncovered = false;
 		guiRetainedMultiplayer = card;
 		retainedMultiplayerWelcome = welcome;
+		retainedMultiplayerSummary = summary;
 		retainedMultiplayerRevision = card->State().GetInt( "mp.revision" );
+		if ( summary ) {
+			// Each summary opens on its SUMMARY page with the chat field at rest.
+			card->SetStateInt( "card.tab", 0 );
+			EndRetainedSummaryChat( true );
+		}
 		// The keys bound to the Vote page's ballots (F1 and F2 by default), by
 		// name, for the card to show beside Yes and No.
 		const idStr yesKey = Session_RetainedBoundKey( "_impulse28" ), noKey = Session_RetainedBoundKey( "_impulse29" );
@@ -5922,6 +5978,9 @@ void idSessionLocal::RetireRetainedMultiplayer( bool release ) {
 	}
 	const int now = common->GetPresentationTime();
 	guiRetainedMultiplayer = NULL;
+	// The summary's chat field stops typing with its card.
+	retainedSummaryTyping = false;
+	retainedMultiplayerSummary = false;
 	if ( game != NULL ) {
 		game->HandleMainMenuCommands( "retainedMultiplayerUncover", card );
 	}
@@ -5989,6 +6048,13 @@ is refused, as the card's own verbs are anywhere else.
 void idSessionLocal::HandleRetainedMultiplayerRequest( idUserInterface *gui, const char *request ) {
 #ifndef ID_DEDICATED
 	if ( gui == NULL || request == NULL || gui != guiRetainedMultiplayer || !RetainedMultiplayerCovers() || game == NULL ) {
+		return;
+	}
+	if ( !idStr::Icmp( request, "mpSummaryChat" ) ) {
+		// The summary's chat field starts typing, which the session owns.
+		if ( RetainedSummaryCovers() ) {
+			BeginRetainedSummaryChat( false );
+		}
 		return;
 	}
 	const char *command = NULL;
@@ -6131,9 +6197,234 @@ void idSessionLocal::HandleRetainedMultiplayerRequest( idUserInterface *gui, con
 	}
 	HandleGameMenuReturn( game->HandleGuiCommands( command ) );
 	// A closed menu releases the softened view in this frame, not the next.
-	if ( !Session_IsGameMenu( guiActive ) ) {
+	if ( !Session_IsCoveredGameGui( guiActive ) ) {
 		RetireRetainedMultiplayer( guiActive == NULL && mapSpawned );
 	}
+#endif
+}
+
+/*
+===============
+idSessionLocal::BeginRetainedSummaryChat
+
+The summary card's chat field (section 14.14) types into the stock summary's
+own entry, its chattext, which the game's chatmessage sends: the session owns
+the typing while the card covers the summary. The stock entry takes focus, so
+the platform's text input runs only while the player types. `team` opens
+team chat where it exists.
+===============
+*/
+void idSessionLocal::BeginRetainedSummaryChat( bool team ) {
+#ifndef ID_DEDICATED
+	if ( !RetainedSummaryCovers() ) {
+		return;
+	}
+	if ( !retainedSummaryTyping ) {
+		retainedSummaryTyping = true;
+		retainedSummaryCaret = idStr::Length( guiActive->State().GetString( "chattext" ) );
+		guiActive->SetStateInt( "messagemode", team && guiRetainedMultiplayer->State().GetBool( "mp.summary.channels" ) ? 1 : 0 );
+		guiActive->HandleNamedEvent( "oq4_chatFocus" );
+	}
+	PublishRetainedSummaryChat();
+#endif
+}
+
+// Typing stops, the entry kept unless `clear`; the stock entry gives its
+// focus back.
+void idSessionLocal::EndRetainedSummaryChat( bool clear ) {
+#ifndef ID_DEDICATED
+	const bool typing = retainedSummaryTyping;
+	retainedSummaryTyping = false;
+	if ( !RetainedSummaryCovers() ) {
+		return;
+	}
+	if ( clear ) {
+		guiActive->SetStateString( "chattext", "" );
+		guiActive->SetStateInt( "messagemode", 0 );
+		retainedSummaryCaret = 0;
+	}
+	if ( typing ) {
+		guiActive->HandleNamedEvent( "oq4_chatBlur" );
+	}
+	PublishRetainedSummaryChat();
+#endif
+}
+
+// The entry for the card: the text before and after the caret, the
+// characters left, the channel and whether the player types.
+void idSessionLocal::PublishRetainedSummaryChat() {
+#ifndef ID_DEDICATED
+	idUserInterface *card = guiRetainedMultiplayer;
+	if ( card == NULL || !retainedMultiplayerSummary || guiActive == NULL ) {
+		return;
+	}
+	const idStr text = guiActive->State().GetString( "chattext" );
+	const int caret = idMath::ClampInt( 0, text.Length(), retainedSummaryCaret );
+	retainedSummaryCaret = caret;
+	card->SetStateBool( "mp.summary.typing", retainedSummaryTyping );
+	card->SetStateString( "mp.summary.entry_before", text.Left( caret ).c_str() );
+	card->SetStateString( "mp.summary.entry_after", text.Right( text.Length() - caret ).c_str() );
+	card->SetStateInt( "mp.summary.entry_left", RETAINED_SUMMARY_CHAT_LIMIT - text.Length() );
+	card->SetStateBool( "mp.summary.entry_team", guiActive->State().GetInt( "messagemode" ) != 0 );
+	card->StateChanged( common->GetPresentationTime() );
+	if ( retainedSummaryTyping ) {
+		// Typing restarts the caret's blink on.
+		card->HandleNamedEvent( "chatType" );
+	}
+#endif
+}
+
+#ifndef ID_DEDICATED
+// The byte length of the UTF-8 sequence that starts at `text[ at ]`, or
+// ends just before `text[ at ]` with `backward`.
+static int Session_Utf8Step( const idStr &text, int at, bool backward ) {
+	if ( backward ) {
+		int start = at - 1;
+		while ( start > 0 && ( static_cast<unsigned char>( text[ start ] ) & 0xc0 ) == 0x80 ) {
+			start--;
+		}
+		return at - start;
+	}
+	int end = at + 1;
+	while ( end < text.Length() && ( static_cast<unsigned char>( text[ end ] ) & 0xc0 ) == 0x80 ) {
+		end++;
+	}
+	return end - at;
+}
+#endif
+
+/*
+===============
+idSessionLocal::RetainedSummaryChatEvent
+
+While the player types in the summary card's chat field: typed characters
+enter as UTF-8 at the caret, up to the chat input's 128 bytes; Backspace,
+Delete, the arrows (by words with Ctrl), Home and End edit and move; Ctrl+V
+pastes; Tab switches the channel where team chat exists; Enter sends through
+the game's chatmessage and keeps typing, or stops typing on an empty entry;
+Esc stops and clears. A pointer press stops typing, keeping the entry, and
+reaches the card, as the pointer's movement and controller input always do.
+True when the event was the field's.
+===============
+*/
+bool idSessionLocal::RetainedSummaryChatEvent( const sysEvent_t *event ) {
+#ifndef ID_DEDICATED
+	if ( !retainedSummaryTyping || !RetainedSummaryCovers() ) {
+		return false;
+	}
+	idStr text = guiActive->State().GetString( "chattext" );
+	int caret = idMath::ClampInt( 0, text.Length(), retainedSummaryCaret );
+	const auto insert = [&]( const char *bytes ) {
+		const int length = idStr::Length( bytes );
+		if ( length <= 0 || text.Length() + length > RETAINED_SUMMARY_CHAT_LIMIT ) {
+			return;
+		}
+		text.Insert( bytes, caret );
+		caret += length;
+	};
+	if ( event->evType == SE_CHAR ) {
+		const int code = event->evValue;
+		if ( code < 0x20 || code == 0x7f || code > 0xff || code == Sys_GetConsoleKey( false ) || code == Sys_GetConsoleKey( true ) ) {
+			// Control characters arrive as keys too.
+			return true;
+		}
+		char utf8[ 3 ] = { 0, 0, 0 };
+		if ( code < 0x80 ) {
+			utf8[ 0 ] = static_cast<char>( code );
+		} else {
+			utf8[ 0 ] = static_cast<char>( 0xc0 | ( code >> 6 ) );
+			utf8[ 1 ] = static_cast<char>( 0x80 | ( code & 0x3f ) );
+		}
+		insert( utf8 );
+	} else if ( event->evType == SE_KEY ) {
+		const int key = event->evValue;
+		if ( key >= K_MOUSE1 && key <= K_MOUSE8 ) {
+			if ( event->evValue2 ) {
+				EndRetainedSummaryChat( false );
+			}
+			return false;
+		}
+		if ( ( key >= K_JOY1 && key <= K_JOY32 ) || ( key >= K_F1 && key <= K_F12 ) ) {
+			return false;
+		}
+		if ( !event->evValue2 ) {
+			return true;
+		}
+		const bool ctrl = idKeyInput::IsDown( K_CTRL );
+		if ( key == K_ESCAPE ) {
+			EndRetainedSummaryChat( true );
+			return true;
+		}
+		if ( key == K_ENTER || key == K_KP_ENTER ) {
+			if ( text.IsEmpty() ) {
+				EndRetainedSummaryChat( false );
+				return true;
+			}
+			guiActive->SetStateString( "chattext", text.c_str() );
+			DispatchCommand( guiActive, "chatmessage" );
+			retainedSummaryCaret = 0;
+			PublishRetainedSummaryChat();
+			return true;
+		}
+		if ( key == K_TAB ) {
+			if ( guiRetainedMultiplayer->State().GetBool( "mp.summary.channels" ) ) {
+				guiActive->SetStateInt( "messagemode", guiActive->State().GetInt( "messagemode" ) ? 0 : 1 );
+			}
+		} else if ( key == K_BACKSPACE ) {
+			if ( caret > 0 ) {
+				const int step = Session_Utf8Step( text, caret, true );
+				text = text.Left( caret - step ) + text.Right( text.Length() - caret );
+				caret -= step;
+			}
+		} else if ( key == K_DEL ) {
+			if ( caret < text.Length() ) {
+				const int step = Session_Utf8Step( text, caret, false );
+				text = text.Left( caret ) + text.Right( text.Length() - caret - step );
+			}
+		} else if ( key == K_LEFTARROW ) {
+			do {
+				caret -= caret > 0 ? Session_Utf8Step( text, caret, true ) : 0;
+			} while ( ctrl && caret > 0 && !( text[ caret - 1 ] == ' ' && text[ caret ] != ' ' ) );
+		} else if ( key == K_RIGHTARROW ) {
+			do {
+				caret += caret < text.Length() ? Session_Utf8Step( text, caret, false ) : 0;
+			} while ( ctrl && caret < text.Length() && !( text[ caret - 1 ] == ' ' && text[ caret ] != ' ' ) );
+		} else if ( key == K_HOME ) {
+			caret = 0;
+		} else if ( key == K_END ) {
+			caret = text.Length();
+		} else if ( ctrl && ( key == 'v' || key == 'V' ) ) {
+			char *clipboard = Sys_GetClipboardData();
+			if ( clipboard != NULL ) {
+				// One line of the clipboard's UTF-8 text.
+				idStr paste;
+				for ( const char *c = clipboard; *c != '\0'; c++ ) {
+					const unsigned char byte = static_cast<unsigned char>( *c );
+					if ( byte == '\n' || byte == '\r' || byte == '\t' ) {
+						paste += ' ';
+					} else if ( byte >= 0x20 && byte != 0x7f ) {
+						paste += static_cast<char>( byte );
+					}
+				}
+				Mem_Free( clipboard );
+				while ( paste.Length() > 0 && text.Length() + paste.Length() > RETAINED_SUMMARY_CHAT_LIMIT ) {
+					paste = paste.Left( paste.Length() - Session_Utf8Step( paste, paste.Length(), true ) );
+				}
+				insert( paste.c_str() );
+			}
+		} else {
+			// Every other key belongs to the field while the player types.
+			return true;
+		}
+	} else {
+		return false;
+	}
+	guiActive->SetStateString( "chattext", text.c_str() );
+	retainedSummaryCaret = caret;
+	PublishRetainedSummaryChat();
+	return true;
+#else
+	return false;
 #endif
 }
 
@@ -6146,13 +6437,14 @@ void idSessionLocal::ReportRetainedScreens() {
 		stock += retainedStock[i];
 	}
 	// multiplayer= is the Escape card's gate, welcome= the Welcome card's; mp=
-	// the card covering the game's menu.
+	// the card covering the game's menu or summary.
 	common->Printf( "OPENQ4_RETAINED enabled=%d system=%d multiplayer=%d welcome=%d home=%s title=%d pause=%d strogg=%d handoff=%d release=%d mp=%s views=%d stock=%s\n",
 		Session_RetainedScreensEnabled() ? 1 : 0, Session_RetainedSystemEnabled() ? 1 : 0, Session_RetainedMultiplayerEnabled( false ) ? 1 : 0,
 		Session_RetainedMultiplayerEnabled( true ) ? 1 : 0,
 		guiRetainedHome != NULL ? guiRetainedHome->Name() : "-",
 		guiRetainedTitle != NULL ? 1 : 0, guiRetainedPause != NULL ? 1 : 0, guiRetainedPauseStrogg != NULL ? 1 : 0,
 		RetainedHomeInputBlocked() ? 1 : 0, guiRetainedReleasing != NULL ? 1 : 0,
-		RetainedMultiplayerCovers() ? ( retainedMultiplayerWelcome ? "welcome" : "escape" ) : "-", RetainedUI_ViewCount(),
+		RetainedMultiplayerCovers() ? ( retainedMultiplayerSummary ? "summary" : retainedMultiplayerWelcome ? "welcome" : "escape" ) : "-",
+		RetainedUI_ViewCount(),
 		stock.Length() > 0 ? stock.c_str() : "-" );
 }

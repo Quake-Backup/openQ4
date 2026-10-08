@@ -18,14 +18,20 @@
   to eight lines of history. Settings > Game Options > HUD offers the layout,
   size, width and safe-area inset, and Toggle Objectives (`g_objectivesToggle`)
   opens and closes the objectives display with presses, with a Close prompt.
-  The match summary keeps its stock layout over vector reconstructions of the
-  stock menu furniture, marks your row with the corner marker on its SUMMARY
-  and SCOREBOARD tabs, regains the retail list's top-three tints and greyed
-  rows (`SetStateVec4` reached no stock GUI), names the active device's key to
-  return, reads DRAW for a level team match and fills its tabs in every game
-  type. The held scoreboard scrolls past its height by whole rows on the
-  weapon-cycle controls and the right stick, kept on the client, over a count
-  of the rows below. [Remastered HUD](ui/remastered-hud.md).
+  The held scoreboard is the multiplayer menus' card (section 14.18) as tall
+  as its lists, with Tourney's bracket chart of open-plate arenas, and scrolls
+  past its height by whole rows on the weapon-cycle controls and the right
+  stick, kept on the client, over a count of the rows below. With the retained
+  menus the match summary is the same card (SUMMARY with the result, the
+  standings with best weapons and a typed chat field; STATISTICS with match
+  awards; SCOREBOARD), covering `guis/summary.gui` as the Escape card covers
+  the menu ([the summary card](ui/multiplayer-menus.md#the-summary-card)).
+  The classic summary keeps its stock layout over vector reconstructions of
+  the stock menu furniture, marks your row with the corner marker on its
+  SUMMARY and SCOREBOARD tabs, regains the retail list's top-three tints and
+  greyed rows (`SetStateVec4` reached no stock GUI), names the active device's
+  key to return, reads DRAW for a level team match and fills its tabs in every
+  game type. [Remastered HUD](ui/remastered-hud.md).
 
 - [x] Route the screen-space gameplay HUD families through the retained UI,
   including objectives, crosshairs, multiplayer score/chat/summary panels,

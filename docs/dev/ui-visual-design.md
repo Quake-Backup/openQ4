@@ -2775,30 +2775,94 @@ crosshair included. It is not interactive.
 Past 16 entries the stock spills over its footer, and the local player is
 marked by band brightness alone.
 
-**Remastered scoreboard.** It stays instant and non-interactive while held.
+**Remastered scoreboard.** It stays instant and non-interactive while held. It
+is the in-game card of section 14.18, never the stock's soft backing: a 0.94
+black body inside one rail with the 12 and 3 dp cuts, 744 dp wide, centred
+over the view, which stays sharp because play goes on, and as tall as its
+lists, up to 630 dp.
 
-- Your row adds the ◥ marker to the brighter band, so it never depends on
-  brightness or color alone.
-- Ping shows the network-quality bars and color (section 13.13) beside the
-  number; a DEATHS column follows KILLS, and a line under the header reads
-  "3rd of 12".
-- Dead players' rows drop to 0.50 with a skull until they respawn; openQ4 bots
-  carry a BOT tag in the header-band construction.
-- Beyond 16 entries the rows keep the smallest pitch and the list scrolls with
-  the right stick or the wheel while the board is held, with a count of the
-  rows below.
+- The 40 dp header carries the triangle, the server's name in Marine, your
+  place ("3RD OF 12") and the clock in the value color. The match line under it
+  holds the mode and map in Marine and the limits.
+- The column headings stand once, in Lowpixel at 0.40 over a white 0.10 rule.
+  Each panel opens 6 dp down with the Players page's band in its team color
+  (section 14.18): the title in Marine and the team score in the value color.
+- Rows are the Players page's, 24 dp: a band at 0.08, the speaker crossed when
+  muted, the friend symbol, then a skull while dead, the flag a carrier holds
+  or the warm-up's ready check, the name, the clan or a BOT tag in the
+  header-band construction, SCORE, KILLS in flag modes, DEATHS and minutes,
+  and ping beside the network-quality bars (section 13.13).
+- Your row adds the orange ◥ marker to a band at 0.29, so it never depends on
+  brightness or color alone. Dead or eliminated players' rows drop to 0.50.
+- The server's address runs under the lists. Past the card's height the rows
+  scroll by whole rows with the right stick or the wheel while the board is
+  held; each panel heads the rows it shows, and a downward triangle counts the
+  rows below beside the address.
+- Tourney's card is 928 dp wide. Under its TOURNAMENT BRACKETS header, the
+  match line carries the mode, map, frags to win a round and the tournament
+  count, and the bracket chart replaces the stock's closed boxes above the
+  lists:
+  - **Arenas.** Each arena is an open plate (section 2, trait 3) with its two
+    players in Lowpixel over a hairline: 110x38 dp, the final 136x56 dp. The
+    chart's second half mirrors the plates so every leading edge faces out.
+  - **Layout.** The halves converge on the final in the card's centre. The
+    round titles stand above their columns in Marine at 0.50, the final's in
+    the value color.
+  - **Links.** Links are 1.5 dp lines at 0.22 that light to 0.70 once the
+    arenas they leave are decided.
+  - **States.** Your arena's rails turn aqua (#5EB987) and your half takes an
+    aqua band; an arena you follow fills aqua. A decided arena turns blue
+    (#3E57B7): its winner's score takes the value color, its loser drops to
+    0.45, and the final's champion gains the ◥ marker. An empty arena reads
+    EMPTY.
 - On touch, the scoreboard button at the top edge toggles it instead of
   holding.
 
-**Match summary.** It opens at the end of the match with the cursor: SUMMARY,
-STATISTICS and SCOREBOARD tabs on the tab strip, the soft backing at 0.90, and
-"[ Press ESC to return to the game ]". Deathmatch lists the top ten with each
-player's three most accurate weapons as icons, the first three rows tinted
-blue, red and yellow at 0.15; team modes put the winning team's panel on top.
-The chat history and entry follow, and STATISTICS shows each player's kills,
-deaths, accuracy grid, medals and end-game awards. openQ4 fixes the stock's
-report of a tied match as a Strogg win (it reads DRAW), prompts with the active
-device's glyphs, and marks your row as the scoreboard does.
+**Stock match summary.** It opens at the end of the match with the cursor:
+SUMMARY, STATISTICS and SCOREBOARD tabs on the tab strip, the soft backing at
+0.90, and "[ Press ESC to return to the game ]". Deathmatch lists the top ten
+with each player's three most accurate weapons as icons, the first three rows
+tinted blue, red and yellow at 0.15; team modes put the winning team's panel
+on top. The chat history and entry follow, and STATISTICS shows each player's
+kills, deaths, accuracy grid, medals and end-game awards. openQ4 fixes the
+stock's report of a tied match as a Strogg win (it reads DRAW), prompts with
+the active device's glyphs, and marks your row as the scoreboard does.
+
+**Remastered match summary.** With the retained menus it is the multiplayer
+card of section 14.18, never the stock's soft backing: the Escape card's
+construction and size over the softened view, opened on its SUMMARY tab with
+the chat field focused. The header holds the map, then the mode, the time to
+the next map in the value color and the score. The tab strip holds SUMMARY,
+STATISTICS and SCOREBOARD, and the prompt bar Return to game on the back
+button, Tabs and Select.
+
+- **Result.** A header band across the page in the winners' color (olive for
+  deathmatch, Tourney and a draw) holds the result in Marine: MARINE TEAM
+  WINS, STROGG TEAM WINS, DRAW, the leader's "<name> wins!" or a managed
+  match's own result. Its detail follows (your place, or MATCH FORFEITED), then
+  the final score in the value color.
+- **Standings.** Beside the chat stand the stock summary's rows in the
+  scoreboard's construction: outside team modes the top ten with their places,
+  in team modes each team's top five with the winners first. You take the last
+  row when you would not be listed. A row holds the name, the clan, the three
+  most accurate weapons of more than ten shots as icons in their color code
+  (Appendix B.4) and the score. The first three places keep the stock's blue,
+  red and yellow bands at 0.15; your row adds the orange ◥ marker to a band at
+  0.29.
+- **Chat.** CHAT HISTORY stands over the newest messages, oldest first and
+  wrapping, in the chat box's line construction (section 14.9). A message the
+  room cuts at the top fades under the card. The entry field is the stock chat
+  plate with its channel tag, and at rest an empty field invites a message.
+  - **Typing.** Choosing the field (Enter, a click or accept) starts typing.
+    Enter sends and keeps typing, and an empty Enter stops. Tab switches the
+    channel in team modes. Esc stops and clears.
+  - **Prompts.** While typing, the prompt bar reads Send, Channel and Cancel.
+    From 80% of the 128-character limit the characters left show.
+- **Statistics.** The Players page's lists and statistics (section 14.18), with
+  the selected player's end-of-match awards in place of Mute and Friend.
+- **Scoreboard.** The scoreboard's rows and columns: speaker, friend, name, the
+  clan or a BOT tag, SCORE, KILLS in flag modes, DEATHS, minutes, and ping
+  beside the network-quality bars. Each list opens with its band.
 
 ### 14.15 Crosshairs
 
@@ -3754,3 +3818,17 @@ owner’s request for quality soft focus on the scene: the wheel fades a full-vi
 Gaussian focus pass beneath the HUD and its own artwork. Register schemas 17
 and 18 append `WID-036` (superseding `WID-033`) and `WID-037` (scene focus).
 The broader wheel and quick-chat acceptance remains open.
+
+### Version 1.20: the scoreboard and summary cards
+
+At the product owner's request, the Remastered scoreboard and the match summary
+drop the stock's soft backing (black fading to the sides) for the multiplayer
+card of section 14.18, so every multiplayer screen shares one construction
+(section 14.14).
+
+| Area | 1.19 | 1.20 | Basis |
+| --- | --- | --- | --- |
+| Scoreboard | The stock board with Remastered rows | The card: header with your place and clock, match line, the Players page's bands and rows, ping bars, scrolling past its height | Product owner's review; section 14.18 |
+| Tourney | The stock's closed outline tree | A bracket chart of open-plate arenas converging on the final, with lit links and your, followed and decided arenas | Product owner's review; `scoreboard.gui` events |
+| Match summary | The stock summary with openQ4's fixes | The card with SUMMARY (result band, standings with best weapons, chat with a typed entry), STATISTICS (with match awards) and SCOREBOARD | Product owner's review; `summary.gui` |
+| Your row | The marker in the Players page's olive | The orange ◥ in every list | Section 14.14 |

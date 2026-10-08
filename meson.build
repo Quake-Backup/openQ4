@@ -915,6 +915,9 @@ if build_engine or get_option('build_native_tests')
              meson.project_source_root() / 'content/baseoq4/pak0/guis/hud/weapon_wheel_marine_awakening.q4ui',
              meson.project_source_root() / 'content/baseoq4/pak0/guis/hud/weapon_wheel_strogg.q4ui',
              meson.project_source_root() / 'content/baseoq4/pak0/guis/hud/weapon_wheel_strogg_awakening.q4ui'], timeout: 240)
+    # The match summary card (ui-visual-design.md 14.14).
+    test('openq4-ui-retained-summary', openq4_ui_retained_screens_test,
+      args: ['--summary', meson.project_source_root() / 'content/baseoq4/pak0/guis/menu/mp_summary.q4ui'], timeout: 240)
     test('openq4-ui-status-bar', openq4_ui_retained_screens_test,
       args: [meson.project_source_root() / 'content/baseoq4/pak0/guis/hud/status_bar_marine.q4ui',
              meson.project_source_root() / 'content/baseoq4/pak0/guis/hud/status_bar_strogg.q4ui'], timeout: 240)

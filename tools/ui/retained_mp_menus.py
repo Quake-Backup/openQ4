@@ -634,7 +634,7 @@ def team_band(ident: str, width: float, height: float, tint: str, cut: float = 8
 def player_row(doc: Document, prefix: str, kind: str, row: int, width: float, columns: dict,
                interactive: bool = True) -> tuple[dict, str]:
     """One row of a list, the scoreboard's row (section 14.14): a band at
-    0.08, 0.29 and the marker for the player's own row; the speaker, crossed
+    0.08, 0.29 and the orange marker for the player's own row; the speaker, crossed
     when muted, and the friend symbol; the name, the score and the ping. The
     player whose statistics show is lit in olive. Choosing a row records its
     client and runs mpSelectPlayer; the game checks the client again."""
@@ -661,9 +661,10 @@ def player_row(doc: Document, prefix: str, kind: str, row: int, width: float, co
     focus = vector(f"{ident}-focus", {**absolute(left=0, top=0, width=width, height=length(100, "%")), "opacity": number(0)},
                    [path("inset", [(0.75, 1), (0.75, {"fraction": 1, "dp": -1.5}), (width, {"fraction": 1, "dp": -1.5})], closed=False,
                          stroke=stroke(solid(rgb(ORANGE)), 1.2))])
+    # Your row's orange marker, the scoreboard's (section 14.14).
     marker = vector(f"{ident}-marker", {"position": keyword("relative"), "display": keyword("none"), "width": length(8),
                                          "height": length(8), "margin-right": length(4), "flex-shrink": number(0)},
-                    [marker_path("mark", 0, 0, 8, rgb(MARKER))])
+                    [marker_path("mark", 0, 0, 8, rgb(ORANGE))])
     spacer = group(f"{ident}-spacer", {"position": keyword("relative"), "display": keyword("block"), "width": length(columns["marker"]),
                                        "height": length(8), "flex-shrink": number(0)})
     doc.bind(f"{ident}-marker.display", f"{ident}-marker", "display", {"op": "select", "args": [{"state": f"{key}.local"}, "block", "none"]})
@@ -822,13 +823,13 @@ def check_stat_labels(width: float) -> None:
         raise SystemExit(f"Players page labels past their room: {over}")
 
 
-def player_stats(doc: Document, left: float, width: float, height: float) -> tuple[dict, list]:
+def player_stats(doc: Document, left: float, width: float, height: float, plates: bool = True) -> tuple[dict, list]:
     """The selected player's statistics (section 14.18): the name in a band
     in the player's team color; kills, deaths and score; accuracy per weapon,
     each weapon's icon in its color code and dimmed while it has not fired;
     the awards' medals with their counts, the flag awards only in flag modes;
-    then Mute and Friend. Both are unavailable, with a reason, on the
-    player's own row."""
+    then, with `plates`, Mute and Friend. Both are unavailable, with a
+    reason, on the player's own row."""
     check_stat_labels(width)
     doc.state.update({
         "mp.stat.name": {"type": "string", "initial": ""}, "mp.stat.color": {"type": "number", "initial": 3},
@@ -889,6 +890,8 @@ def player_stats(doc: Document, left: float, width: float, height: float) -> tup
         if award >= len(AWARDS) - FLAG_AWARDS:
             doc.bind(f"stat-award-{award}-cell.display", f"stat-award-{award}-cell", "display",
                      {"op": "select", "args": [{"state": "mp.stat.flag_mode"}, "block", "none"]})
+    if not plates:
+        return group("players-stats", absolute(left=left, top=0, width=width, height=height), children), []
     plates = []
     for index, (verb, key) in enumerate((("mpMute", "mp.mute"), ("mpFriend", "mp.friend"))):
         ident = f"players-{key.split('.')[1]}"

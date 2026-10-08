@@ -190,13 +190,49 @@ def objectives_toggle():
 
 
 def summary_stages(name, play):
-    """Bots play until the match ends, then the summary's SUMMARY, SCOREBOARD
-    and STATISTICS tabs in turn."""
+    """Bots play until the match ends, then the summary: a chat line, the
+    chat field typing (openq4_summaryChat), then its SCOREBOARD and
+    STATISTICS tabs in turn, the retained card's through its tab events and
+    the stock summary's as a click would (each command does nothing to the
+    other)."""
     return [
-        'set g_autoExecAfterMapLoad ""', 'waitMsec 2500', *play, shot(f'summary-{name}'),
-        'openq4_guiAction b_score', 'waitMsec 500', shot(f'summary-{name}-scoreboard'),
-        'openq4_guiAction b_stats', 'waitMsec 500', shot(f'summary-{name}-stats'),
+        'set g_autoExecAfterMapLoad ""', 'waitMsec 2500', *play, 'say Good game everyone, see you on the next map', 'waitMsec 600',
+        shot(f'summary-{name}'),
+        'openq4_summaryChat Rematch on Phrantic?', 'waitMsec 400', shot(f'summary-{name}-typing'), 'openq4_summaryChat stop',
+        'openq4_guiAction b_score', 'openq4_retainedGui event tab_scoreboard', 'waitMsec 500', shot(f'summary-{name}-scoreboard'),
+        'openq4_guiAction b_stats', 'openq4_retainedGui event tab_statistics', 'waitMsec 500', shot(f'summary-{name}-stats'),
     ]
+
+
+def arena(gui, r, b, players=None, winner=None, focus=None):
+    """One arena of the bracket chart through the stock scoreboard's own
+    events (rvTourneyGUI::ArenaStart, ArenaDone, ArenaSelect)."""
+    ops = [f'state round {r}', f'state bracket {b}', f'state empty {0 if players else 1}']
+    for slot, (name, score) in enumerate(players or [], start=1):
+        ops += [f'state name{slot}_round{r}_bracket{b} "{name}"', f'state score{slot}_round{r}_bracket{b} {score}']
+    ops.append('event arenaInit')
+    if winner:
+        ops += [f'state winner {winner}', 'event arenaDone']
+    if focus is not None:
+        ops += [f'state sel {focus}', 'event arenaFocus']
+    return hud(gui, *ops)
+
+
+def bracket_stages():
+    """A twelve-player tournament in its quarter-finals, sent as the game sends
+    it: the preliminaries decided (two arenas empty), two quarter-finals
+    decided, yours (player one) and a followed one still running."""
+    gui = 'guis/scoreboard.gui'
+    names = ['Anderson', 'Strauss', 'Bidwell', 'Voss', 'Morris', 'Cortez', 'Rhodes', 'Tetzlaff', 'Player', 'Gunner', 'Sorg',
+             'Hollenbeck']
+    first = [arena(gui, 1, b + 1, [(names[2 * b], 1 if b % 2 == 0 else 0), (names[2 * b + 1], 0 if b % 2 == 0 else 1)],
+                   winner=1 if b % 2 == 0 else 2) for b in range(6)]
+    first += [arena(gui, 1, 7), arena(gui, 1, 8)]
+    second = [arena(gui, 2, 1, [('Anderson', 1), ('Voss', 0)], winner=1),
+              arena(gui, 2, 2, [('Morris', 0), ('Tetzlaff', 1)], winner=2),
+              arena(gui, 2, 3, [('Player', 0), ('Hollenbeck', 0)], focus=1),
+              arena(gui, 2, 4)]
+    return [op for ops in first + second for op in ops]
 
 
 def scroll_stages(name, bots):
@@ -262,6 +298,20 @@ SCENARIOS = {
     'mp-tourney': ('mp:mp/q4dm1', [
         'set g_autoExecAfterMapLoad ""', 'waitMsec 2500', 'addbot', 'addbot', 'addbot', 'waitMsec 4000', shot('tourney-hud'),
         'testScoreboard 1500', 'waitMsec 500', shot('tourney-scoreboard'), 'waitMsec 1200',
+    ]),
+    # The bracket chart as the tournament runs: eight players in four arenas,
+    # a frag limit of one, the board held early and again once arenas are
+    # decided. The bots ready themselves; `ready` readies the human.
+    'mp-tourney-chart': ('mp:mp/q4dm1', [
+        'set g_autoExecAfterMapLoad ""', 'waitMsec 2500', *['addbot'] * 7, 'waitMsec 3000', 'ready', 'waitMsec 9000',
+        'testScoreboard 1500', 'waitMsec 600', shot('chart-early'), 'waitMsec 60000',
+        'testScoreboard 1500', 'waitMsec 600', shot('chart-later'), 'waitMsec 1200',
+    ]),
+    # The chart's states without a tournament to play: decided arenas, empty
+    # ones, yours and the links between them (bracket_stages).
+    'mp-tourney-bracket': ('mp:mp/q4dm1', [
+        'set g_autoExecAfterMapLoad ""', 'waitMsec 2500', *['addbot'] * 5, 'waitMsec 5000', 'testScoreboard 6000', 'waitMsec 400',
+        *bracket_stages(), 'waitMsec 900', shot('bracket-quarters'),
     ]),
     'mp-ctf': ('mp:mp/q4ctf1', [
         'set g_autoExecAfterMapLoad ""', 'waitMsec 2500', shot('ctf-base'),
@@ -361,6 +411,10 @@ def main() -> int:
             capture.SCENARIO_CVARS[scenario]['ui_hudLayout'] = '3'
         if scenario == 'mp-tourney':
             capture.SCENARIO_CVARS[scenario]['si_gameType'] = 'Tourney'
+        if scenario == 'mp-tourney-chart':
+            capture.SCENARIO_CVARS[scenario].update({'si_gameType': 'Tourney', 'si_fragLimit': '1', 'si_maxPlayers': '8'})
+        if scenario == 'mp-tourney-bracket':
+            capture.SCENARIO_CVARS[scenario].update({'si_gameType': 'Tourney', 'si_maxPlayers': '16'})
         if scenario in ('mp-spectator', 'mp-competitive-spec'):
             capture.SCENARIO_CVARS[scenario]['si_warmup'] = '1'
         # The Awakening's scenarios run its game directory over baseoq4.

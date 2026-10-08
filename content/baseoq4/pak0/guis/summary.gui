@@ -70,6 +70,17 @@ windowDef Desktop
 		set "chat_enter::text" "" ;
 	}
 
+	// openQ4: while the retained summary card's chat field types, the
+	// session edits chattext; the entry's focus keeps the platform's text
+	// input running.
+	onNamedEvent oq4_chatFocus {
+		setfocus "chat_enter" ;
+	}
+
+	onNamedEvent oq4_chatBlur {
+		setfocus "b_summ" ;
+	}
+
 	onNamedEvent marine_wins {
 		set "summ_marine_teamname::text" "#str_201012" ;
 		set "summ_strogg_teamname::text" "#str_201015" ;

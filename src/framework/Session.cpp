@@ -3814,6 +3814,10 @@ void idSessionLocal::Clear() {
 	retainedSubpageUntil = 0;
 	retainedHomeReturning = false;
 	guiRetainedEscape = guiRetainedWelcome = guiRetainedMultiplayer = NULL;
+	guiRetainedSummary = retainedMultiplayerTarget = NULL;
+	retainedMultiplayerSummary = false;
+	retainedSummaryTyping = false;
+	retainedSummaryCaret = 0;
 	retainedMultiplayerWelcome = false;
 	retainedMultiplayerUncovered = false;
 	retainedMultiplayerRevision = -1;
@@ -4477,6 +4481,39 @@ static void Session_RetainedGui_f( const idCmdArgs &args ) {
 	}
 #endif
 	common->Printf( "openq4_retainedGui: requires a retained test/active GUI and report | inspect <id> | widget <id> | focus <id> | menu <action> <0|1> | number <begin|replace|select|preedit|input|undo|redo|commit|keep|reload|cancel> <id> [text or offsets] | state <id> <value> | pending <key> <value> | lines <key> <line> [line ...] | presentation <alias> <value> <override:0|1> | event <name> | trigger | update | save | restore\n" );
+}
+
+// The summary card's chat field without device input: "<text>" types it with
+// the caret at its end, "caret <n>" moves the caret, "stop" stops typing and
+// keeps the entry, "send" sends it through the game's chatmessage.
+static void Session_SummaryChat_f( const idCmdArgs &args ) {
+#ifndef ID_DEDICATED
+	if ( !sessLocal.RetainedSummaryCovers() || args.Argc() < 2 ) {
+		common->Printf( "usage: openq4_summaryChat <text> | caret <n> | stop | send (while the summary card covers the match summary)\n" );
+		return;
+	}
+	idUserInterface *summary = sessLocal.GetActiveGUI();
+	if ( !idStr::Icmp( args.Argv( 1 ), "stop" ) ) {
+		sessLocal.EndRetainedSummaryChat( false );
+	} else if ( !idStr::Icmp( args.Argv( 1 ), "send" ) ) {
+		sessLocal.DispatchCommand( summary, "chatmessage" );
+		sessLocal.retainedSummaryCaret = 0;
+		sessLocal.PublishRetainedSummaryChat();
+	} else if ( !idStr::Icmp( args.Argv( 1 ), "caret" ) && args.Argc() == 3 ) {
+		sessLocal.BeginRetainedSummaryChat( false );
+		sessLocal.retainedSummaryCaret = atoi( args.Argv( 2 ) );
+		sessLocal.PublishRetainedSummaryChat();
+	} else {
+		sessLocal.BeginRetainedSummaryChat( false );
+		idStr text = args.Args( 1, -1 );
+		text = text.Left( idSessionLocal::RETAINED_SUMMARY_CHAT_LIMIT );
+		summary->SetStateString( "chattext", text.c_str() );
+		sessLocal.retainedSummaryCaret = text.Length();
+		sessLocal.PublishRetainedSummaryChat();
+	}
+	common->Printf( "SUMMARY_CHAT typing=%d entry=\"%s\" caret=%d\n", sessLocal.retainedSummaryTyping ? 1 : 0,
+		summary->State().GetString( "chattext" ), sessLocal.retainedSummaryCaret );
+#endif
 }
 
 static void Session_SystemSettings_f( const idCmdArgs &args ) {
@@ -9070,6 +9107,7 @@ void idSessionLocal::Init() {
 	cmdSystem->AddCommand( "testGUI", Session_TestGUI_f, CMD_FL_SYSTEM, "tests a gui" );
 #ifndef ID_DEDICATED
 	cmdSystem->AddCommand( "openq4_retainedGui", Session_RetainedGui_f, CMD_FL_SYSTEM, "inspect a normal retained GUI or submit semantic diagnostics without device input" );
+	cmdSystem->AddCommand( "openq4_summaryChat", Session_SummaryChat_f, CMD_FL_SYSTEM, "type, move the caret in, stop or send the match summary card's chat entry without device input" );
 	cmdSystem->AddCommand( "openq4_system", Session_SystemSettings_f, CMD_FL_SYSTEM, "open, return or inspect the opt-in normal SYSTEM child without device input" );
 	cmdSystem->AddCommand( "ui_retainedStatus", Session_RetainedStatus_f, CMD_FL_SYSTEM, "report the ui_retained gate and the live retained screens" );
 #endif

@@ -1279,4 +1279,6 @@
 	"#str_231256"	"Channel"
 	"#str_231257"	"[ Press %s to return to the game ]"
 	"#str_231258"	"%d MORE"
+	"#str_231259"	"Send a message"
+	"#str_231260"	"CHANNEL"
 }

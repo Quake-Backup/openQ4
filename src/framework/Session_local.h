@@ -298,6 +298,15 @@ public:
 	void				RetainedMultiplayerFrameEvent();
 	void				RetireRetainedMultiplayer( bool release );
 	void				HandleRetainedMultiplayerRequest( idUserInterface *gui, const char *request );
+	// The match summary card (section 14.14) covers the game's summary the
+	// same way; the session owns its chat field's typing, into the stock
+	// summary's chattext, at most the chat input's 128 bytes.
+	static const int	RETAINED_SUMMARY_CHAT_LIMIT = 128;
+	bool				RetainedSummaryCovers() const;
+	void				BeginRetainedSummaryChat( bool team );
+	void				EndRetainedSummaryChat( bool clear );
+	void				PublishRetainedSummaryChat();
+	bool				RetainedSummaryChatEvent( const sysEvent_t *event );
 	// The game's answer to a menu command: close the menu (NULL), or open the
 	// main menu, with an event for it after "main ".
 	void				HandleGameMenuReturn( const char *cmd );
@@ -497,7 +506,12 @@ public:
 	// a stock page waiting for its menu column to show.
 	idUserInterface *	guiRetainedEscape;
 	idUserInterface *	guiRetainedWelcome;
+	idUserInterface *	guiRetainedSummary;
 	idUserInterface *	guiRetainedMultiplayer;
+	idUserInterface *	retainedMultiplayerTarget;		// the game GUI the cover was last decided for
+	bool				retainedMultiplayerSummary;		// the card covers the summary
+	bool				retainedSummaryTyping;
+	int					retainedSummaryCaret;			// a byte offset into the stock summary's chattext
 	bool				retainedMultiplayerWelcome;
 	bool				retainedMultiplayerUncovered;
 	int					retainedMultiplayerRevision;

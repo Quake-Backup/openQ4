@@ -1202,6 +1202,15 @@ private:
 	void			RetainedPlayerLists( idList<int> lists[ RETAINED_PLAYER_LISTS ], int colors[ RETAINED_PLAYER_LISTS ] );
 	bool			RetainedListed( int client );
 	void			PublishRetainedPlayers( idUserInterface *card, bool &changed );
+	// The summary card (section 14.14) covers statSummary at the end of a
+	// match: the result, the standings (the top ten, or each team's top five)
+	// with each player's three most accurate weapons, and the chat's newest
+	// messages; retained_mp_summary.py lays out the same numbers.
+	static const int RETAINED_SUMMARY_TOP = 10;
+	static const int RETAINED_SUMMARY_TEAM = 5;
+	static const int RETAINED_SUMMARY_CHAT = 10;
+	static const int RETAINED_SUMMARY_AWARDS = 3;
+	void			PublishRetainedSummary( idUserInterface *card, bool &changed );
 	// Marks or unmarks a friend: the platform's friends service where there is
 	// one, and the player's own mark, which the lists and scoreboard show.
 	void			ToggleFriend( int client );
@@ -1455,6 +1464,7 @@ private:
 	void			PublishRemasteredScoreboard( idUserInterface *scoreBoard );
 	void			UpdateSummaryBoard( idUserInterface *scoreBoard );
 	bool			UpdateManagedSummaryResult( idUserInterface *gui, bool announce );
+	const mpMatchViewTerminalResult_t *ClientTerminalResult( void );
 
 	int				GetPlayerRank( idPlayer* player, bool& isTied );
 	idPlayer*		GetRankLeader( void );

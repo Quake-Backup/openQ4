@@ -38,8 +38,11 @@ difference except that the menu stops drawing. The session presents the card
 over it while all of these hold (`idSessionLocal::UpdateRetainedMultiplayer`):
 
 - the gate or the opt-in is on, a multiplayer map is spawned, and the active
-  GUI is the game's multiplayer menu (`guis/mpmain.gui`, drawn over the game);
-  the chat, buy and summary screens are other GUIs and are never covered;
+  GUI is the game's multiplayer menu (`guis/mpmain.gui`, drawn over the game),
+  or its match summary (`guis/summary.gui`), which takes the summary card
+  ([below](#the-summary-card)); the chat and buy screens are other GUIs and are
+  never covered. A card covers the GUI it opened over: another taking the
+  screen (the summary closing into the menu) retires it and asks again;
 - no test GUI or retained preview is open, and no stock page has taken this
   opening over (below);
 - the game names the card (`retainedMultiplayerVariant`): Welcome while the
@@ -72,8 +75,9 @@ map's card on its first page; the document itself loads inside each
 multiplayer level load.
 
 `ui_retainedStatus` reports each card's gate as `multiplayer=` (Escape) and
-`welcome=`, and the covering card as `mp=escape` or `mp=welcome` (`mp=-`
-otherwise); `openq4_retainedGui` addresses the card while it covers.
+`welcome=`, and the covering card as `mp=escape`, `mp=welcome` or
+`mp=summary` (`mp=-` otherwise); `openq4_retainedGui` addresses the card while
+it covers.
 
 ## The card
 
@@ -135,7 +139,7 @@ The team lists stand beside the selected player's statistics. Each list opens
 with a band in its team's color (#6AA42B Marine, #FF7B04 Strogg, #999999 for
 spectators, #8B964B for everyone outside team modes) holding the title and the
 team's score, then lists its players in the scoreboard's rows (section 14.14):
-a band at 0.08, or 0.29 with the marker for the player's own row; the speaker,
+a band at 0.08, or 0.29 with the orange marker for the player's own row; the speaker,
 crossed in red when the player is muted; the friend silhouette, 0.125 when the
 player is not a friend; the name, the score and the ping. The name, score and
 ping headings run once above the lists. The player's own team comes first
@@ -382,6 +386,72 @@ The game publishes the Welcome card's keys with the rest: `mp.welcome.title`,
 `mp.welcome.arena_count`, and the Join page's four actions as
 `mp.join<0-3>.{shown,available,label,reason,detail}`, which the game derives
 again when one is chosen.
+
+### The summary card
+
+At the end of a match the summary card covers the game's match summary
+(`guis/summary.gui`, section 14.14) as the Escape card covers its menu
+(`guis/menu/mp_summary.q4ui`, built by `tools/ui/retained_mp_summary.py`). It
+presents with `ui_retained` alone, since all its pages are built, and the
+stock summary stays for `ui_retained 0`, a mod's own `summary.gui` and an
+Arena Campaign match. It takes the Escape card's size, so the Players page it
+shares fits, and opens on SUMMARY with the chat field focused; Esc returns to
+the game, as the stock summary's does. The header holds the map, the mode, the
+time to the next map in the value color (the review's end,
+`g_gameReviewPause`) and the score.
+
+- **SUMMARY.** The result in a header band across the page, in the winners'
+  color, olive for deathmatch, Tourney and a draw: MARINE TEAM WINS, STROGG
+  TEAM WINS, DRAW, the leader's "<name> wins!" or a managed match's own result
+  (pending, aborted, a draw or its winner, with MATCH FORFEITED as its detail).
+  Outside team modes your place follows ("2ND OF 4"), then the final score in
+  the value color. Under it the standings and the chat stand side by side.
+  The standings take the stock summary's rows: outside team modes the top ten
+  with their places, the first three on the stock's blue, red and yellow bands
+  at 0.15; in team modes each team's top five, the winners first, under their
+  team bands. You take the last row when you would not be listed, with the
+  orange marker on a band at 0.29. Each row holds the name, the clan, the
+  player's three most accurate weapons of more than ten shots as icons in their
+  color code, and the score. The chat shows CHAT HISTORY over the newest ten
+  messages that fit, oldest first and wrapping, in the chat box's lines: white
+  names over #FFFF8D all-chat, a team message's TEAM tag and text in its team's
+  color, server lines after the information symbol, your lines after the
+  marker. A message cut at the top fades under the card's body.
+- **The chat field.** The stock chat plate with its channel tag, inviting a
+  message while it rests empty. Choosing it (`mpSummaryChat`) starts typing,
+  which the session owns: typed characters enter as UTF-8 at the caret, up to
+  the chat input's 128 bytes; Backspace, Delete, the arrows (by words with
+  Ctrl), Home, End and Ctrl+V edit; Tab switches to team chat in team modes;
+  Enter sends through the stock summary's own `chatmessage` and keeps typing,
+  an empty Enter stops; Esc stops and clears; a click elsewhere stops and keeps
+  the entry. The text lives in the stock summary's `chattext`, whose entry
+  takes focus while the player types so the platform's text input runs then
+  only (`oq4_chatFocus`, `oq4_chatBlur`). While typing, the prompt bar reads
+  Send, Channel (team modes) and Cancel, and from 80% of the limit the
+  characters left show.
+- **STATISTICS.** The Players page's lists and the selected player's
+  statistics, with the player's end-of-match awards (Rail Master, Sniper and
+  the rest) where the Players page has Mute and Friend.
+- **SCOREBOARD.** The lists in the held scoreboard's rows and columns: the
+  speaker, friend, name, the clan or a BOT tag, SCORE, KILLS in the flag modes
+  (as the scoreboard decides), DEATHS, minutes and ping beside the
+  network-quality bars; each list opens with its band, the spectators' only
+  while there are any. Nothing on the page takes focus.
+
+The game publishes the summary with the lists: `mp.summary.result`,
+`_color`, `_detail` and `_score`, `mp.summary.teams`, the panels
+`mp.summary.p<0-1>.{shown,band,title,color,score,count}` and their rows
+`mp.summary.p<p>r<r>.{name,clan,score,place,you,tint,w0,w1,w2}` (the weapons
+as indices into the Players page's accuracy order, -1 for none), the chat
+`mp.summary.chat<0-9>.{live,name,text,kind,team,you}`,
+`mp.summary.my_team` and `mp.summary.channels`; the lists add
+`mp.players.<row>.{clan,kills,deaths,time,bot,ping_ms}` (the ping as a number
+for the bars), `mp.players.kills_shown`
+and the selected player's `mp.stat.match_award<0-2>`. The session publishes
+the field: `mp.summary.typing`, `mp.summary.entry_before` and `_after`
+(around the caret), `mp.summary.entry_left` and `mp.summary.entry_team`.
+`openq4_summaryChat <text> | caret <n> | stop | send` drives the field
+without device input.
 
 ### The Server page
 

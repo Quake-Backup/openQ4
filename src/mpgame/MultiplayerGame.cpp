@@ -10503,7 +10503,7 @@ fields instead of the stock list strings: panel 0 holds your team, or every
 player outside team modes, panel 1 the other team and panel 2 the spectators.
 Each row carries its name, clan, score, kills, deaths, minutes connected, ping
 and a flags word (1 you, 2 dead, 4 bot, 8 eliminated, 16 ready shown, 32 ready,
-64 muted, 128 flag carrier). The stock GUI ignores all of them.
+64 muted, 128 flag carrier, 256 friend). The stock GUI ignores all of them.
 ================
 */
 static idStr OQ4_HudOrdinal( int place );
@@ -10561,45 +10561,30 @@ void idMultiplayerGame::PublishRemasteredScoreboard( idUserInterface *scoreBoard
 		}
 	}
 
-	// The pitch adapts to the entries (stock scoreboard.gui): 15-30 u in team
-	// modes, 17-35 u in deathmatch, 13-26 u in Tourney.
+	// The card (ui-visual-design.md 14.14), on remastered_hud_scoreboard.py's
+	// numbers in dp: each shown panel opens 6 dp down with its 22 dp band, and
+	// its rows are 24 dp (oq4_sb_pitch, 16 u). The lists have 496 dp in the
+	// tallest card, 324 in Tourney's under the bracket chart; past that the
+	// card keeps its height and the rows scroll by whole rows, each panel
+	// heading the rows it shows, over the count of the rows below. Your team's
+	// panel and the other team's show while the lists fit, the spectators'
+	// whenever there are any.
 	const int total = rows[ 0 ].Num() + rows[ 1 ].Num() + rows[ 2 ].Num();
-	static const int teamPitch[ 5 ] = { 30, 24, 20, 17, 15 };
-	static const int dmPitch[ 5 ] = { 35, 28, 23, 20, 17 };
-	static const int tourneyPitch[ 5 ] = { 26, 21, 17, 15, 13 };
-	const int *pitches = team ? teamPitch : tourney ? tourneyPitch : dmPitch;
-	const int step = total <= 8 ? 0 : total <= 10 ? 1 : total <= 12 ? 2 : total <= 14 ? 3 : 4;
-	int pitch = pitches[ step ];
-
-	// The window (ui-visual-design.md 14.14), on the document's numbers
-	// (remastered_hud_scoreboard.py VIEW_*): each panel takes its 32 u header
-	// band and 5 u to the next. Beyond the viewport the rows keep the smallest
-	// pitch and scroll by whole rows; each panel then heads the rows it shows,
-	// over the count of the rows below. Your team's panel and the other team's
-	// show while the board fits, the spectators' when there are any.
-	static const int PANEL_FRAME = 37;
-	const int viewTop = tourney ? 206 : 74;
-	const int viewBottom = tourney ? 468 : 404;
-	const int moreTop = tourney ? 460 : 396;
+	static const int ROW_PITCH = 16;
+	static const int ROW_DP = 24;
+	static const int PANEL_FRAME = 28;
+	const int view = tourney ? 324 : 496;
 	const bool listed[ 3 ] = { true, team, rows[ 2 ].Num() > 0 };
 	int height = 0;
 	for ( int p = 0; p < 3; p++ ) {
-		height += listed[ p ] ? PANEL_FRAME + rows[ p ].Num() * pitch : 0;
+		height += listed[ p ] ? PANEL_FRAME + rows[ p ].Num() * ROW_DP : 0;
 	}
-	if ( height > viewBottom - viewTop ) {
-		pitch = pitches[ 4 ];
-		height = 0;
-		for ( int p = 0; p < 3; p++ ) {
-			height += listed[ p ] ? PANEL_FRAME + rows[ p ].Num() * pitch : 0;
-		}
-	}
-	const bool scrolls = height > viewBottom - viewTop;
+	const bool scrolls = height > view;
 	// The rows that fit from the scroll's first row, in the board's order.
 	const int offset[ 3 ] = { 0, rows[ 0 ].Num(), rows[ 0 ].Num() + rows[ 1 ].Num() };
 	auto panelOf = [&]( int i ) -> int {
 		return i < offset[ 1 ] ? 0 : ( i < offset[ 2 ] ? 1 : 2 );
 	};
-	const int view = moreTop - viewTop;
 	auto rowsShown = [&]( int first ) -> int {
 		int y = 0;
 		int lastPanel = -1;
@@ -10607,7 +10592,7 @@ void idMultiplayerGame::PublishRemasteredScoreboard( idUserInterface *scoreBoard
 		int shown = 0;
 		for ( int i = first; i < total; i++ ) {
 			const int p = panelOf( i );
-			const int need = pitch + ( p != lastPanel ? PANEL_FRAME : 0 );
+			const int need = ROW_DP + ( p != lastPanel ? PANEL_FRAME : 0 );
 			if ( y + need > view || inPanel[ p ] >= panelRows[ p ] ) {
 				break;
 			}
@@ -10657,6 +10642,7 @@ void idMultiplayerGame::PublishRemasteredScoreboard( idUserInterface *scoreBoard
 		flags |= ( useReady && row->IsReady() ) ? 32 : 0;
 		flags |= player->IsPlayerMuted( row ) ? 64 : 0;
 		flags |= ( team && row->PowerUpActive( row->team ? POWERUP_CTF_MARINEFLAG : POWERUP_CTF_STROGGFLAG ) ) ? 128 : 0;
+		flags |= player->IsFriend( row ) ? 256 : 0;
 		scoreBoard->SetStateString( va( "oq4_sb%d_%d_name", panel, r ), row->GetUserInfo()->GetString( "ui_name" ) );
 		scoreBoard->SetStateString( va( "oq4_sb%d_%d_clan", panel, r ), row->GetUserInfo()->GetString( "ui_clan" ) );
 		scoreBoard->SetStateInt( va( "oq4_sb%d_%d_score", panel, r ), entry.score );
@@ -10685,7 +10671,7 @@ void idMultiplayerGame::PublishRemasteredScoreboard( idUserInterface *scoreBoard
 	for ( int panel = 0; panel < 3; panel++ ) {
 		scoreBoard->SetStateInt( va( "oq4_sb%d_count", panel ), counts[ panel ] );
 	}
-	scoreBoard->SetStateInt( "oq4_sb_pitch", pitch );
+	scoreBoard->SetStateInt( "oq4_sb_pitch", ROW_PITCH );
 	const int below = total - first - shown;
 	scoreBoard->SetStateInt( "oq4_sb_below", below );
 	scoreBoard->SetStateString( "oq4_sb_below_text", below > 0 ? va( common->GetLocalizedString( "#str_231258" ), below ) : "" );
@@ -11165,8 +11151,9 @@ idMultiplayerGame::UpdateSummaryBoard
 Shows top 10 players if local player is in top 10, otherwise shows top 9 and localplayer
 ================
 */
-bool idMultiplayerGame::UpdateManagedSummaryResult( idUserInterface *gui, bool announce ) {
-	const mpMatchViewTerminalResult_t *result = NULL;
+// The frozen result of the managed match this client's view belongs to, or
+// NULL while there is none.
+const mpMatchViewTerminalResult_t *idMultiplayerGame::ClientTerminalResult( void ) {
 	if ( clientMatchViewValid && clientMatchControlModel.IsReady() &&
 		gameLocal.localClientNum >= 0 && gameLocal.localClientNum < MAX_CLIENTS &&
 		clientMatchView.publicState.sessionId != 0 &&
@@ -11177,8 +11164,13 @@ bool idMultiplayerGame::UpdateManagedSummaryResult( idUserInterface *gui, bool a
 		clientMatchView.publicState.recipient.slot == clientMatchControlModel.Recipient().slot &&
 		clientMatchView.publicState.recipient.bindingGeneration == clientMatchControlModel.Recipient().bindingGeneration &&
 		clientMatchView.publicState.terminalResult.outcome != MP_MATCH_VIEW_RESULT_NONE ) {
-		result = &clientMatchView.publicState.terminalResult;
+		return &clientMatchView.publicState.terminalResult;
 	}
+	return NULL;
+}
+
+bool idMultiplayerGame::UpdateManagedSummaryResult( idUserInterface *gui, bool announce ) {
+	const mpMatchViewTerminalResult_t *result = ClientTerminalResult();
 	const bool managed = IsManagedMatch() || result != NULL;
 	// openQ4: a tied team match reads Draw over neutral team panels
 	// (ui-visual-design.md 14.14), where the stock summary named the Strogg the
@@ -16021,11 +16013,12 @@ void idMultiplayerGame::SetJoinScreenSoftFocus( bool enabled ) {
 ================
 idMultiplayerGame::SetRetainedMenuCover
 
-openQ4: the session's retained menu card (section 14.18) covers mainGui. The
-card learns the protocol it can rely on and whether it may cover now: an Arena
-Campaign match keeps its own menu. The card's softening replaces the join
-panel's blur while it covers the connect-time join offer, and uncovering gives
-the panel its soft focus back while the offer stands.
+openQ4: the session's retained menu card (section 14.18) covers mainGui, and
+its summary card (section 14.14) covers statSummary at the end of a match.
+The card learns the protocol it can rely on and whether it may cover now: an
+Arena Campaign match keeps its own menu. The card's softening replaces the
+join panel's blur while it covers the connect-time join offer, and
+uncovering gives the panel its soft focus back while the offer stands.
 ================
 */
 static const int RETAINED_MENU_PROTOCOL = 1;
@@ -16041,7 +16034,9 @@ void idMultiplayerGame::SetRetainedMenuCover( bool covered, idUserInterface *car
 		}
 		return;
 	}
-	const bool allowed = currentMenu == 1 && mainGui != NULL && !IsArenaCampaignMatch();
+	// The menu, or the summary at the end of a match (section 14.14).
+	const bool allowed = ( ( currentMenu == 1 && mainGui != NULL ) || ( currentMenu == 3 && statSummary != NULL ) ) &&
+		!IsArenaCampaignMatch();
 	card->SetStateInt( "mp.protocol", RETAINED_MENU_PROTOCOL );
 	card->SetStateBool( "mp.cover_allowed", allowed );
 	if ( !allowed ) {
@@ -16442,8 +16437,21 @@ void idMultiplayerGame::PublishRetainedPlayers( idUserInterface *card, bool &cha
 			publish( va( "%s.local", key.c_str() ), player != NULL && player == local ? "1" : "0" );
 			publish( va( "%s.friend", key.c_str() ), player != NULL && local != NULL && local->IsFriend( client ) ? "1" : "0" );
 			publish( va( "%s.muted", key.c_str() ), player != NULL && local != NULL && local->IsPlayerMuted( client ) ? "1" : "0" );
+			// The summary's SCOREBOARD page shows the held scoreboard's columns
+			// (section 14.14): the clan or a BOT tag, kills, deaths and minutes.
+			const rvPlayerStat *rowStat = player != NULL && statManager != NULL ? statManager->GetPlayerStat( client ) : NULL;
+			publish( va( "%s.clan", key.c_str() ), player != NULL ? MPRetainedPlainText( player->GetUserInfo()->GetString( "ui_clan" ), 64, 1 ).c_str() : "" );
+			publish( va( "%s.kills", key.c_str() ), player != NULL && list != 2 ? va( "%d", playerState[ client ].fragCount ) : "" );
+			publish( va( "%s.deaths", key.c_str() ), player != NULL && list != 2 ? va( "%d", rowStat != NULL ? rowStat->deaths : 0 ) : "" );
+			publish( va( "%s.time", key.c_str() ), player != NULL ? va( "%d", GetPlayerTime( player ) ) : "" );
+			publish( va( "%s.bot", key.c_str() ), player != NULL && botManager.IsBot( client ) ? "1" : "0" );
+			// The network-quality bars read the ping as a number.
+			publish( va( "%s.ping_ms", key.c_str() ), player != NULL ? va( "%d", playerState[ client ].ping ) : "0" );
 		}
 	}
+	// KILLS shows in the flag modes, as on the held scoreboard.
+	publish( "mp.players.kills_shown", gameLocal.IsTeamGame() && gameLocal.gameType != GAME_TDM &&
+		!MPGameTypeHasAny( gameLocal.gameType, GTF_ROUND ) ? "1" : "0" );
 
 	// The statistics: the selected player's, or the local player's once the
 	// selected one has left.
@@ -16455,8 +16463,10 @@ void idMultiplayerGame::PublishRetainedPlayers( idUserInterface *card, bool &cha
 	idPlayer *chosen = entity != NULL && entity->IsType( idPlayer::GetClassType() ) ? static_cast<idPlayer *>( entity ) : NULL;
 	publish( "mp.stat.client", va( "%d", chosen != NULL ? selected : -1 ) );
 	publish( "mp.stat.name", chosen != NULL ? MPRetainedPlainText( chosen->GetUserInfo()->GetString( "ui_name" ), 64, 1 ).c_str() : "" );
+	// The end-of-match review spectates everyone; a ranked player keeps the
+	// team the match was played on.
 	int statColor = 3;
-	if ( chosen != NULL && chosen->spectating ) {
+	if ( chosen != NULL && chosen->spectating && !IsRankedParticipant( chosen ) ) {
 		statColor = 2;
 	} else if ( chosen != NULL && gameLocal.IsTeamGame() && chosen->team >= 0 && chosen->team < TEAM_MAX ) {
 		statColor = chosen->team;
@@ -16482,6 +16492,16 @@ void idMultiplayerGame::PublishRetainedPlayers( idUserInterface *card, bool &cha
 	for ( int i = 0; i < static_cast<int>( sizeof( RETAINED_AWARDS ) / sizeof( RETAINED_AWARDS[0] ) ); i++ ) {
 		publish( va( "mp.stat.award%d", i ), known ? va( "%d", stat->inGameAwards[ RETAINED_AWARDS[ i ] ] ) : "-" );
 	}
+	// The end-of-match awards, which the summary card shows where the Players
+	// page has Mute and Friend.
+	for ( int i = 0; i < RETAINED_SUMMARY_AWARDS; i++ ) {
+		const char *award = "";
+		if ( known && i < stat->endGameAwards.Num() && stat->endGameAwards[ i ] > EGA_INVALID && stat->endGameAwards[ i ] < EGA_NUM_AWARDS &&
+			endGameAwardInfo[ stat->endGameAwards[ i ] ].name != NULL ) {
+			award = common->GetLocalizedString( endGameAwardInfo[ stat->endGameAwards[ i ] ].name );
+		}
+		publish( va( "mp.stat.match_award%d", i ), award );
+	}
 	publish( "mp.stat.flag_mode", gameLocal.IsFlagGameType() ? "1" : "0" );
 	// Mute and Friend act on another player.
 	const bool other = chosen != NULL && local != NULL && chosen != local;
@@ -16496,6 +16516,180 @@ void idMultiplayerGame::PublishRetainedPlayers( idUserInterface *card, bool &cha
 	publish( "mp.friend.label", common->GetLocalizedString( befriended ? "#str_200249" : "#str_200248" ) );
 	publish( "mp.friend.reason", other ? "" : common->GetLocalizedString( "#str_231032" ) );
 	publish( "mp.friend.detail", "" );
+}
+
+/*
+================
+idMultiplayerGame::PublishRetainedSummary
+
+The summary card's SUMMARY page (section 14.14). The result: a managed
+match's frozen result, a tied team match's Draw, the winning team or,
+outside team modes, the leader, with the final score, in the winners' color
+(olive outside team modes and for a draw); outside team modes your place
+follows. The standings take the stock summary's rows: the top ten outside
+team modes, each team's top five in team modes with the winners first, and
+you in the last row when you would not be listed. Each row holds its place,
+name, clan, score and the player's three most accurate weapons of more than
+ten shots, in the Players page's weapon order; outside team modes the stock's
+first three places keep their tints. Then the chat's newest messages, oldest
+first, your team for the TEAM tag, and whether team chat exists.
+================
+*/
+void idMultiplayerGame::PublishRetainedSummary( idUserInterface *card, bool &changed ) {
+	const auto publish = [&]( const char *key, const char *value ) { changed |= PublishRetainedValue( card, key, value ); };
+	idPlayer *local = gameLocal.GetLocalPlayer();
+	const bool team = gameLocal.IsTeamGame();
+	static const char *const teamTitles[ TEAM_MAX ] = { "#str_200197", "#str_200199" };
+
+	// The result.
+	const mpMatchViewTerminalResult_t *result = ClientTerminalResult();
+	const bool managed = IsManagedMatch() || result != NULL;
+	idStr title, detail, finalScore;
+	int color = 3;
+	int winners = TEAM_MARINE;
+	if ( team && GetScoreForTeam( TEAM_STROGG ) > GetScoreForTeam( TEAM_MARINE ) ) {
+		winners = TEAM_STROGG;
+	}
+	if ( managed ) {
+		title = common->GetLocalizedString( "#str_42872" );
+		if ( result != NULL ) {
+			if ( result->outcome == MP_MATCH_VIEW_RESULT_ABORTED ) {
+				title = common->GetLocalizedString( "#str_42870" );
+			} else if ( result->outcome == MP_MATCH_VIEW_RESULT_DRAW ) {
+				title = common->GetLocalizedString( "#str_42871" );
+			} else if ( result->winnerSide == TEAM_MARINE || result->winnerSide == TEAM_STROGG ) {
+				winners = result->winnerSide;
+				title = common->GetLocalizedString( winners == TEAM_MARINE ? "#str_201012" : "#str_201013" );
+				color = winners;
+			} else {
+				title = va( common->GetLocalizedString( "#str_41313" ), MPRetainedPlainText( result->winnerName, 64, 1 ).c_str() );
+			}
+			if ( result->outcome == MP_MATCH_VIEW_RESULT_FORFEIT ) {
+				detail = common->GetLocalizedString( "#str_41315" );
+			}
+		}
+	} else if ( team ) {
+		if ( GetScoreForTeam( TEAM_MARINE ) == GetScoreForTeam( TEAM_STROGG ) ) {
+			title = common->GetLocalizedString( "#str_42871" );
+		} else {
+			title = common->GetLocalizedString( winners == TEAM_MARINE ? "#str_201012" : "#str_201013" );
+			color = winners;
+		}
+	} else if ( rankedPlayers.Num() > 0 && rankedPlayers[ 0 ].First() != NULL ) {
+		title = va( common->GetLocalizedString( "#str_41313" ),
+			MPRetainedPlainText( rankedPlayers[ 0 ].First()->GetUserInfo()->GetString( "ui_name" ), 64, 1 ).c_str() );
+	}
+	if ( team ) {
+		const int losers = winners == TEAM_MARINE ? TEAM_STROGG : TEAM_MARINE;
+		finalScore = va( "%d - %d", GetScoreForTeam( winners ), GetScoreForTeam( losers ) );
+	} else if ( rankedPlayers.Num() > 0 ) {
+		// The review spectates everyone; your rank still names your place.
+		finalScore = va( "%d", rankedPlayers[ 0 ].Second() );
+		if ( local != NULL && local->GetRank() >= 0 && detail.IsEmpty() ) {
+			detail = va( common->GetLocalizedString( "#str_231232" ), OQ4_HudOrdinal( local->GetRank() + 1 ).c_str(), rankedPlayers.Num() );
+		}
+	}
+	publish( "mp.summary.result", title.c_str() );
+	publish( "mp.summary.result_color", va( "%d", color ) );
+	publish( "mp.summary.result_detail", detail.c_str() );
+	publish( "mp.summary.result_score", finalScore.c_str() );
+	publish( "mp.summary.teams", team ? "1" : "0" );
+
+	// The standings: the stock summary's rows, with you in the last when you
+	// would not be listed.
+	int weaponIndex[ sizeof( RETAINED_ACCURACY_WEAPONS ) / sizeof( RETAINED_ACCURACY_WEAPONS[0] ) ];
+	for ( int i = 0; i < static_cast<int>( sizeof( weaponIndex ) / sizeof( weaponIndex[0] ) ); i++ ) {
+		weaponIndex[ i ] = local != NULL ? local->GetWeaponIndex( RETAINED_ACCURACY_WEAPONS[ i ] ) : -1;
+	}
+	for ( int panel = 0; panel < 2; panel++ ) {
+		const int rowsMax = panel == 0 && !team ? RETAINED_SUMMARY_TOP : RETAINED_SUMMARY_TEAM;
+		const int side = panel == 0 ? winners : ( winners == TEAM_MARINE ? TEAM_STROGG : TEAM_MARINE );
+		idList< rvPair<idPlayer *, int> > rows;
+		bool localListed = false;
+		if ( team || panel == 0 ) {
+			for ( int i = 0; i < rankedPlayers.Num() && rows.Num() < rowsMax; i++ ) {
+				idPlayer *row = rankedPlayers[ i ].First();
+				if ( row == NULL || ( team && row->team != side ) ) {
+					continue;
+				}
+				localListed |= row == local;
+				rows.Append( rankedPlayers[ i ] );
+			}
+			// The review spectates everyone: a ranked player played the match.
+			if ( local != NULL && ( !team || local->team == side ) && !localListed && rows.Num() == rowsMax ) {
+				for ( int i = 0; i < rankedPlayers.Num(); i++ ) {
+					if ( rankedPlayers[ i ].First() == local ) {
+						rows[ rowsMax - 1 ] = rankedPlayers[ i ];
+						break;
+					}
+				}
+			}
+		}
+		const idStr panelKey = va( "mp.summary.p%d", panel );
+		publish( va( "%s.shown", panelKey.c_str() ), rows.Num() > 0 ? "1" : "0" );
+		publish( va( "%s.band", panelKey.c_str() ), team ? "1" : "0" );
+		publish( va( "%s.title", panelKey.c_str() ), team ? common->GetLocalizedString( teamTitles[ side ] ) : "" );
+		publish( va( "%s.color", panelKey.c_str() ), va( "%d", team ? side : 3 ) );
+		publish( va( "%s.score", panelKey.c_str() ), team ? va( "%d", GetScoreForTeam( side ) ) : "" );
+		publish( va( "%s.count", panelKey.c_str() ), va( "%d", rows.Num() ) );
+		for ( int r = 0; r < rows.Num(); r++ ) {
+			idPlayer *row = rows[ r ].First();
+			const idStr key = va( "mp.summary.p%dr%d", panel, r );
+			const int rank = row->GetRank();
+			publish( va( "%s.name", key.c_str() ), MPRetainedPlainText( row->GetUserInfo()->GetString( "ui_name" ), 64, 1 ).c_str() );
+			publish( va( "%s.clan", key.c_str() ), MPRetainedPlainText( row->GetUserInfo()->GetString( "ui_clan" ), 64, 1 ).c_str() );
+			publish( va( "%s.score", key.c_str() ), va( "%d", rows[ r ].Second() ) );
+			publish( va( "%s.place", key.c_str() ), rank >= 0 ? va( "%d.", rank + 1 ) : "" );
+			publish( va( "%s.you", key.c_str() ), row == local ? "1" : "0" );
+			publish( va( "%s.tint", key.c_str() ), va( "%d", !team && rank >= 0 && rank < 3 ? rank + 1 : 0 ) );
+			// The three most accurate weapons of more than ten shots.
+			const rvPlayerStat *stat = statManager != NULL ? statManager->GetPlayerStat( row->entityNumber ) : NULL;
+			int best[ 3 ] = { -1, -1, -1 };
+			float bestAccuracy[ 3 ] = { -1.0f, -1.0f, -1.0f };
+			for ( int w = 0; stat != NULL && w < static_cast<int>( sizeof( weaponIndex ) / sizeof( weaponIndex[0] ) ); w++ ) {
+				const int index = weaponIndex[ w ];
+				if ( index <= 0 || index >= MAX_WEAPONS || stat->weaponShots[ index ] <= 10 ) {
+					continue;
+				}
+				const float accuracy = static_cast<float>( stat->weaponHits[ index ] ) / stat->weaponShots[ index ];
+				for ( int slot = 0; slot < 3; slot++ ) {
+					if ( accuracy > bestAccuracy[ slot ] ) {
+						for ( int later = 2; later > slot; later-- ) {
+							best[ later ] = best[ later - 1 ];
+							bestAccuracy[ later ] = bestAccuracy[ later - 1 ];
+						}
+						best[ slot ] = w;
+						bestAccuracy[ slot ] = accuracy;
+						break;
+					}
+				}
+			}
+			for ( int slot = 0; slot < 3; slot++ ) {
+				publish( va( "%s.w%d", key.c_str(), slot ), va( "%d", best[ slot ] ) );
+			}
+		}
+	}
+
+	// The chat's newest messages, oldest first.
+	const int logged = remasteredChatLog.Num();
+	const int start = Max( 0, logged - RETAINED_SUMMARY_CHAT );
+	for ( int slot = 0; slot < RETAINED_SUMMARY_CHAT; slot++ ) {
+		const int line = start + slot;
+		const bool live = line < logged;
+		const idStr key = va( "mp.summary.chat%d", slot );
+		publish( va( "%s.live", key.c_str() ), live ? "1" : "0" );
+		if ( !live ) {
+			continue;
+		}
+		const idDict &message = remasteredChatLog[ line ];
+		publish( va( "%s.name", key.c_str() ), MPRetainedPlainText( message.GetString( "name" ), 64, 1 ).c_str() );
+		publish( va( "%s.text", key.c_str() ), MPRetainedPlainText( message.GetString( "text" ), 200, 1 ).c_str() );
+		publish( va( "%s.kind", key.c_str() ), message.GetString( "kind", "2" ) );
+		publish( va( "%s.team", key.c_str() ), message.GetString( "team", "-1" ) );
+		publish( va( "%s.you", key.c_str() ), message.GetBool( "you" ) ? "1" : "0" );
+	}
+	publish( "mp.summary.my_team", local != NULL && team && local->team == TEAM_STROGG ? "1" : "0" );
+	publish( "mp.summary.channels", team ? "1" : "0" );
 }
 
 /*
@@ -17471,7 +17665,18 @@ void idMultiplayerGame::PublishRetainedMenu( idUserInterface *card ) {
 	idStr mapName;
 	publish( "mp.title", ResolveScoreboardMapName( gameLocal.serverInfo.GetString( "si_map" ), mapName ) );
 	publish( "mp.mode", LocalizeGametype() );
-	publish( "mp.clock", GameTime() );
+	// The summary's clock counts down to the next map (section 14.14).
+	const bool summary = currentMenu == 3;
+	idStr clock = GameTime();
+	if ( summary ) {
+		clock.Clear();
+		const int left = gameState->GetNextMPGameStateTime() - gameLocal.realClientTime;
+		if ( gameState->GetMPGameState() == GAMEREVIEW && left > 0 ) {
+			const int seconds = ( left + 999 ) / 1000;
+			clock = va( "%d:%02d", seconds / 60, seconds % 60 );
+		}
+	}
+	publish( "mp.clock", clock.c_str() );
 	static const char *const teamTitles[ TEAM_MAX ] = { "#str_200197", "#str_200199" };
 	idPlayer *player = gameLocal.GetLocalPlayer();
 	const bool playing = player != NULL && !player->spectating;
@@ -17489,6 +17694,15 @@ void idMultiplayerGame::PublishRetainedMenu( idUserInterface *card ) {
 		score = MPRetainedPlainText( GetPlayerRankText( player ), 96, 1 );
 	}
 	publish( "mp.score", score.c_str() );
+	if ( summary ) {
+		// The summary card holds the lists and the summary, nothing else.
+		PublishRetainedPlayers( card, changed );
+		PublishRetainedSummary( card, changed );
+		if ( changed ) {
+			card->SetStateInt( "mp.revision", ++retainedMenuRevision );
+		}
+		return;
+	}
 
 	// The Team page's band: the player's team in its colour with its score
 	// and both teams' sizes; spectators and deathmatch get their own band.
@@ -20258,13 +20472,16 @@ void idMultiplayerGame::PrintChatLine( const char *message, const bool teamChat 
 	}
 }
 
-void idMultiplayerGame::DrawStatSummary( void ) {	
+void idMultiplayerGame::DrawStatSummary( void ) {
 	if ( !statSummary->GetStateFloat( "ready" ) ) {
 		statSummary->SetStateFloat( "ready", 1 );
 		statSummary->HandleNamedEvent( "chatFocus" );
 		statSummary->StateChanged( gameLocal.time );
 	}
-	statSummary->Redraw( gameLocal.time );
+	// The session draws its retained summary card in the summary's place.
+	if ( !retainedMenuCovered ) {
+		statSummary->Redraw( gameLocal.time );
+	}
 }
 
 void idMultiplayerGame::ShowStatSummary( void ) {

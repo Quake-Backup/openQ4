@@ -294,7 +294,13 @@ public:
     void PreloadRetainedScreens(); void PrepareRetainedLevel(const char*, bool); void PrecacheRetainedLevelImages();
     void ReportRetainedScreens();
     idUserInterface *guiRetainedEscape = nullptr, *guiRetainedWelcome = nullptr, *guiRetainedMultiplayer = nullptr;
-    bool retainedMultiplayerWelcome = false;
+    idUserInterface *guiRetainedSummary = nullptr, *retainedMultiplayerTarget = nullptr;
+    bool retainedMultiplayerWelcome = false, retainedMultiplayerSummary = false, retainedSummaryTyping = false;
+    int retainedSummaryCaret = 0, summaryChats = 0, summaryChatEnds = 0;
+    bool RetainedSummaryCovers() const;
+    // The chat field's typing has its own source contracts (check_retained_multiplayer).
+    void BeginRetainedSummaryChat(bool) { ++summaryChats; retainedSummaryTyping = true; }
+    void EndRetainedSummaryChat(bool) { ++summaryChatEnds; retainedSummaryTyping = false; }
     bool retainedMultiplayerUncovered = false; int retainedMultiplayerRevision = -1;
     int retainedMultiplayerHandoff = -1, retainedMultiplayerHandoffUntil = 0;
     bool RetainedMultiplayerCovers() const; void UpdateRetainedMultiplayer(); void RetainedMultiplayerFrameEvent();
@@ -308,7 +314,7 @@ public:
 MAIN = r'''
 static const char* const DOCUMENTS[] = {"guis/menu/title.q4ui", "guis/menu/pause.q4ui", "guis/menu/pause_strogg.q4ui", "guis/loading/loading.q4ui",
     "guis/menu/singleplayer.q4ui", "guis/menu/campaigns.q4ui", "guis/menu/settings/system.q4ui", "guis/menu/mp_escape.q4ui",
-    "guis/menu/mp_welcome.q4ui"};
+    "guis/menu/mp_welcome.q4ui", "guis/menu/mp_summary.q4ui"};
 // The documents that fell back to their stock screens, in order.
 static std::vector<std::string> Stock(const idSessionLocal& session) {
     return std::vector<std::string>(session.retainedStock.begin(), session.retainedStock.end());
@@ -424,8 +430,9 @@ int main() {
         auto s = Session(true); s.PreloadRetainedScreens();
         CHECK((managerObject.loads == std::vector<std::string>{"guis/menu/title.q4ui", "guis/menu/pause.q4ui"}) && s.guiRetainedHome == nullptr);
         s.UpdateRetainedHome(); CHECK(managerObject.loads.size() == 2 && s.guiRetainedHome == s.guiRetainedTitle);
-        // A multiplayer level loads each card whose pages are all built.
-        const size_t cards = (RETAINED_MP_ESCAPE_MISSING_PAGES[0] == NULL ? 1 : 0) + (RETAINED_MP_WELCOME_MISSING_PAGES[0] == NULL ? 1 : 0);
+        // A multiplayer level loads each card whose pages are all built, the
+        // summary card among them.
+        const size_t cards = (RETAINED_MP_ESCAPE_MISSING_PAGES[0] == NULL ? 1 : 0) + (RETAINED_MP_WELCOME_MISSING_PAGES[0] == NULL ? 1 : 0) + 1;
         s.PrepareRetainedLevel("mp/q4dm1", true); CHECK(precached.empty() && managerObject.loads.size() == 2 + cards);
         s.PrepareRetainedLevel("game/airdefense1", false);
         CHECK((precached == std::vector<std::string>{"gfx/guis/loadscreens/generic"}) && managerObject.loads.size() == 3 + cards);
@@ -760,9 +767,10 @@ int main() {
         auto s = Mp(true, true);
         idKeyInput::Bound()["_impulse28"] = "^iK8b"; idKeyInput::Bound()["_impulse29"] = "^ik8c";
         s.PrepareRetainedLevel("mp/q4dm1", true);  // loaded inside the level load
-        CHECK((managerObject.loads == std::vector<std::string>{"guis/menu/mp_escape.q4ui", "guis/menu/mp_welcome.q4ui"}) &&
+        CHECK((managerObject.loads == std::vector<std::string>{"guis/menu/mp_escape.q4ui", "guis/menu/mp_welcome.q4ui",
+                                                               "guis/menu/mp_summary.q4ui"}) &&
               s.guiRetainedEscape && s.guiRetainedEscape->state["card.tab"] == "0" && s.guiRetainedWelcome &&
-              s.guiRetainedWelcome->state["card.tab"] == "0");
+              s.guiRetainedWelcome->state["card.tab"] == "0" && s.guiRetainedSummary && s.guiRetainedSummary->state["card.tab"] == "0");
         CHECK(managerObject.flags[0].unique && !managerObject.flags[0].shared);
         s.UpdateRetainedMultiplayer();
         auto* card = s.guiRetainedMultiplayer;
@@ -1019,7 +1027,31 @@ int main() {
         // its first page.
         card->state["card.tab"] = "5"; s.PrepareRetainedLevel("mp/q4dm2", true);
         CHECK(s.guiRetainedMultiplayer == nullptr && card->state["card.tab"] == "0" && s.guiRetainedReleasing == nullptr);
-        // Chat, buy and summary GUIs are never covered; neither is a test GUI or a preview.
+        // The match summary takes the summary card, which opens on its first page
+        // with the chat field at rest; its chat field asks the session to type,
+        // and Back is the summary's own close. The menu replacing the summary
+        // retires the summary card and covers the menu with its own.
+        static idUserInterface summary("guis/summary.gui"); summary = idUserInterface("guis/summary.gui"); summary.state["gameDraw"] = "1";
+        gameObject.publish = [](idUserInterface* gui) { gui->SetStateInt("mp.protocol", 1); gui->SetStateBool("mp.cover_allowed", true); };
+        s.guiRetainedSummary->state["card.tab"] = "2"; s.guiActive = &summary; s.UpdateRetainedMultiplayer();
+        auto* sheet = s.guiRetainedMultiplayer;
+        CHECK(sheet == s.guiRetainedSummary && s.retainedMultiplayerSummary && s.RetainedSummaryCovers() && sheet->named.back() == "open" &&
+              sheet->state["card.tab"] == "0" && s.summaryChatEnds == 1 && gameObject.commands.back() == "retainedMultiplayerCover");
+        s.ReportRetainedScreens(); CHECK(commonObject.output.find(" mp=summary ") != std::string::npos);
+        s.HandleRetainedSessionRequest(sheet, "mpSummaryChat"); CHECK(s.summaryChats == 1 && s.retainedSummaryTyping);
+        gameObject.answer = [](const char*) -> const char* { return "continue"; };
+        sheet->state["card.client"] = "3"; s.HandleRetainedSessionRequest(sheet, "mpSelectPlayer");
+        CHECK(gameObject.guiCommands.back() == "play main_menu_selection ; retained select 3" && s.guiRetainedMultiplayer == sheet);
+        s.guiActive = &mpMenu; s.UpdateRetainedMultiplayer(); s.UpdateRetainedMultiplayer();
+        CHECK(s.guiRetainedMultiplayer == card && !s.retainedMultiplayerSummary && !s.retainedSummaryTyping && !sheet->active);
+        s.guiActive = &summary; s.UpdateRetainedMultiplayer(); CHECK(s.guiRetainedMultiplayer == sheet);
+        gameObject.answer = [](const char*) -> const char* { return nullptr; };
+        s.HandleRetainedSessionRequest(sheet, "mpClose");
+        CHECK(gameObject.guiCommands.back() == "play main_menu_selection ; close" && s.guiActive == nullptr && s.guiRetainedMultiplayer == nullptr &&
+              sheet->named.back() == "release");
+        s.HandleRetainedSessionRequest(card, "mpSummaryChat"); CHECK(s.summaryChats == 1);  // only over the summary
+        s.guiRetainedReleasing = nullptr;
+        // The chat and buy GUIs are never covered; neither is a test GUI or a preview.
         s.guiActive = &chat; s.UpdateRetainedMultiplayer(); CHECK(s.guiRetainedMultiplayer == nullptr);
         s.guiActive = &mpMenu; idUserInterface probe("guis/probe.gui"); s.guiTest = &probe; s.UpdateRetainedMultiplayer(); CHECK(s.guiRetainedMultiplayer == nullptr);
         s.guiTest = nullptr; preview = true; s.UpdateRetainedMultiplayer(); CHECK(s.guiRetainedMultiplayer == nullptr);
@@ -2263,7 +2295,8 @@ def check_retained_multiplayer(menu: str, session: str) -> None:
     cover = function_body(mp_game, 'void idMultiplayerGame::SetRetainedMenuCover(')
     assert 'card->SetStateInt( "mp.protocol", RETAINED_MENU_PROTOCOL );' in cover
     # The join offer is the Welcome card's; the card's softening replaces the join panel's blur.
-    assert 'const bool allowed = currentMenu == 1 && mainGui != NULL && !IsArenaCampaignMatch();' in cover
+    assert ('const bool allowed = ( ( currentMenu == 1 && mainGui != NULL ) || ( currentMenu == 3 && statSummary != NULL ) ) &&\n'
+            '\t\t!IsArenaCampaignMatch();') in cover.replace('\r\n', '\n')
     assert cover.index('retainedMenuCovered = true;') < cover.index('SetJoinScreenSoftFocus( false );')
     assert ('return joinScreenPending || ( player != NULL && player->spectating && !cvarSystem->GetCVarBool( "ui_joined" ) &&\n'
             '\t\t!cvarSystem->GetCVarBool( "ui_autoJoin" ) );' in function_body(mp_game, 'bool idMultiplayerGame::RetainedMenuWelcome(').replace('\r\n', '\n'))
@@ -2299,8 +2332,26 @@ def check_retained_multiplayer(menu: str, session: str) -> None:
     assert 'guiRetainedWelcome = FindRetainedGui( RETAINED_MP_WELCOME_GUI, false, false );' in prepare
     update = function_body(menu, 'void idSessionLocal::UpdateRetainedMultiplayer(')
     assert update.index('game->HandleMainMenuCommands( "retainedMultiplayerVariant", guiActive );') < \
-        update.index('if ( !Session_RetainedMultiplayerEnabled( welcome ) || retainedStock.FindIndex( path ) >= 0 ) {') < update.index('document = FindRetainedGui( path, false, false );') < \
+        update.index('const bool enabled = summary ? Session_RetainedSummaryEnabled() : Session_RetainedMultiplayerEnabled( welcome );') < \
+        update.index('if ( !enabled || retainedStock.FindIndex( path ) >= 0 ) {') < update.index('document = FindRetainedGui( path, false, false );') < \
         update.index('game->HandleMainMenuCommands( "retainedMultiplayerCover", card );')
+    # The summary card: loaded in the level load, the summary's own draw
+    # gives way to it, and its chat field's typing takes the keyboard before
+    # the card while the player types.
+    assert 'guiRetainedSummary = FindRetainedGui( RETAINED_MP_SUMMARY_GUI, false, false );' in prepare
+    summary_draw = function_body(mp_game, 'void idMultiplayerGame::DrawStatSummary(')
+    assert 'if ( !retainedMenuCovered ) {\n\t\tstatSummary->Redraw( gameLocal.time );' in summary_draw.replace('\r\n', '\n')
+    assert menu_event.index('if ( RetainedMultiplayerCovers() ) {') < menu_event.index('if ( RetainedSummaryChatEvent( event ) ) {') < \
+        menu_event.index('menuCommand = card->HandleEvent(')
+    typing = function_body(menu, 'bool idSessionLocal::RetainedSummaryChatEvent(')
+    assert 'DispatchCommand( guiActive, "chatmessage" );' in typing and 'RETAINED_SUMMARY_CHAT_LIMIT' in typing
+    gui_text = (ROOT / 'content/baseoq4/pak0/guis/summary.gui').read_text(encoding='utf-8', errors='replace').replace('\r\n', '\n')
+    assert 'onNamedEvent oq4_chatFocus {\n\t\tsetfocus "chat_enter" ;' in gui_text and 'onNamedEvent oq4_chatBlur {' in gui_text
+    summary_text = (ROOT / 'content/baseoq4/pak0/guis/menu/mp_summary.q4ui').read_text(encoding='utf-8')
+    summary_document = json.loads(re.sub(r'^\s*//.*$', '', summary_text, flags=re.M))
+    assert summary_document['events']['onBack'] == [{'op': 'action', 'action': 'mpClose'}]
+    assert summary_document['events']['summary_chat'] == [{'op': 'action', 'action': 'mpSummaryChat'}]
+    prompt_bar_fits(summary_document, 'mp_summary')
     release_ms = int(re.search(r'static const int RETAINED_RELEASE_MSEC = (\d+);', menu).group(1))
     timelines = {item['id']: item for item in document['timelines']}
     assert timelines['release']['durationMs'] == release_ms
@@ -2465,7 +2516,7 @@ def main() -> int:
             path = match.group(1)
             allowed = {'guis/menu/settings/system.q4ui', 'guis/menu/title.q4ui', 'guis/menu/pause.q4ui', 'guis/menu/pause_strogg.q4ui',
                        'guis/loading/loading.q4ui', 'guis/menu/singleplayer.q4ui', 'guis/menu/campaigns.q4ui',
-                       'guis/menu/mp_escape.q4ui', 'guis/menu/mp_welcome.q4ui'}
+                       'guis/menu/mp_escape.q4ui', 'guis/menu/mp_welcome.q4ui', 'guis/menu/mp_summary.q4ui'}
             assert path in allowed, f'{name} names an ungated retained document {path}'
     # Every retained document loads through FindRetainedGui, which falls back to
     # the stock screen; the SYSTEM page and the campaign selectors fall back too.
@@ -2614,11 +2665,12 @@ def main() -> int:
     for relative in ('content/baseoq4/pak0/guis/menu/title.q4ui', 'content/baseoq4/pak0/guis/menu/pause.q4ui',
                      'content/baseoq4/pak0/guis/menu/pause_strogg.q4ui', 'content/baseoq4/pak0/guis/loading/loading.q4ui',
                      'content/baseoq4/pak0/guis/menu/singleplayer.q4ui', 'content/baseoq4/pak0/guis/menu/campaigns.q4ui',
-                     'content/baseoq4/pak0/guis/menu/mp_escape.q4ui'):
+                     'content/baseoq4/pak0/guis/menu/mp_escape.q4ui',
+                     'content/baseoq4/pak0/guis/menu/mp_summary.q4ui'):
         text = (ROOT / relative).read_text(encoding='utf-8')
         document = json.loads(re.sub(r'^\s*//.*$', '', text, flags=re.M))
         assert document.get('canvas') == {'height': 720}, relative
-        if 'pause' in relative or 'mp_escape' in relative:
+        if 'pause' in relative or 'mp_escape' in relative or 'mp_summary' in relative:
             assert [child['id'] for child in document['root']['children']] == ['scene-softfocus', 'scrim', 'chrome'], relative
         if 'pause' in relative:
             layers = [child['id'] for child in document['root']['children'][2]['children']]
@@ -2659,7 +2711,8 @@ def main() -> int:
         'bool idSessionLocal::RetainedSubpageEvent(',
         'idUserInterface *idSessionLocal::SelectRetainedLoadingGui(',
         'void idSessionLocal::PreloadRetainedScreens(', 'void idSessionLocal::PrepareRetainedLevel(',
-        'static bool Session_IsGameMenu(', 'bool idSessionLocal::RetainedMultiplayerCovers(', 'void idSessionLocal::UpdateRetainedMultiplayer(',
+        'static bool Session_IsGameMenu(', 'static bool Session_IsGameSummary(', 'static bool Session_IsCoveredGameGui(',
+        'bool idSessionLocal::RetainedMultiplayerCovers(', 'bool idSessionLocal::RetainedSummaryCovers(', 'void idSessionLocal::UpdateRetainedMultiplayer(',
         'void idSessionLocal::RetireRetainedMultiplayer(', 'void idSessionLocal::RetainedMultiplayerFrameEvent(',
         'void idSessionLocal::HandleGameMenuReturn(', 'void idSessionLocal::HandleRetainedMultiplayerRequest(',
         'void idSessionLocal::ReportRetainedScreens(')]

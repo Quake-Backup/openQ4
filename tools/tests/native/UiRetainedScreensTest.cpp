@@ -166,7 +166,8 @@ static void CheckSchema() {
 static const std::set<std::string> SessionCommands = {"continue","singlePlayer","loadGame","saveGame","multiplayer","settings",
 	"mods","demos","updates","credits","quit","resume","restartLevel","quitToMenu",
 	"mpClose","mpMainMenu","mpDisconnect","mpStockPage","mpTeamAction","mpSelectPlayer","mpMute","mpFriend","mpWelcomeAction",
-	"mpVoteYes","mpVoteNo","mpCallVote","mpRail","mpSettingsControls","mpSettingsGame","mpSettingsSystem","mpMatch","mpMatchSelect"};
+	"mpVoteYes","mpVoteNo","mpCallVote","mpRail","mpSettingsControls","mpSettingsGame","mpSettingsSystem","mpMatch","mpMatchSelect",
+	"mpSummaryChat"};
 // The value controls' verbs, which carry the control's new value.
 static const std::set<std::string> SessionValueCommands = {"mpVoteMap","mpVoteGameType","mpVoteTimeLimit","mpVoteFragLimit",
 	"mpVoteCaptureLimit","mpVoteTourneyLimit","mpVoteControlTime","mpVoteBalance","mpVoteShuffle","mpVoteRestart","mpVoteBuying","mpVoteKick",
@@ -1450,7 +1451,12 @@ static void CheckWeaponWheels(ScreenHost& host, char** paths) {
 
 #include "UiHudChecks.inl"
 #include "UiRemasteredHudChecks.inl"
+#include "UiRetainedSummaryChecks.inl"
 int main(int argc, char** argv) {
+ if (argc == 3 && std::string(argv[1]) == "--summary") {
+     ScreenHost host; CheckSummary(host,argv[2]);
+     std::printf("retained summary: %d checks passed\n",checks); return 0;
+ }
  if (argc >= 3 && std::string(argv[1]) == "--hud-bench") {
      for (int i = 2; i < argc; ++i) BenchRemasteredHud(argv[i]);
      return 0;

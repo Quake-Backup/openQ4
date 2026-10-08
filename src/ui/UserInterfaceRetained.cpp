@@ -75,7 +75,7 @@ bool SessionMenuCommand(const std::string& command) {
         "campaigns","campaignQuake4","campaignAwakening","campaignArena","campaignBack","campaignHome",
         "mpClose","mpMainMenu","mpDisconnect","mpStockPage","mpTeamAction",
         "mpSelectPlayer","mpMute","mpFriend","mpWelcomeAction","mpVoteYes","mpVoteNo","mpCallVote",
-        "mpRail","mpSettingsControls","mpSettingsGame","mpSettingsSystem","mpMatch","mpMatchSelect"};
+        "mpRail","mpSettingsControls","mpSettingsGame","mpSettingsSystem","mpMatch","mpMatchSelect","mpSummaryChat"};
 	return commands.contains(command);
 }
 

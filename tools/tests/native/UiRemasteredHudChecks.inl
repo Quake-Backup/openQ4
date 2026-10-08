@@ -1305,8 +1305,9 @@ static void CheckRemasteredObjectivesHud(ScreenHost& host, const char* path, boo
 	runtime.Shutdown();
 }
 
-// The scoreboard (scoreboard.gui, 14.14): panels, rows, your marker, bots,
-// the dead, ping bars and the footer.
+// The scoreboard (scoreboard.gui, 14.14): the multiplayer card as tall as its
+// lists, its header and match line, panels, rows, your marker, bots, friends,
+// the dead, ping bars, scrolling and Tourney's tree.
 static void CheckRemasteredScoreboardHud(ScreenHost& host, const char* path) {
 	const auto source = Read(path);
 	Document document; std::vector<Diagnostic> diagnostics;
@@ -1322,9 +1323,9 @@ static void CheckRemasteredScoreboardHud(ScreenHost& host, const char* path) {
 	values.insert({{"servername",std::string("openQ4 Community")},{"serverip",std::string("203.0.113.24:28004")},
 		{"servergametype",std::string("Capture the Flag")},{"servermap",std::string("q4ctf1")},{"serverlimit",std::string("Capture Limit: 5")},
 		{"servertimelimit",std::string("Time Limit: 15")},{"timeleft",std::string("7:12")},{"infinity",false},
-		{"oq4_sb_pitch",30.0},{"oq4_sb_kills",true},{"oq4_sb_rank",std::string("3RD OF 13")},
+		{"oq4_sb_pitch",16.0},{"oq4_sb_kills",true},{"oq4_sb_rank",std::string("3RD OF 13")},
 		{"oq4_sb0_kind",1.0},{"oq4_sb0_score",std::string("3")},{"oq4_sb0_count",2.0},
-		{"oq4_sb0_0_name",std::string("You")},{"oq4_sb0_0_score",21.0},{"oq4_sb0_0_ping",24.0},{"oq4_sb0_0_flags",1.0},
+		{"oq4_sb0_0_name",std::string("You")},{"oq4_sb0_0_score",21.0},{"oq4_sb0_0_ping",24.0},{"oq4_sb0_0_flags",257.0},
 		{"oq4_sb0_1_name",std::string("Bolt")},{"oq4_sb0_1_score",9.0},{"oq4_sb0_1_flags",4.0},
 		{"oq4_sb1_kind",2.0},{"oq4_sb1_score",std::string("2")},{"oq4_sb1_count",1.0},
 		{"oq4_sb1_0_name",std::string("Vex")},{"oq4_sb1_0_score",24.0},{"oq4_sb1_0_ping",150.0},{"oq4_sb1_0_flags",2.0},
@@ -1333,58 +1334,92 @@ static void CheckRemasteredScoreboardHud(ScreenHost& host, const char* path) {
 	Check(runtime.RunEvent("hudJoin",0,effects,error),"the join program runs");
 	runtime.Frame(RemasteredViewport(1280,720),.1);
 	Check(host.errors == 0,"the scoreboard frames without runtime errors");
+	// The card: 98 dp to the lists, each panel's 6 dp and 22 dp band and its
+	// 24 dp rows, then 36 dp under them, centred over the view.
+	Bounds card;
+	Check(Shown(runtime,"sb-frame") && runtime.GetBounds("sb-card",card) && Near(card.width,744.f,1.f) && Near(card.height,98.f+76+52+52+36,1.f) &&
+		Near(card.x+card.width/2,640.f,1.f) && Near(card.y+card.height/2,360.f,1.f),"the card is as tall as its lists, centred over the view");
+	const auto title = runtime.PresentedValue("sb-title","text"), mode = runtime.PresentedValue("sb-mode","text");
+	Check(Shown(runtime,"sb-title") && title && title->text == "openQ4 Community" && !Shown(runtime,"sb-title-t") && Shown(runtime,"sb-match") &&
+		mode && mode->text == "Capture the Flag","the header names the server and the match line the mode");
 	Check(Shown(runtime,"sb0") && Shown(runtime,"sb0-band1") && !Shown(runtime,"sb0-band2") && Shown(runtime,"sb1-band2") &&
-		Shown(runtime,"sb2-band3"),"your team, the other team and the spectators each open with their band");
+		Shown(runtime,"sb2-band3") && Shown(runtime,"sb0-title1") && Shown(runtime,"sb2-title3"),
+		"your team, the other team and the spectators each open with their band and title");
 	Check(Shown(runtime,"sb0r0") && Shown(runtime,"sb0r1") && !Shown(runtime,"sb0r2"),"a panel shows its rows");
-	Check(Shown(runtime,"sb0r0-band-me") && Shown(runtime,"sb0r0-marker") && !Shown(runtime,"sb0r1-marker"),"your row adds the marker");
-	Check(Shown(runtime,"sb0r1-bot") && !Shown(runtime,"sb0r1-clan-c") && !Shown(runtime,"sb0r1-bars"),"a bot carries the BOT tag and no ping bars");
+	const auto mine = runtime.PresentedValue("sb0r0-band","opacity"), theirs = runtime.PresentedValue("sb0r1-band","opacity");
+	Check(mine && Near(float(mine->data[0]),.29f,.01f) && theirs && Near(float(theirs->data[0]),.08f,.01f) && Shown(runtime,"sb0r0-marker") &&
+		!Shown(runtime,"sb0r1-marker"),"your row brightens its band and adds the marker");
+	const auto pal = runtime.PresentedValue("sb0r0-friend","opacity"), stranger = runtime.PresentedValue("sb0r1-friend","opacity");
+	Check(pal && Near(float(pal->data[0]),1.f,.01f) && stranger && Near(float(stranger->data[0]),.125f,.01f),"a friend's symbol lights");
+	Check(Shown(runtime,"sb0r1-bot") && !Shown(runtime,"sb0r1-clan") && !Shown(runtime,"sb0r1-meter") && Shown(runtime,"sb0r1-bars"),
+		"a bot carries the BOT tag and no ping bars, keeping their room");
 	const auto dim = runtime.PresentedValue("sb1r0-content","opacity");
 	Check(dim && Near(float(dim->data[0]),.5f,.01f) && Shown(runtime,"sb1r0-skull"),"a dead player's row drops to 0.50 behind a skull");
 	Check(Shown(runtime,"sb0r0-bars4") && Shown(runtime,"sb1r0-bars2"),"ping shows the matching network-quality bars");
-	Check(Shown(runtime,"sb0-h-kills-g") && !Shown(runtime,"sb2-h-score-g"),"KILLS shows in flag modes; spectators have no score columns");
+	const auto watcher = runtime.PresentedValue("sb2r0-score","opacity");
+	Check(Shown(runtime,"sb-h-kills") && watcher && Near(float(watcher->data[0]),0.f,.01f),"KILLS shows in flag modes; spectators have no scores");
 	Bounds r0, r1;
-	Check(runtime.GetBounds("sb0r0",r0) && runtime.GetBounds("sb0r1",r1) && Near(r1.y-r0.y,30*1.5f,1.f),"rows keep the published pitch");
+	Check(runtime.GetBounds("sb0r0",r0) && runtime.GetBounds("sb0r1",r1) && Near(r1.y-r0.y,16*1.5f,1.f),"rows keep the published pitch");
 	const auto rank = runtime.PresentedValue("sb-rank","text");
-	Check(Shown(runtime,"sb-rank-g") && rank && rank->text == "3RD OF 13","the rank line reads your place");
-	Check(Shown(runtime,"sb-timer"),"a timed match shows the timer");
-	Check(runtime.SetState({{"oq4_sb1_kind",-1.0},{"oq4_sb0_kind",0.0},{"oq4_sb_kills",false},{"oq4_sb_pitch",35.0},{"infinity",true}},error,.2),error.c_str());
+	Check(Shown(runtime,"sb-rank") && rank && rank->text == "3RD OF 13","the header reads your place");
+	Check(Shown(runtime,"sb-clock"),"a timed match shows the clock");
+	Check(runtime.SetState({{"oq4_sb1_kind",-1.0},{"oq4_sb0_kind",0.0},{"oq4_sb_kills",false},{"oq4_sb_pitch",20.0},{"infinity",true}},error,.2),error.c_str());
 	runtime.Frame(RemasteredViewport(1280,720),.25);
-	Check(Shown(runtime,"sb0-band0") && !Shown(runtime,"sb1") && !Shown(runtime,"sb0-h-kills-g") && !Shown(runtime,"sb-timer"),
+	Check(Shown(runtime,"sb0-band0") && !Shown(runtime,"sb1") && !Shown(runtime,"sb-h-kills") && !Shown(runtime,"sb-clock"),
 		"deathmatch lists the players in one panel without KILLS");
-	Check(runtime.GetBounds("sb0r0",r0) && runtime.GetBounds("sb0r1",r1) && Near(r1.y-r0.y,35*1.5f,1.f),"the deathmatch pitch applies");
+	Check(runtime.GetBounds("sb0r0",r0) && runtime.GetBounds("sb0r1",r1) && Near(r1.y-r0.y,20*1.5f,1.f) && runtime.GetBounds("sb-card",card) &&
+		Near(card.height,98.f+(28+60)+(28+30)+36,1.f),"the rows and the card follow the pitch");
 	// Beyond its height the board scrolls, over the count of the rows below.
 	Check(!Shown(runtime,"sb-more"),"a board that fits counts no rows below");
 	Check(runtime.SetState({{"oq4_sb_below",7.0},{"oq4_sb_below_text",std::string("7 MORE")}},error,.26),error.c_str());
 	runtime.Frame(RemasteredViewport(1280,720),.27);
-	const auto more = runtime.PresentedValue("sb-more-text","text"), moreShadow = runtime.PresentedValue("sb-more-sh","text");
-	Check(Shown(runtime,"sb-more") && Shown(runtime,"sb-more-arrow") && more && more->text == "7 MORE" && moreShadow && moreShadow->text == "7 MORE",
-		"a scrolling board counts the rows below");
-	Check(runtime.SetState({{"oq4_sb_below",0.0},{"oq4_sb_below_text",std::string()}},error,.28),error.c_str());
+	const auto more = runtime.PresentedValue("sb-more-text","text"), address = runtime.PresentedValue("sb-address","text");
+	Check(Shown(runtime,"sb-more") && Shown(runtime,"sb-more-arrow") && more && more->text == "7 MORE" && address &&
+		address->text == "203.0.113.24:28004","a scrolling board counts the rows below beside the address");
+	Check(runtime.SetState({{"oq4_sb_below",0.0},{"oq4_sb_below_text",std::string()},{"oq4_sb_pitch",16.0}},error,.28),error.c_str());
 	runtime.Frame(RemasteredViewport(1280,720),.29);
 	Check(!Shown(runtime,"sb-more"),"the count leaves at the end of the list");
 
-	// Tourney: the bracket tree answers the stock arena events.
+	// Tourney: the wider card sets the bracket chart under its match line, and
+	// the chart answers the stock arena events.
 	Check(runtime.SetState({{"gametype",2.0},{"name1_round1_bracket1",std::string("Vex")},{"name2_round1_bracket1",std::string("Kaz")},
 		{"score1_round1_bracket1",std::string("3")},{"score2_round1_bracket1",std::string("1")},{"round",1.0},{"bracket",1.0},
-		{"empty",false}},error,.3),error.c_str());
+		{"empty",false},{"tourney_count",std::string("Playing tournament 1 of 3")}},error,.3),error.c_str());
 	Check(runtime.RunEvent("arenaInit",.3,effects,error),"an arena starts");
 	runtime.Frame(RemasteredViewport(1280,720),.35);
-	Check(Shown(runtime,"sbt") && !Shown(runtime,"sb") && Shown(runtime,"tb11-words") && !Shown(runtime,"tb11-empty"),
-		"Tourney shows the bracket tree instead of the soft board");
-	Bounds panelTop;
-	Check(runtime.GetBounds("sb0",panelTop) && panelTop.y >= 206*1.5f - 1,"the players list sits under the tree");
+	const auto count = runtime.PresentedValue("sb-count","text");
+	Check(Shown(runtime,"sbt") && Shown(runtime,"sb-title-t") && !Shown(runtime,"sb-title") && Shown(runtime,"sb-match") &&
+		Shown(runtime,"sb-count") && !Shown(runtime,"sb-limit") && count && count->text == "Playing tournament 1 of 3" &&
+		Shown(runtime,"tb11-words") && Shown(runtime,"tb11-plain") && !Shown(runtime,"tb11-empty"),
+		"Tourney sets the bracket chart in its card, the tournament count on the match line");
+	Bounds panelTop, first, final_, semi;
+	Check(runtime.GetBounds("sb-card",card) && Near(card.width,928.f,1.f) && runtime.GetBounds("sb0",panelTop) && panelTop.y - card.y >= 329.f,
+		"the wider card lists the players under the chart");
+	Check(runtime.GetBounds("tb11",first) && runtime.GetBounds("tb41",final_) && runtime.GetBounds("tb31",semi) &&
+		Near(first.width,110.f,1.f) && Near(final_.width,136.f,1.f) && Near(final_.x+final_.width/2,card.x+card.width/2,1.f) &&
+		Near(semi.y+semi.height/2,final_.y+final_.height/2,1.f),"the halves converge on the wider final in the card's centre");
 	Check(runtime.SetState({{"sel",1.0}},error,.4) && runtime.RunEvent("arenaFocus",.4,effects,error),"your arena is focused");
 	runtime.Frame(RemasteredViewport(1280,720),.45);
-	Check(Shown(runtime,"tb11-sel1") && !Shown(runtime,"tb11-focus"),"your half of your arena turns aqua");
+	Check(Shown(runtime,"tb11-sel1") && Shown(runtime,"tb11-mine") && !Shown(runtime,"tb11-plain") && !Shown(runtime,"tb11-focus"),
+		"your arena's rails and your half turn aqua");
+	const auto unlit = runtime.PresentedValue("tl11","opacity");
+	Check(unlit && Near(float(unlit->data[0]),.22f,.01f),"an undecided arena's link waits unlit");
 	Check(runtime.SetState({{"winner",1.0}},error,.5) && runtime.RunEvent("arenaDone",.5,effects,error),"the arena finishes");
 	runtime.Frame(RemasteredViewport(1280,720),.55);
-	const auto loser = runtime.PresentedValue("tb11-n2","color"), victor = runtime.PresentedValue("tb11-s1","color");
-	Check(Shown(runtime,"tb11-done") && !Shown(runtime,"tb11-sel1") && loser && Near(float(loser->data[3]),.5f,.01f) &&
-		victor && Near(float(victor->data[2]),1,.01f),"a finished arena turns blue, its loser dims and the winner's score whitens");
+	const auto loser = runtime.PresentedValue("tb11-n2","color"), victor = runtime.PresentedValue("tb11-s1","color"),
+		lit = runtime.PresentedValue("tl11","opacity");
+	Check(Shown(runtime,"tb11-done") && !Shown(runtime,"tb11-sel1") && !Shown(runtime,"tb11-mine") && loser && Near(float(loser->data[3]),.45f,.01f) &&
+		victor && Near(float(victor->data[0]),1,.01f) && Near(float(victor->data[2]),.137f,.01f) && lit && Near(float(lit->data[0]),.7f,.01f),
+		"a decided arena turns blue, its loser dims, the winner's score takes the value color and its link lights");
 	Check(runtime.SetState({{"round",2.0},{"bracket",3.0},{"empty",true}},error,.6) && runtime.RunEvent("arenaInit",.6,effects,error),
 		"an empty arena starts");
 	runtime.Frame(RemasteredViewport(1280,720),.65);
 	Check(Shown(runtime,"tb23-empty") && !Shown(runtime,"tb23-words"),"an empty arena reads EMPTY");
+	Check(runtime.SetState({{"round",4.0},{"bracket",1.0},{"empty",false},{"name1_round4_bracket1",std::string("Vex")},
+		{"name2_round4_bracket1",std::string("Rook")}},error,.7) && runtime.RunEvent("arenaInit",.7,effects,error) &&
+		runtime.SetState({{"winner",2.0}},error,.75) && runtime.RunEvent("arenaDone",.75,effects,error),"the final is decided");
+	runtime.Frame(RemasteredViewport(1280,720),.8);
+	Check(Shown(runtime,"tb41-champion2") && !Shown(runtime,"tb41-champion1"),"the champion gains the marker");
 	Check(host.errors == 0,"no runtime diagnostics across the scoreboard exercise");
 	runtime.Shutdown();
 }
