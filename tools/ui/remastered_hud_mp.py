@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import build_retained_screens as ui
 import hud_svg
-from remastered_hud_base import (AND, BOUND_TEXT, NOT, OR, S, U, HudDocument, anchor, cancel, fitted_plate_path,
+from remastered_hud_base import (AND, BOUND_TEXT, NOT, OR, S, U, HudDocument, anchor, beyond_minimal, cancel, fitted_plate_path,
                                  layout_state, num, op, play, pts_path, rgb, sel, svg_path, tr, transform_value, u, vec,
                                  when)
 from remastered_hud_status import MP_ROSTER, full
@@ -1386,12 +1386,14 @@ def mp_document() -> dict:
     arena = arena_presentation(doc)
     doc.on("hudJoin", *doc.joins)
     doc.on("onInit", *doc.joins)
+    # Minimal (ui_hudLayout 2) keeps the held statistics, the vote, chat and
+    # voice, the follow card, the respawn prompt and the Arena presentation.
     root = full("mp-root", [
-        anchor(doc, "tl", [stand, teams, clock, bar]),
-        anchor(doc, "tc", [strip, column, banners]),
-        anchor(doc, "tr", [feed, ctx, lag]),
+        anchor(doc, "tl", [beyond_minimal(doc, "tl-full", [stand, teams, clock, bar])]),
+        anchor(doc, "tc", [beyond_minimal(doc, "tc-full", [strip, column, banners])]),
+        anchor(doc, "tr", [beyond_minimal(doc, "tr-full", [feed, ctx, lag])]),
         anchor(doc, "cr", [stats]),
-        anchor(doc, "cc", [aim]),
+        anchor(doc, "cc", [beyond_minimal(doc, "cc-full", [aim])]),
         anchor(doc, "cl", [ballot]),
         anchor(doc, "bl", [chat_box(doc, talkers + lines)]),
         anchor(doc, "bc", [follow, respawn], scale="hud.centerScale"),

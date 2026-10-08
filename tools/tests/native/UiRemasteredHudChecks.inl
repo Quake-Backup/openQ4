@@ -22,6 +22,9 @@ static StateValues RemasteredLayout(int width, int height, float scale = 1, floa
 		{"hud.centerScale",double(std::min(scale,std::max(.25f,span/690.f)))}};
 }
 
+// The HUD layout preference the documents read (ui_hudLayout: 1 Remastered, 2 Minimal).
+static void RemasteredLayoutPreference(ScreenHost& host, double layout) { host.cvars["ui_hudLayout"] = layout; }
+
 static bool Shown(const Runtime& runtime, const std::string& id) {
 	const auto value = runtime.PresentedValue(id,"display");
 	return value && value->text != "none";
@@ -33,6 +36,7 @@ static void CheckRemasteredHud(ScreenHost& host, const char* path, const std::st
 	if (!document.Load(source,diagnostics)) for (const auto& d : diagnostics) std::fprintf(stderr,"%s %u:%u %s\n",path,unsigned(d.line),unsigned(d.column),d.message.c_str());
 	Check(diagnostics.empty() && document.Model().id == id,"Remastered HUD validates");
 	Check(document.Model().canvasHeight == 720 && document.Model().canvasMinWidth == 960,"Remastered HUD uses the 4:3 center-screen canvas");
+	RemasteredLayoutPreference(host,1);
 	Runtime runtime(host);
 	Check(runtime.Initialize(),"retained runtime");
 	Check(runtime.LoadDocument(source,"guis/hud/remastered.q4ui",diagnostics),"Remastered HUD loads into a runtime");
@@ -194,6 +198,20 @@ static void CheckRemasteredHud(ScreenHost& host, const char* path, const std::st
 	Check(runtime.RunEvent(strogg ? "leaveTram" : "leaveFlatbed",8,effects,error),"leaving the ride runs");
 	runtime.Frame(RemasteredViewport(1280,720),8.05);
 	Check(!Shown(runtime,"ride") && Shown(runtime,"health-gauge"),"leaving restores the gauges");
+
+	// Minimal (section 13.9): the gauges stay where they are; the strip,
+	// pickups, radio, boss bar, notices and damage direction go.
+	RemasteredLayoutPreference(host,2);
+	runtime.Frame(RemasteredViewport(1280,720),8.1);
+	Bounds minimalHealth;
+	Check(Shown(runtime,"health-gauge") && Shown(runtime,"ammo-gauge") && runtime.GetBounds("health-gauge",minimalHealth) &&
+		Near(minimalHealth.x,health.x) && Near(minimalHealth.y,health.y),"Minimal keeps the gauges in place");
+	Check(!Shown(runtime,"bc-full") && !Shown(runtime,"tr-full") && !Shown(runtime,"tc-full") && !Shown(runtime,"cc-full"),
+		"Minimal leaves out the strip, pickups, radio, boss bar, notices and damage direction");
+	RemasteredLayoutPreference(host,1);
+	runtime.Frame(RemasteredViewport(1280,720),8.15);
+	Check(Shown(runtime,"bc-full") && Shown(runtime,"tr-full") && Shown(runtime,"tc-full") && Shown(runtime,"cc-full"),
+		"Remastered brings them back");
 	Check(host.errors == 0,"no runtime diagnostics across the HUD exercise");
 	runtime.Shutdown();
 }
@@ -206,6 +224,7 @@ static void CheckRemasteredMpHud(ScreenHost& host, const char* path) {
 	Document document; std::vector<Diagnostic> diagnostics;
 	if (!document.Load(source,diagnostics)) for (const auto& d : diagnostics) std::fprintf(stderr,"%s %u:%u %s\n",path,unsigned(d.line),unsigned(d.column),d.message.c_str());
 	Check(diagnostics.empty() && document.Model().id == "openq4.hud.remastered.mp","Remastered MP HUD validates");
+	RemasteredLayoutPreference(host,1);
 	Runtime runtime(host);
 	Check(runtime.Initialize(),"retained runtime");
 	Check(runtime.LoadDocument(source,"guis/hud/remastered_mp.q4ui",diagnostics),"Remastered MP HUD loads into a runtime");
@@ -339,6 +358,19 @@ static void CheckRemasteredMpHud(ScreenHost& host, const char* path) {
 	Check(runtime.RunEvent("oq4_respawn",4.7,effects,error),"the respawn prompt leaves");
 	runtime.Frame(RemasteredViewport(1280,720),4.75);
 	Check(!Shown(runtime,"respawn"),"alive again, the prompt goes");
+
+	// Minimal: the standings, timer, notices, kill feed and aim text go;
+	// the vote, chat and the respawn prompt stay.
+	RemasteredLayoutPreference(host,2);
+	Check(runtime.SetState({{"oq4_respawn",1.0}},error,4.8),error.c_str());
+	runtime.Frame(RemasteredViewport(1280,720),4.85);
+	Check(!Shown(runtime,"tl-full") && !Shown(runtime,"tc-full") && !Shown(runtime,"tr-full") && !Shown(runtime,"cc-full"),
+		"Minimal leaves out the standings, timer, notices, kill feed and aim text");
+	Check(Shown(runtime,"vote") && Shown(runtime,"respawn") && Shown(runtime,"chatbox"),"Minimal keeps the vote, chat and the respawn prompt");
+	RemasteredLayoutPreference(host,1);
+	Check(runtime.SetState({{"oq4_respawn",0.0}},error,4.9),error.c_str());
+	runtime.Frame(RemasteredViewport(1280,720),4.95);
+	Check(Shown(runtime,"tl-full") && Shown(runtime,"tr-full"),"Remastered brings them back");
 	Check(host.errors == 0,"no runtime diagnostics across the MP HUD exercise");
 	runtime.Shutdown();
 }
@@ -350,6 +382,7 @@ static void CheckRemasteredVehicleHud(ScreenHost& host, const char* path) {
 	Document document; std::vector<Diagnostic> diagnostics;
 	if (!document.Load(source,diagnostics)) for (const auto& d : diagnostics) std::fprintf(stderr,"%s %u:%u %s\n",path,unsigned(d.line),unsigned(d.column),d.message.c_str());
 	Check(diagnostics.empty() && document.Model().id == "openq4.hud.remastered.vehicle","Remastered vehicle HUD validates");
+	RemasteredLayoutPreference(host,1);
 	Runtime runtime(host);
 	Check(runtime.Initialize(),"retained runtime");
 	Check(runtime.LoadDocument(source,"guis/hud/remastered_vehicle.q4ui",diagnostics),"Remastered vehicle HUD loads into a runtime");
@@ -430,6 +463,21 @@ static void CheckRemasteredVehicleHud(ScreenHost& host, const char* path) {
 	Check(runtime.RunEvent("electricWarningOff",7.1,effects,error) && runtime.RunEvent("hideExitmessage",7.1,effects,error),"leaving runs");
 	runtime.Frame(RemasteredViewport(1280,720),7.15);
 	Check(!Shown(runtime,"velec-l-on") && !Shown(runtime,"vpr"),"leaving clears the warning and the prompt");
+
+	// Minimal: the status bar and the prompt stay; the hit flash, warnings,
+	// radio, boss bar and notices go.
+	RemasteredLayoutPreference(host,2);
+	Check(runtime.RunEvent("showExitmessage",7.2,effects,error),"boarding again runs");
+	runtime.Frame(RemasteredViewport(1280,720),7.25);
+	Bounds minimalHull;
+	Check(runtime.GetBounds("vhull-gauge",minimalHull) && Near(minimalHull.x,hull.x) && Near(minimalHull.y,hull.y),
+		"Minimal keeps the vehicle status bar in place");
+	Check(!Shown(runtime,"hit-full") && !Shown(runtime,"cl-full") && !Shown(runtime,"cr-full") && !Shown(runtime,"tr-full") &&
+		!Shown(runtime,"tc-full") && !Shown(runtime,"cc-full"),"Minimal leaves out the hit flash, warnings, radio, boss bar and notices");
+	RemasteredLayoutPreference(host,1);
+	Check(runtime.RunEvent("hideExitmessage",7.3,effects,error),"leaving again runs");
+	runtime.Frame(RemasteredViewport(1280,720),7.35);
+	Check(Shown(runtime,"hit-full") && Shown(runtime,"tr-full"),"Remastered brings them back");
 	Check(host.errors == 0,"no runtime diagnostics across the vehicle HUD exercise");
 	runtime.Shutdown();
 }
@@ -441,6 +489,7 @@ static void CheckRemasteredObjectivesHud(ScreenHost& host, const char* path, boo
 	if (!document.Load(source,diagnostics)) for (const auto& d : diagnostics) std::fprintf(stderr,"%s %u:%u %s\n",path,unsigned(d.line),unsigned(d.column),d.message.c_str());
 	Check(diagnostics.empty() && document.Model().id == std::string("openq4.hud.remastered.objectives")+(strogg ? ".strogg" : ""),
 		"Remastered objectives validate");
+	RemasteredLayoutPreference(host,1);
 	Runtime runtime(host);
 	Check(runtime.Initialize(),"retained runtime");
 	Check(runtime.LoadDocument(source,"guis/hud/remastered_objectives.q4ui",diagnostics),"Remastered objectives load into a runtime");
@@ -511,6 +560,14 @@ static void CheckRemasteredObjectivesHud(ScreenHost& host, const char* path, boo
 	runtime.Frame(RemasteredViewport(1280,720),2.35);
 	const auto failed = runtime.PresentedValue("of-title","text");
 	Check(Shown(runtime,"of") && failed && failed->text == "Protect the convoy","the failure names the objective");
+
+	// Minimal drops the new and completed notices; a failure still shows.
+	RemasteredLayoutPreference(host,2);
+	runtime.Frame(RemasteredViewport(1280,720),2.4);
+	Check(!Shown(runtime,"tl-full") && !Shown(runtime,"tr-full") && Shown(runtime,"of"),"Minimal keeps only the failure of the notices");
+	RemasteredLayoutPreference(host,1);
+	runtime.Frame(RemasteredViewport(1280,720),2.45);
+	Check(Shown(runtime,"tl-full") && Shown(runtime,"tr-full"),"Remastered brings the notices back");
 	Check(host.errors == 0,"no runtime diagnostics across the objectives exercise");
 	runtime.Shutdown();
 }
@@ -522,6 +579,7 @@ static void CheckRemasteredScoreboardHud(ScreenHost& host, const char* path) {
 	Document document; std::vector<Diagnostic> diagnostics;
 	if (!document.Load(source,diagnostics)) for (const auto& d : diagnostics) std::fprintf(stderr,"%s %u:%u %s\n",path,unsigned(d.line),unsigned(d.column),d.message.c_str());
 	Check(diagnostics.empty() && document.Model().id == "openq4.hud.remastered.scoreboard","Remastered scoreboard validates");
+	RemasteredLayoutPreference(host,1);
 	Runtime runtime(host);
 	Check(runtime.Initialize(),"retained runtime");
 	Check(runtime.LoadDocument(source,"guis/hud/remastered_scoreboard.q4ui",diagnostics),"Remastered scoreboard loads into a runtime");
@@ -594,6 +652,7 @@ static void BenchRemasteredHud(const char* path) {
 	ScreenHost host;
 	const auto source = Read(path);
 	std::vector<Diagnostic> diagnostics;
+	RemasteredLayoutPreference(host,1);
 	Runtime runtime(host);
 	Check(runtime.Initialize(),"retained runtime");
 	Check(runtime.LoadDocument(source,"guis/hud/bench.q4ui",diagnostics),"bench document loads");

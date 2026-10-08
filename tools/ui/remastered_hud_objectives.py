@@ -22,7 +22,8 @@ from __future__ import annotations
 
 import build_retained_screens as ui
 from build_retained_screens import objective_frame, picture
-from remastered_hud_base import (AND, NOT, OR, S, U, HudDocument, anchor, box, cancel, face_metrics, layout_state, num, op,
+from remastered_hud_base import (AND, NOT, OR, S, U, HudDocument, anchor, beyond_minimal, box, cancel, face_metrics,
+                                 layout_state, num, op,
                                  play, pts_path, rgb, sel, shadowed, text_box, tr, transform_value, u, vec)
 from remastered_hud_status import full
 
@@ -370,8 +371,9 @@ def objectives_document(*, strogg: bool) -> dict:
     doc.on("onInit", *doc.joins)
     root = full("objectives-root", [
         anchor(doc, "cl", [shown]),
-        anchor(doc, "tl", [new]),
-        anchor(doc, "tr", [done]),
+        # Minimal (ui_hudLayout 2) drops the notices; the held display and a failure stay.
+        anchor(doc, "tl", [beyond_minimal(doc, "tl-full", [new])]),
+        anchor(doc, "tr", [beyond_minimal(doc, "tr-full", [done])]),
         anchor(doc, "cc", [failed]),
     ])
     return doc.build(root, {"canvas": {"height": 720, "minWidth": 960},

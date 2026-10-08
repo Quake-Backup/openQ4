@@ -6,8 +6,9 @@
   layout: the on-foot, multiplayer, walker and hover tank, flatbed and tram,
   objectives and scoreboard (Tourney included) HUDs answer the stock GUIs' state
   and events from generated retained documents, with the fields the stock GUIs
-  lack published by the game, and multiplayer adds the respawn prompt.
-  [Remastered HUD](ui/remastered-hud.md).
+  lack published by the game, and multiplayer adds the respawn prompt. The
+  Minimal preset (`ui_hudLayout 2`) keeps the readouts, the crosshair and what
+  asks for the player's action. [Remastered HUD](ui/remastered-hud.md).
 
 - [x] Route the screen-space gameplay HUD families through the retained UI,
   including objectives, crosshairs, multiplayer score/chat/summary panels,

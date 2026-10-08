@@ -9,6 +9,22 @@ center screen, the side screens capped by `ui_hudWidth`, the safe inset
 `ui_hudSafeInset` and the HUD scale `ui_hudScale`. `ui_hudLayout 0` keeps the
 stock layout, drawn through the [HUD presentation bridge](hud-coverage.md).
 
+## Minimal
+
+`ui_hudLayout 2` is section 13.9's Minimal preset: the same documents, with
+everything but health, armor, ammunition and the crosshair family left out.
+What answers or asks for the player's action stays: the vehicle's Exit or
+locked prompt, the save notice, chat, voice and votes, the respawn prompt,
+the follow card, an objective failure and the held displays (objectives,
+scoreboard, statistics). It leaves out the weapon strip, pickups,
+transmissions, the boss bar, damage direction, missile warnings, objective
+notices, powerups, the vehicle's hit flash and electrical warnings, and in
+multiplayer the standings, team panels, timer, center notices, kill feed, aim
+text, the Tourney strip, the match card and the lag notice. Each document reads
+the preference as `hud.layout` and wraps the groups Minimal drops in a
+full-anchor container (`beyond_minimal`), so the remaining groups keep their
+places.
+
 ## Covered GUIs
 
 | Stock GUI | Document | Contents |

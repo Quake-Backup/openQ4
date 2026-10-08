@@ -18,7 +18,8 @@ from __future__ import annotations
 
 import build_retained_screens as ui
 import hud_svg
-from remastered_hud_base import (AND, NOT, OR, S, U, HudDocument, anchor, box, layout_state, num, op, play, cancel, pts_path,
+from remastered_hud_base import (AND, NOT, OR, S, U, HudDocument, anchor, beyond_minimal, box, layout_state, num, op, play,
+                                 cancel, pts_path,
                                  rgb, rounded_rect, sel, shadowed, shear_group, sheared_points, stroke, svg_path, text_box,
                                  tr, transform_value, u, vec)
 from remastered_hud_groups import boss_bar, missile_chevron, notices, transmission
@@ -426,14 +427,15 @@ def vehicle_document() -> dict:
     doc.on("hideLockmessage", {"op": "setState", "values": {"oq4.locked": False}})
     doc.on("hudJoin", *doc.joins)
     doc.on("onInit", *doc.joins)
+    # Minimal (ui_hudLayout 2) keeps the status bar, the prompt and the save notice.
     root = full("hud-root", [
-        hit,
-        anchor(doc, "cl", [elec_l]),
-        anchor(doc, "cr", [elec_r]),
+        beyond_minimal(doc, "hit-full", [hit]),
+        anchor(doc, "cl", [beyond_minimal(doc, "cl-full", [elec_l])]),
+        anchor(doc, "cr", [beyond_minimal(doc, "cr-full", [elec_r])]),
         anchor(doc, "bc", [bar], scale="hud.centerScale"),
-        anchor(doc, "tr", [radio]),
-        anchor(doc, "tc", [boss, missile_text, exit_notice, saved]),
-        anchor(doc, "cc", [missile]),
+        anchor(doc, "tr", [beyond_minimal(doc, "tr-full", [radio])]),
+        anchor(doc, "tc", [beyond_minimal(doc, "tc-full", [boss, missile_text, exit_notice]), saved]),
+        anchor(doc, "cc", [beyond_minimal(doc, "cc-full", [missile])]),
         anchor(doc, "br", [prompt]),
     ])
     return doc.build(root, {"canvas": {"height": 720, "minWidth": 960},

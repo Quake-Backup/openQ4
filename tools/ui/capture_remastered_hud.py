@@ -57,6 +57,8 @@ def on_foot(gui):
         'set ui_hudScale 1', 'set ui_hudSafeInset 0',
         *equip(0), 'waitMsec 1300', shot('unlimited'),
         'set ui_hudLayout 0', 'waitMsec 400', shot('classic'), 'set ui_hudLayout 1', 'waitMsec 400', shot('restored'),
+        'set ui_hudLayout 2', *hud(gui, 'event radioChatterUp'), 'waitMsec 400', shot('minimal'),
+        *hud(gui, 'event radioChatterDown'), 'set ui_hudLayout 1',
     ]
 
 
@@ -78,6 +80,7 @@ def in_vehicle(vehicle):
         shot('veh-locked'), *hud(gui, 'event hideLockmessage'),
         'set ui_hudScale 1.25', 'waitMsec 300', shot('veh-scaled'), 'set ui_hudScale 1',
         'set ui_hudLayout 0', 'waitMsec 400', shot('veh-classic'), 'set ui_hudLayout 1', 'waitMsec 400', shot('veh-restored'),
+        'set ui_hudLayout 2', 'waitMsec 400', shot('veh-minimal'), 'set ui_hudLayout 1',
     ]
 
 
@@ -115,6 +118,7 @@ SCENARIOS = {
         *equip(2), 'waitMsec 250', shot('mp-strip'),
         'set ui_hudScale 1.25', 'waitMsec 300', shot('mp-scaled'), 'set ui_hudScale 1',
         'set ui_hudLayout 0', 'waitMsec 400', shot('mp-classic'), 'set ui_hudLayout 1', 'waitMsec 400', shot('mp-restored'),
+        'set ui_hudLayout 2', 'waitMsec 400', shot('mp-minimal'), 'set ui_hudLayout 1',
     ]),
     'mp-pace': ('mp:mp/q4dm1', [
         'set g_autoExecAfterMapLoad ""', 'waitMsec 2500', 'set ui_hudProfile 2', 'waitMsec 8000', 'set ui_hudProfile 0',

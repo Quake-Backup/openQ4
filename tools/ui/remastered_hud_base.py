@@ -381,3 +381,16 @@ def layout_state(doc: HudDocument) -> None:
         doc.number(key, initial)
     doc.cvar("oq4.reduced", "ui_retainedReducedMotion")
     doc.cvar("oq4.opaque", "ui_retainedOpaqueBacking")
+    # 1 Remastered, 2 Minimal (section 13.9); Classic (0) never loads a document.
+    doc.cvar("hud.layout", "ui_hudLayout", "number", 1)
+
+
+def beyond_minimal(doc: HudDocument, ident: str, children: list) -> dict:
+    """Groups the Minimal layout leaves out (section 13.9, ui_hudLayout 2).
+    Minimal keeps health, armor, ammunition and the crosshair family, plus
+    whatever answers or asks for the player's action: prompts, the save
+    notice, chat and votes, held displays and the follow card. The wrapper
+    fills its anchor, so the groups keep their coordinates."""
+    node = ui.group(ident, {**ui.FULL, "display": ui.keyword("block")}, children)
+    doc.show(ident, op("!=", S("hud.layout"), 2))
+    return node
