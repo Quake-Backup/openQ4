@@ -102,6 +102,13 @@ static void CoverageChecks() {
 	Polygon(path,{P(0,0),P(8,0),P(0,8)}); build(path);
 	Check(Near(SampleAlpha(mesh,3.381,4.619),.5),"45-degree boundary has half-pixel coverage");
 	Check(Near(AlphaMass(mesh),32),"diagonal coverage conserves triangle area");
+	// A path that opts out of edge coverage keeps the triangle itself: its
+	// area exactly, no fringe cells, a fraction of the vertices.
+	const size_t covered = mesh.vertices.size();
+	path.antialias = false; build(path);
+	Check(Near(AlphaMass(mesh),32) && mesh.vertices.size() == 3 && mesh.vertices.size() < covered,
+		"an aliased path draws its plain triangles without edge coverage");
+	path.antialias = true;
 	auto compare = [&](VectorPath shape, VectorTransform transform, double alpha) {
 		options.transform = transform; build(shape);
 		auto rawOptions = options; rawOptions.antialias = false;

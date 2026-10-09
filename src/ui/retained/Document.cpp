@@ -825,9 +825,13 @@ private:
 		return result;
 	}
 	VectorPath ReadPath(const Json::Value& value, const std::string& path, bool mask = false) {
-		Fields(value,path,{"id","commands","fillRule","fill","stroke","blend","extensions"});
+		Fields(value,path,{"id","commands","fillRule","fill","stroke","blend","antialias","extensions"});
 		VectorPath result;
 		result.id = Id(value["id"],path+"/id");
+		if (value.isMember("antialias")) {
+			Require(value["antialias"].isBool(),value["antialias"],path+"/antialias","Expected a boolean antialias");
+			result.antialias = value["antialias"].asBool();
+		}
 		if (value.isMember("fillRule")) {
 			Require(value["fillRule"] == "nonzero" || value["fillRule"] == "evenodd",value["fillRule"],path+"/fillRule","Expected nonzero or evenodd fill rule");
 			if (value["fillRule"] == "evenodd") result.fillRule = FillRule::EvenOdd;

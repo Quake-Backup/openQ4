@@ -125,6 +125,11 @@ scale to bound error. Mirroring retains winding semantics.
 
 libtess2 resolves fills/stroke unions. The current antialiased path compiles its
 normalized boundaries into coverage quads; geometric hit testing uses triangles.
+A path may set `"antialias": false` to draw those plain triangles with hard
+pixel edges instead: a few vertices rather than coverage quads along every edge
+pixel, whose count grows with the edge's length and the output resolution. It
+suits large soft or faint decorative shapes (the implant overlay's washes, wide
+bands, glows and runes); keep coverage on edges that read as lines.
 The paint compiler splits geometry at gradient stops. Native elements submit
 through RmlUi's render manager with the already
 applied transform disabled for that submission. Existing clipping, render order
@@ -132,6 +137,12 @@ and resource lifetime remain in control. The subsequent
 [performance checkpoint](runtime-performance.md) separates opacity updates from
 path compilation and reuses whole-pixel translations. It also patches the pinned
 tessellator to double precision for stable thin rails during fractional motion.
+An element moving by translation alone keeps compilations at quarter-pixel
+phases. While it slides, its cache region is its own box, which does not move in
+that translated space, rather than the visible part of the view: a fast scroller
+several views tall would otherwise cross a new 256-pixel block, and recompile,
+every few frames. The box may be at most four views in area; a fully
+transparent element is neither compiled nor submitted.
 
 Video/font generation changes recreate vector elements with their document. The
 fixture contains no baked SVG image, copied retail texture or material script.

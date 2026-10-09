@@ -24,7 +24,7 @@ import math
 
 import build_retained_screens as ui
 import hud_svg
-from remastered_hud_base import (NOT, S, U, HudDocument, anchor, cancel, gameplay_root, join_events, layout_state, num,
+from remastered_hud_base import (NOT, S, U, HudDocument, anchor, cancel, gameplay_root, join_events, layout_state, num, op,
                                  play, shadowed, tr, transform_value, u, vec)
 from remastered_hud_status import full
 
@@ -164,12 +164,16 @@ def _commands(polygons: list, *, scale: float = U, ox: float = 0, oy: float = 0)
     return commands
 
 
+# Edge coverage costs geometry along every edge pixel, so only the bright
+# rims keep it: the washes, the wide bands, the glows, the static and the
+# faint runes draw hard pixel edges ("antialias": false), where it never shows.
 def _fill(ident: str, polygons: list, colour: list, alpha: float, **kw) -> dict:
-    return {"id": ident, "commands": _commands(polygons, **kw), "fill": ui.solid(_rgba(colour, alpha)), "blend": "additive"}
+    return {"id": ident, "commands": _commands(polygons, **kw), "fill": ui.solid(_rgba(colour, alpha)), "blend": "additive",
+            "antialias": False}
 
 
-def _rim(ident: str, polygons: list, colour: list, alpha: float, width: float, **kw) -> dict:
-    return {"id": ident, "commands": _commands(polygons, **kw), "fill": {"type": "none"}, "blend": "additive",
+def _rim(ident: str, polygons: list, colour: list, alpha: float, width: float, smooth: bool, **kw) -> dict:
+    return {"id": ident, "commands": _commands(polygons, **kw), "fill": {"type": "none"}, "blend": "additive", "antialias": smooth,
             "stroke": {"paint": ui.solid(_rgba(colour, alpha)), "widthDp": round(width * U, 3), "minimumPixels": 0, "join": "miter",
                        "cap": "butt"}}
 
@@ -180,7 +184,8 @@ def hex_paths(prefix: str, origins: list, *, gain: float = 1.0, bands=BANDS) -> 
     shapes = [[(x + px, y + py) for px, py in HEX] for x, y in origins]
     paths = [_fill(prefix + "-wash", shapes, GOLD, WASH * gain)]
     for index, (width, alpha) in enumerate(bands):
-        paths.append(_rim(f"{prefix}-rim{index}", [inset(shape, width / 2) for shape in shapes], GOLD, alpha * gain, width))
+        paths.append(_rim(f"{prefix}-rim{index}", [inset(shape, width / 2) for shape in shapes], GOLD, alpha * gain, width,
+                          smooth=index == 0))
     return paths
 
 
@@ -248,10 +253,10 @@ def corner_paths() -> list:
         return commands
     corners = [(False, False), (True, False), (False, True), (True, True)]
     paths = [{"id": "wash", "commands": path("wash", [place(CORNER, r, b) for r, b in corners]),
-              "fill": ui.solid(_rgba(GOLD, WASH)), "blend": "additive"}]
+              "fill": ui.solid(_rgba(GOLD, WASH)), "blend": "additive", "antialias": False}]
     for index, (width, alpha, polygon) in enumerate(bands):
         paths.append({"id": f"rim{index}", "commands": path(f"rim{index}", [place(polygon, r, b) for r, b in corners]),
-                      "fill": ui.solid(_rgba(GOLD, alpha)), "blend": "additive"})
+                      "fill": ui.solid(_rgba(GOLD, alpha)), "blend": "additive", "antialias": index == 0})
     return paths
 
 
@@ -270,7 +275,7 @@ def glow_paths(colour: list, side: float, end: float) -> list:
                                           {"id": "l2", "op": "line", "points": [[b[0], b[1]]]},
                                           {"id": "l3", "op": "line", "points": [[a[0], b[1]]]},
                                           {"id": "z", "op": "close"}],
-                "fill": {"type": "linear", "from": start, "to": stop, "stops": stops}, "blend": "additive"}
+                "fill": {"type": "linear", "from": start, "to": stop, "stops": stops}, "blend": "additive", "antialias": False}
     trailing = {"fraction": 1, "dp": -w}
     bottom = {"fraction": 1, "dp": -h}
     return [rect("leading", (0, 0), (w, one), [0, 0], [w, 0]),
@@ -297,7 +302,7 @@ def static_paths(prefix: str, runs: list) -> list:
             for k, (px, py) in enumerate(corners):
                 commands.append({"id": f"c{len(commands)}", "op": "move" if k == 0 else "line", "points": [[px, py]]})
             commands.append({"id": f"c{len(commands)}", "op": "close"})
-        paths.append({"id": f"{prefix}{index}", "commands": commands, "fill": ui.solid([*colour, level])})
+        paths.append({"id": f"{prefix}{index}", "commands": commands, "fill": ui.solid([*colour, level]), "antialias": False})
     return paths
 
 
@@ -347,7 +352,7 @@ def rune_commands(text_lines: list, *, x: float, y: float, height: float, pitch:
 
 
 def rune_path(ident: str, commands: list, colour: list, height: float) -> dict:
-    return {"id": ident, "commands": commands, "fill": {"type": "none"},
+    return {"id": ident, "commands": commands, "fill": {"type": "none"}, "antialias": False,
             "stroke": {"paint": ui.solid(colour), "widthDp": round(height / 7 * U, 3), "minimumPixels": 0, "join": "miter",
                        "cap": "square"}}
 
@@ -388,17 +393,22 @@ def readout_cycle(doc: HudDocument, ident: str, values: list, cycle: int, *, siz
     return nodes, ident + "-cycle"
 
 
-def rune_field(doc: HudDocument, ident: str, left: float, top: float, width: float, height: float, rate: float, seed: int) -> tuple:
+def rune_field(doc: HudDocument, ident: str, edges: dict, width: float, height: float, rate: float, seed: int) -> tuple:
     """A stock scrolltext window: lines of runes rising through a clipped
-    window (white at 0.2), as fast as the stock material scrolls."""
+    window (white at 0.2), as fast as the stock material scrolls. The window
+    sits on the view's edges by the HUD's insets (`edges` maps left, right,
+    top or bottom to u), outside the scaled anchors: a clip under a transform
+    would cut every vertex of the moving runes on the CPU each frame."""
     glyph, pitch, lines = 3.6, 5.5, 16
     period = lines * pitch
     rows = rune_lines(seed, lines, 8, spaced=True)
     commands = rune_commands(rows + rows, x=1, y=0.5, height=glyph, pitch=pitch, advance=glyph * 1.05)
     column = vec(ident + "-runes", [rune_path("r", commands, [1, 1, 1, 0.2], glyph)],
                  {**ui.absolute(left=0, top=0, width=u(width), height=u(period * 2)), "transform": ui.transform()})
-    window = ui.group(ident, {**ui.absolute(left=u(left), top=u(top), width=u(width), height=u(height)),
+    window = ui.group(ident, {**ui.absolute(**{side: u(value) for side, value in edges.items()}, width=u(width), height=u(height)),
                               "display": ui.keyword("block"), "overflow": ui.keyword("hidden")}, [column])
+    for side, value in edges.items():
+        doc.bind(f"{ident}.{side}", ident, side, op("+", S("hud." + side), u(value)))
     duration = round(period / rate * 1000)
     doc.timeline(ident + "-scroll", duration,
                  [tr(column["id"], "transform", [(0, transform_value(0, 0)), (duration, transform_value(0, u(-period)))])], iterations=0)
@@ -493,7 +503,7 @@ def medchange_document() -> dict:
             fill = ui.solid(_rgba(BAR, 0.4)) if k == 8 else ui.linear((0, u(top)), (0, u(top + 12)),
                                                                      [(0, _rgba(BAR, 0.2)), (1, _rgba(BAR, 0.13))])
             segments.append({"id": f"s{k}", "commands": _commands([[(sx, top), (sx + 3.4, top), (sx + 3.4, top + 12), (sx, top + 12)]]),
-                             "fill": fill})
+                             "fill": fill, "antialias": False})
         proc.append(vec(f"med-bar{index}", segments))
     axes, axis_loops = [], []
     for name, values, top, cycle in AXES:
@@ -501,11 +511,13 @@ def medchange_document() -> dict:
                                     top=top + (22 - 19.2) / 2)
         axes += nodes
         axis_loops.append(loop)
-    field1, scroll1 = rune_field(doc, "med-runes1", 574, 70, 58, 72, 0.35 * 72, 7)
-    field2, scroll2 = rune_field(doc, "med-runes2", 2, 350, 67, 81, 0.12 * 81, 11)
+    # scrolltext1 (574, 70, 58x72) at the trailing screen's top, scrolltext2
+    # (2, 350, 67x81) at the leading screen's bottom.
+    field1, scroll1 = rune_field(doc, "med-runes1", {"right": 640 - 574 - 58, "top": 70}, 58, 72, 0.35 * 72, 7)
+    field2, scroll2 = rune_field(doc, "med-runes2", {"left": 2, "bottom": 480 - 350 - 81}, 67, 81, 0.12 * 81, 11)
     loops += proc_loops + axis_loops + [scroll1, scroll2]
-    frame = full("med-frame", [corners, anchor(doc, "bl", proc + [field2], ident="med-bl"),
-                               anchor(doc, "tr", axes + [field1], ident="med-tr")], opacity=num(1))
+    frame = full("med-frame", [corners, anchor(doc, "bl", proc, ident="med-bl"), anchor(doc, "tr", axes, ident="med-tr"), field1, field2],
+                 opacity=num(1))
 
     overlay = full("med-all", [data_root, pink, colour, glow, center, frame], display=ui.keyword("none"))
     doc.show(overlay["id"], S("oq4.medActive"))

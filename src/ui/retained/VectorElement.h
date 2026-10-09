@@ -46,6 +46,7 @@ private:
 	Host* host = nullptr;
 	RuntimeStatistics* statistics = nullptr;
 	std::array<double,12> previous{}; // The exact signature of the last render.
+	double previousX = 0, previousY = 0; // Its whole output translation.
 	bool valid = false;
 };
 class VectorElement final : public Rml::Element {

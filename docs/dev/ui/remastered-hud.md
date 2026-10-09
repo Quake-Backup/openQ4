@@ -302,6 +302,13 @@ walking every value:
   side, so each window's content box reaches past its trailing edge; the
   native checks measure the drawn fill, not only the window's transform.
 
+- The implant overlay keeps edge coverage only on its bright cell and corner
+  rims; its washes, wide bands, glows, static and runes set `"antialias": false`
+  (vector-paths.md). With the sliding cache region for its falling data, that
+  took its frames in the optimized native host from about 13 ms (353K
+  vertices) to about 5 ms (163K) while the cells light, and its warm frames to
+  no recompiles; the first activated frame compiles everything once.
+
 `openq4-ui-retained-screens-test --hud-bench <document>` reports event, state
 and frame costs for a document.
 

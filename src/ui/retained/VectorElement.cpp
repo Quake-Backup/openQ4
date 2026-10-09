@@ -124,6 +124,13 @@ void VectorGeometry::Render(Rml::Element& element, bool inheritOpacity) {
 		bounds.bottom = std::clamp(state.scissor_region.Bottom(),bounds.top,viewport.y);
 	}
 	if (bounds.left == bounds.right || bounds.top == bounds.bottom) return;
+	// An element sliding by translation alone since its last render: same size
+	// and linear transform, another position.
+	const double absoluteX = options.transform.tx, absoluteY = options.transform.ty;
+	const bool sliding = valid && previous[0] == options.widthDp && previous[1] == options.heightDp && previous[2] == options.transform.a &&
+		previous[3] == options.transform.b && previous[4] == options.transform.c && previous[5] == options.transform.d &&
+		(absoluteX != previousX || absoluteY != previousY);
+	previousX = absoluteX; previousY = absoluteY;
 	// Whole-pixel translation preserves coverage. Keep only the fractional
 	// phase in the compiled mesh and apply its integer part at submission.
 	const double offsetX = std::floor(options.transform.tx), offsetY = std::floor(options.transform.ty);
@@ -133,9 +140,29 @@ void VectorGeometry::Render(Rml::Element& element, bool inheritOpacity) {
 	// The render manager still clips to the exact current scissor rectangle.
 	auto lower = [](double value) { return static_cast<int>(std::clamp(std::floor(value/256)*256,-1000000.0,1000000.0)); };
 	auto upper = [](double value) { return static_cast<int>(std::clamp(std::ceil(value/256)*256,-1000000.0,1000000.0)); };
-	const VectorPixelBounds cachedBounds{lower(bounds.left-offsetX),lower(bounds.top-offsetY),upper(bounds.right-offsetX),upper(bounds.bottom-offsetY)};
+	VectorPixelBounds cachedBounds{lower(bounds.left-offsetX),lower(bounds.top-offsetY),upper(bounds.right-offsetX),upper(bounds.bottom-offsetY)};
+	// Only where the view alone clips it: a scissored element keeps the visible
+	// region, so its compilation still matches a fresh one vertex for vertex.
+	if (sliding && !state.scissor_region.Valid()) {
+		// The view's region slides across a moving element, and each new block
+		// would recompile it (a scrolling data layer several views tall). Its
+		// own box does not move in this space: cover that instead, while it is
+		// no larger than a few views, and keep the phases' compilations.
+		const auto& t = options.transform;
+		const double xs[4] = {t.tx,t.tx+t.a*options.widthDp,t.tx+t.c*options.heightDp,t.tx+t.a*options.widthDp+t.c*options.heightDp};
+		const double ys[4] = {t.ty,t.ty+t.b*options.widthDp,t.ty+t.d*options.heightDp,t.ty+t.b*options.widthDp+t.d*options.heightDp};
+		const VectorPixelBounds own{lower(*std::min_element(xs,xs+4)),lower(*std::min_element(ys,ys+4)),
+			upper(*std::max_element(xs,xs+4)),upper(*std::max_element(ys,ys+4))};
+		const double ownArea = double(own.right-own.left)*double(own.bottom-own.top);
+		const bool outgrows = own.left < cachedBounds.left || own.top < cachedBounds.top || own.right > cachedBounds.right ||
+			own.bottom > cachedBounds.bottom;
+		if (outgrows && ownArea <= 4.0*std::max(1.0,double(viewport.x)*double(viewport.y))) cachedBounds = own;
+	}
 	options.pixelBounds = cachedBounds;
 	const double opacity = inheritOpacity ? std::clamp(static_cast<double>(element.GetComputedValues().opacity()),0.0,1.0) : 1;
+	// Fully transparent geometry adds nothing under any blend: neither
+	// tessellate nor submit it (a HUD keeps many faded nodes at zero).
+	if (opacity <= 0) return;
 	std::array<double,12> signature{options.widthDp,options.heightDp,options.transform.a,options.transform.b,
 		options.transform.c,options.transform.d,options.transform.tx,options.transform.ty,
 		static_cast<double>(cachedBounds.left),static_cast<double>(cachedBounds.top),static_cast<double>(cachedBounds.right),static_cast<double>(cachedBounds.bottom)};

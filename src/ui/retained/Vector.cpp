@@ -566,10 +566,12 @@ double VectorTransform::MaximumScale() const {
 	const double s1 = a*a+b*b, s2 = c*c+d*d, cross = a*c+b*d;
 	return std::sqrt(std::max(0.0,.5*(s1+s2+std::hypot(s1-s2,2*cross))));
 }
-bool TessellatePath(const VectorPath& path, const VectorOptions& options, VectorMesh& output, std::string& diagnostic) {
+bool TessellatePath(const VectorPath& path, const VectorOptions& requested, VectorMesh& output, std::string& diagnostic) {
 	diagnostic.clear();
 	try {
-		Validate(options);
+		Validate(requested);
+		VectorOptions options = requested;
+		options.antialias = requested.antialias && path.antialias;
 		VectorMesh candidate;
 		VectorTransform inverse;
 		if (options.transform.Inverse(inverse)) {

@@ -60,6 +60,9 @@ struct VectorPath {
 	VectorPaint fill;
 	VectorStroke stroke;
 	PathBlend blend = PathBlend::Normal;
+	// False draws hard pixel edges: a few triangles instead of per-pixel edge
+	// coverage, for large soft or faint decorative shapes.
+	bool antialias = true;
 };
 struct VectorVertex {
 	double x = 0, y = 0;
