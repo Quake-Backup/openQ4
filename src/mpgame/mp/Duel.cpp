@@ -195,6 +195,51 @@ void rvDuelGameState::PromoteFromQueue( void ) {
 
 /*
 ================
+rvDuelGameState::PreferHumanContenders
+
+Bots keep a duel server from standing empty; they must never be the reason a
+person cannot play.  Casual Duel only starts its countdown with a human in a
+seat, and seats change only between matches, so two seated bots used to hold
+a joining human in the queue for good: warmup never ended, so the rotation
+that would have let them in never ran.  A bot in a seat while a human waits
+goes to the back of the queue and the first waiting human takes the seat.
+================
+*/
+void rvDuelGameState::PreferHumanContenders( void ) {
+	for ( int seat = 0; seat < 2; seat++ ) {
+		if ( contenders[ seat ] < 0 || !botManager.IsBot( contenders[ seat ] ) ) {
+			continue;
+		}
+
+		int waiting = -1;
+		for ( int i = 0; i < queue.Num(); i++ ) {
+			if ( !botManager.IsBot( queue[ i ] ) ) {
+				waiting = i;
+				break;
+			}
+		}
+		if ( waiting < 0 ) {
+			return;
+		}
+
+		const int bot = contenders[ seat ];
+		const int human = queue[ waiting ];
+		contenders[ seat ] = human;
+		queue.RemoveIndex( waiting );
+		queue.Append( bot );
+
+		// The person was held in spectator by the loop at the end of Run();
+		// ask for the respawn their join would have made.  The bot is put
+		// back in spectator by the same loop on this frame.
+		idEntity *ent = gameLocal.entities[ human ];
+		if ( ent && ent->IsType( idPlayer::GetClassType() ) ) {
+			static_cast< idPlayer * >( ent )->forceRespawn = true;
+		}
+	}
+}
+
+/*
+================
 rvDuelGameState::RotateLoser
 
 Winner stays on.  When a match ends the loser goes to the back of the queue
@@ -361,6 +406,7 @@ void rvDuelGameState::Run( void ) {
 		// interrupted by a third player walking in.
 		if ( currentState == WARMUP || currentState == INACTIVE || currentState == NEXTGAME ) {
 			PromoteFromQueue();
+			PreferHumanContenders();
 		}
 	}
 

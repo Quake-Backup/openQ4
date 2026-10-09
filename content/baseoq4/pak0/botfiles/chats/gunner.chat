@@ -144,6 +144,16 @@ characterChat "Gunner" {
 		"Suppression ends only in this sector."
 		"Gunner returns to the war machine."
 	}
+	chat order {
+		"Directive received."
+		"Command acknowledged, $other. Executing."
+		"New parameters accepted."
+		"Orders logged. Unit redeploying."
+		"Compliance confirmed. Nail feed stands ready."
+		"Directive from $other accepted. Proceeding."
+		"Task reassigned. Combat unit moving."
+		"Acknowledged. Targets along the route will fall."
+	}
 	reply help {
 		priority 40
 		source any

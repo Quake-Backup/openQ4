@@ -2,6 +2,19 @@
 
 ## 0.13.2 release candidate
 
+- [x] Bring the multiplayer bots to professional grade
+  ([Multiplayer bots](mp-bots.md)). Navigation: hazard volumes, long drops,
+  proven gap jumps, sealed jump-pad and teleporter volumes, exact reachability,
+  ALT landmarks, body-free agent sweeps, off-route recovery and drop
+  push-through; path failures under 2% and stuck reports down from 29 to 3-4
+  per two minutes on q4dm5. Intelligence: hearing, item timing, patrols,
+  fight-or-flight, arming and buying, damage-model splash safety, route-aware
+  role allocation and human team orders in team chat with in-character
+  acknowledgments. Cost: landmark-ordered goal pricing instead of a field per
+  decision, link compaction and node-major landmark rows. Verified with the
+  in-tree contract and native fixture suites and `tools/tests/mp_bot_audit.py`
+  runs on q4dm5 (DM and Team DM with a follow order).
+
 - [x] Lay out the gameplay HUD in visual specification section 14's Remastered
   layout: the on-foot, multiplayer, walker and hover tank, air-defence cannon,
   Awakening space cannon (with its ship-status panel), MCC cannon (with the

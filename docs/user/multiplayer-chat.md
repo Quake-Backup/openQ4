@@ -17,7 +17,9 @@ olive frame: new messages appear for three seconds and fade out over another
 Your existing **Chat** and **Team Chat** bindings still work. The console
 commands `messagemode` and `messagemode2` are aliases for
 `clientMessageMode` and `clientMessageMode 1`. `say_team` also aliases `sayTeam`.
-Chat remains a multiplayer feature, including local games with bots.
+Chat remains a multiplayer feature, including local games with bots. In a
+team game, team chat also gives your bots orders, such as `everyone follow me`;
+see [Giving bots orders](server-setup.md#giving-bots-orders).
 
 | While typing | Action |
 | --- | --- |

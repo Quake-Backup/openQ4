@@ -163,6 +163,8 @@ typedef struct botTraits_s {
 	// -- decision quality --
 	float			weaponSkill;			// 0..1, chance the range-correct weapon is chosen over merely the first available
 	float			targetSelection;		// 0..1, chance the best enemy is chosen rather than simply the nearest
+	float			hearing;				// multiplier on how far gunfire, footsteps and pickups are heard
+	float			itemTiming;				// 0..1, chance a witnessed pickup's respawn is tracked, and how precisely
 
 	// -- chat --
 	float			chatiness;				// 0..1, chance a chat-worthy event actually produces a line
@@ -254,6 +256,7 @@ typedef enum rvBotChatEvent_e {
 	BOTCHAT_MATCH_WIN,			// the match ended and it won
 	BOTCHAT_MATCH_LOSE,			// the match ended and it did not
 	BOTCHAT_FAREWELL,			// leaving the server
+	BOTCHAT_ORDER,				// a team-mate gave it an order in team chat; $other is who
 	BOTCHAT_NUM
 } rvBotChatEvent;
 

@@ -79,14 +79,16 @@ public:
 	virtual	bool	IsType( gameStateType_t type ) const;
 	static gameStateType_t GetClassType( void );
 
+	// a team mate may only thaw somebody they can actually see, unless the
+	// server says otherwise.  Public so a rescuing bot holds exactly where the
+	// rule counts its contact, not merely somewhere near the body.
+	bool			CanReachToThaw( idPlayer* frozen, idPlayer* mate, int thawRadiusSquared ) const;
+
 protected:
 	virtual void	RoundBegin( void );
 
 private:
 	void			ThawPlayer( idPlayer* frozen, idPlayer* thawer );
-	// a team mate may only thaw somebody they can actually see, unless the
-	// server says otherwise
-	bool			CanReachToThaw( idPlayer* frozen, idPlayer* mate, int thawRadiusSquared ) const;
 	// somewhere the thawed player can stand without telefragging their rescuer
 	bool			FindThawSpot( idPlayer* frozen, idPlayer* thawer, idVec3 &origin ) const;
 

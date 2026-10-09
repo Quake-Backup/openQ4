@@ -19,8 +19,8 @@ players themselves move through.
 
 ## The navmesh
 
-`src/mpgame/bots/NavMesh.{h,cpp}` (in the openQ4-GameLibs repository) builds a
-multi-level grid navmesh at map load.
+`src/mpgame/bots/NavMesh.{h,cpp}` builds a multi-level grid navmesh at map
+load.
 
 **Generation** follows the same shape as a modern voxel navmesh generator -
 rasterise the walkable surface, connect what a walking agent can traverse - but
@@ -31,67 +31,91 @@ the player's bounding box can actually make that move:
    player already in the map. These are places the map guarantees are standable,
    and flooding out from them avoids probing the solid majority of the world
    bounds.
-2. **Flood fill.** From each node, the eight neighbouring grid cells are probed
+2. **Hazards.** `trigger_hurt` volumes are read before the flood. One that gibs,
+   deals 100 or more per touch or 30 or more per second refuses the ground it
+   covers outright, as lava and slime do; a survivable one, one that starts
+   switched off or one riding a mover makes its ground cost 384 more to cross.
+   A mover sitting just above a lethal volume (a trapdoor) or one that crushes
+   is priced the same way.
+3. **Flood fill.** From each node, the eight neighbouring grid cells are probed
    with `TryStep`, which sweeps the player's bounding box - `pm_bboxwidth` by
    `pm_normalheight`, taken live from the cvars the server is running - flat,
    then lifted by `pm_stepsize`, then lifted by `pm_jumpheight`, and drops
    whatever it reaches onto the floor. The cheapest lift that works decides the
    link type. A node is keyed by grid cell *and* floor height, so a catwalk over
-   a corridor is two nodes in the same column.
-3. **Off-mesh links.** `rvJumpPad` and teleporter `idTrigger_Multi` volumes get
+   a corridor is two nodes in the same column. Drops reach 512 units and pay
+   for the fall damage they would cost. A proven level walk links back at once,
+   which halves the build's collision sweeps.
+4. **Gap jumps.** From a ledge with a straight run-up behind it, each direction
+   is searched for the first floor beyond a gap within a running jump's reach,
+   and the jump is linked only when a ballistic sweep of the real hull at 85% of
+   run speed proves it clears and lands.
+5. **Off-mesh links.** `rvJumpPad` and teleporter `idTrigger_Multi` volumes get
    a one-way link from the volume to their target. On a stock Quake 4
-   multiplayer map these are what keep the graph a single component - `q4dm1`
-   alone currently produces 18 of them.
-4. **Areas.** Connected components over the links treated as undirected. Two
-   nodes in different components definitely cannot reach each other, which lets
-   a bot reject an unreachable goal without paying for a search. The converse is
-   not guaranteed (a one-way drop leaves both ends in one component), so this is
-   only ever used to say no.
+   multiplayer map these are what keep the graph a single component.
+6. **Transport sealing.** A pad or teleporter takes whoever touches it, so every
+   node whose standing box touches a live volume keeps the transport as its only
+   exit. A route either takes the pad or goes round it; it can never walk across
+   one by accident. Links into the volume stay - entering it is how a route
+   takes the transport - and a route never starts or ends on one.
+7. **Compaction.** Each node's links are rewritten into one contiguous run, so
+   every search walks memory in order instead of chasing a list through a
+   quarter of a million entries.
+8. **Reachability.** Strongly connected components and the transitive closure
+   of their condensation answer "can A reach B" exactly in constant time, so a
+   goal nobody can reach - an enemy standing in a one-way pit - is refused
+   without a search.
+9. **Landmarks.** Eight far-apart nodes of the largest component carry exact
+   travel costs to and from every node (ALT). The triangle inequality turns
+   them into a lower bound on any route, which guides A* around walls and stays
+   tight across the cheap long-range transports that collapse a straight-line
+   bound. Each node's eight pairs sit in one 64-byte row, so a bound costs one
+   cache line.
 
-Traversal types are `WALK`, `DROP`, `JUMP`, `JUMPPAD` and `TELEPORT`.
+Traversal types are `WALK`, `DROP`, `JUMP`, `JUMPPAD` and `TELEPORT`. Every
+navmesh sweep tests the world and solid entities but never a body: multiplayer
+players carry `CONTENTS_SOLID` for their combat box, and a sweep that collided
+with them refused route snaps on the very floor a bot stood on.
 
-**Routing** uses A* over a binary heap with weighted travel costs. Ordinary
-walking pays distance, jumps and drops add a safety/time penalty, and jump pads
-and teleporters retain their short transport cost. The Euclidean heuristic is
-scaled by the graph's smallest edge-cost-to-distance ratio, which keeps it
-admissible even when a transport covers a long distance cheaply without
-discarding all A* guidance. Search scratch is tagged by a serial number rather
-than cleared, so a query costs only the nodes it opens. If two exact positions
-snap to the same node but a pillar blocks the direct line, routing validates a
-two-leg path through that node instead of reporting a false failure. Route
-comparisons include the exact access and exit legs as well as graph traversal
-penalties and shortcuts, not only the distance between stored corners.
+**Routing** is A* over a binary heap with weighted travel costs, guided by the
+larger of the landmark bound and the straight-line distance scaled by the
+graph's cheapest cost-to-distance ratio; both are consistent, and a node the
+landmarks prove cannot lead to the goal is never opened. Ordinary walking pays
+distance, jumps and drops add a safety/time penalty, and jump pads and
+teleporters retain their short transport cost. Search scratch is tagged by a
+serial number rather than cleared, so a query costs only the nodes it opens. A
+selected route is then swept against the solids that can move after the build -
+movers, doors, plats and loose physics objects - and only those; a stale edge is
+excluded and A* retries. Ordinary unlocked touch/proximity doors count as open,
+because approaching them opens them; locked, no-touch, keyed or scripted doors
+stay barriers.
 
-A selected route is swept against live solid entities before use while the
-sampled static-world topology remains authoritative. If a mover has made one or
-more stored edges stale, those edges are excluded and A* retries, allowing the
-bot to repair its route around temporary blockers without re-sampling stairs or
-rebuilding the whole mesh. Ordinary unlocked touch/proximity doors are treated
-as walk-through links during generation and validation because approaching them
-opens them naturally. Locked, no-touch, keyed, scripted or otherwise gated
-doors remain real barriers instead of being routed through optimistically.
-When a moving player is genuinely more than one step above standable ground,
-routing conservatively projects that endpoint onto the landing floor; grounded
-item and objective endpoints retain the strict wall/floor proof.
+Route endpoints in the air - a jumping bot, an enemy mid-jump - are projected
+onto whatever surface is under them before they snap to a node. A snap or a
+string-pulled shortcut must pass `WalkableLine`: a box sweep, floor samples
+along the line, no lethal ground, no step onto a transport, and no rise or fall
+steeper than a walk, so a bot under a balcony never routes from the balcony.
 
-The node chain is then string-pulled: a corner is dropped when a box sweep
-proves the shortcut is clear *and* the ground under it stays close, so a
-shortcut can never cut a corner across a pit. Smoothing never skips a link that
-has to be entered deliberately. Every jump, drop, jump pad and teleporter
-retains both its entry and exit, including when it is the first link in a route.
+The node chain is then string-pulled: a corner is dropped when the shortcut is
+proven, and smoothing never skips a link that has to be entered deliberately.
+Every jump, drop, jump pad and teleporter retains both its entry and exit, and a
+gap jump gets a straight run-up corner in front of its takeoff. A goal that
+stands in a pad's or teleporter's reach - an item beside one, an enemy at its
+edge - ends its route at the nearest node, because nobody can stand exactly
+there without being carried off.
 
-Areas are a cheap negative test only. Item and roaming choices prove a directed
-route before committing to a goal, because a drop connects both floors into the
-same weak area without making the upper floor reachable from below. Random
-roaming walks the graph's outgoing links first, samples candidates without
-replacement and retries when live geometry blocks one, so a single bad draw
-does not leave an otherwise mobile bot idle.
+**Goal pricing** answers "which of these is worth going for" without a search
+per candidate. Every candidate gets a landmark lower bound on its route cost,
+so its weight over that bound is the most it can score; candidates are priced
+exactly, best bound first, by a corner-free A* (`rvNavMesh::PathCost`), until
+the best few exact scores beat everything still unpriced. The top few are then
+exact and FindPath proves only the winner. On `q4dm5` this expands about 6% of
+what a whole-map Dijkstra field per decision settled.
 
-Typical output for `q4dm1` at the default 24-unit cell is about **8,350 nodes,
-60,000 links and one weak area**. Build time is machine-dependent; current
-development runs complete in under a second. Generation is lazy - it happens
-the first time a bot is added, so a server that never uses bots never pays for
-it.
+Typical output for `q4dm5` at the default 24-unit cell is about **27,800 nodes,
+204,000 links, 316 gap jumps and 44 sealed transports**, built in under two
+seconds in a debug build. Generation is lazy - it happens the first time a bot
+is added, so a server that never uses bots never pays for it.
 
 ## The bot
 
@@ -191,13 +215,23 @@ current deficit, missing weapons outrank duplicates, ammo matters only below
 capacity, and major powerups remain worth a detour. Flags and the DeadZone
 artifact are excluded because the mode objective layer owns them.
 
-The bot first makes a cheap utility-and-distance shortlist, then proves a
-directed nav route for the strongest candidates and scores their complete route
-length from its exact position. Existing claims from teammates reduce a
+Every useful pickup in range is a candidate. Goal pricing (above) returns the
+best few by utility over route cost, including the exact legs onto the mesh and
+off it, and the bot proves a real route to the winner, falling through to the
+next when live geometry blocks it. Existing claims from teammates reduce a
 pickup's value rather than hard-locking it, spreading the team across resources
 without preventing two bots from contesting something important. Critical
 health can interrupt most tasks, while a carrier's immediate capture remains
 the top movement priority except at the edge of death.
+
+Bots time items. A bot that sees or hears a pickup - the taker, anyone within
+earshot, or everyone for an announced powerup - learns when it returns, with an
+error set by its `itemTiming` trait. A timed item is worth heading for when the
+run arrives about as it respawns: the remaining wait discounts it, up to half,
+and the bot stands on the spot for the return instead of wandering off. An
+unarmed bot puts a real weapon ahead of nearly everything, a pickup a few steps
+away is taken on the way even mid-chase, and a defender keeps its base stocked.
+In a buying mode a bot spends its credit on the weapon or armour it lacks.
 
 ### Perception and combat
 
@@ -209,14 +243,26 @@ Perception is bounded by the bot's range and field of view, then traces exposed
 chest, head and pelvis points plus lateral body samples so a visible shoulder at
 cover can be acquired without granting vision through the wall. Invisible
 opponents stay hidden unless they recently damaged the bot or reveal themselves
-by firing nearby. Target selection weighs distance, health and armour, active
+by firing nearby.
+
+Bots also hear. Each server frame records the loudest noise every player made -
+weapon fire carries 1700 units, the gauntlet 700, a pickup 900 and running
+footsteps 420 - scaled by the listener's `hearing` trait. A heard opponent is
+located, never seen: it becomes a pursuit and patrol goal and a direction to
+face, but hearing grants no shot, and a sound-only contact is worth less than a
+visible one when goals are compared. Target selection weighs distance, health and armour, active
 powerups, objective carriers, enemies threatening a friendly carrier, firing
 opponents, the last attacker, grudges and personality, with stickiness
 preventing pointless target swaps.
 
 Combat movement blends each character's preferred range with the weapon in
 hand, so a shotgun encourages a closer engagement while a railgun preserves
-space. When sight is lost, a bounded pursuit point projects the enemy's cached
+space. Each fight is weighed as a trade - health and armour, the best weapon
+each side holds and any active powerup - and a bot that cannot win it breaks
+off toward health and armour while still shooting; how bad the trade has to be
+is the character's aggression. A bot carrying quad goes hunting, and only a
+well-armed, healthy bot turns toward an enemy carrying a powerup rather than
+feeding it. When sight is lost, a bounded pursuit point projects the enemy's cached
 position and velocity; its confidence and lead fade with memory age instead of
 making the bot either stop immediately or track an opponent forever. Dodges test
 the local route and floor on both sides, trying the opposite direction when the
@@ -235,7 +281,10 @@ treating every nearby explosive as unobstructed.
 Projectile aim resolves the live multiplayer projectile definition, including
 launch speed, gravity and collision bounds, and iterates target motion, the
 bot's own motion and drop compensation to lead rockets, nails, grenades and
-napalm consistently. Instant-hit weapons are not led. The weapon selector
+napalm consistently. Instant-hit weapons are not led. Splash weapons aim at a
+grounded target's feet, where a near miss still lands. Weapons the bot would be
+wasting at range stay holstered past their useful reach, and the nailgun,
+lightning gun and gauntlet hold the trigger instead of bursting. The weapon selector
 covers every stock and expansion weapon, blends close- and long-range
 suitability with character bias, penalizes splash weapons at point-blank range,
 and uses score hysteresis and a minimum dwell to avoid switch loops.
@@ -245,7 +294,11 @@ or ballistic trajectories rather than checking only a ray to the nominal aim
 point. Safety projects moving teammates into those future segments, rejects
 their future splash exposure (including the shooter), and accounts for world
 cover around a predicted impact; safe world impacts can still support doorway
-suppression. Single-shot weapons also respect readiness and cadence.
+suppression. Single-shot weapons also respect readiness and cadence. Splash safety uses the
+game's own damage model - linear falloff from the explosion and half damage to
+the shooter - so a bot refuses a shot that would cost it more than a token
+amount of health, or more than it can spare, and team damage is only
+considered when `si_teamDamage` is on.
 
 That sweep runs down the axis the weapon actually fires along - the view - and
 not toward the aim point. The trigger gate deliberately allows the two to differ
@@ -261,8 +314,13 @@ error is designed to prevent.
 
 ### Navigation and progress
 
-Three things keep a bot from ever parking:
+Four things keep a bot from ever parking:
 
+- **Off-route recovery.** A route is a statement about the floor the bot stands
+  on. Once grounded, the bot compares its height with the height the current
+  leg has where it stands; knocked off a ledge, carried by a pad or fallen past
+  a landing, it is more than 80 units below (or, on a walk, 96 above) and the
+  route is replaced at once, with the goal itself decided again.
 - **Stuck detection.** Progress means advancing a path corner or materially
   shortening the horizontal distance to the current one, not merely moving in
   any direction. Two consecutive failed samples trigger a sidestep, a jump and
@@ -290,6 +348,17 @@ top of the route. Each altered direction must pass a player-bounds sweep and a
 floor check before it can replace the nav direction, preventing a useful dodge
 from becoming a step into a wall or off a ledge.
 
+A drop's landing can lie under the lip of its own ledge, so near a drop or a jump
+the bot walks the link's own direction until it actually leaves the ground. A
+drop taken at speed may land far past its one-cell landing; down on the
+landing's floor and ahead of it, the drop counts as done.
+
+Every navigation event is in the `bot_debug 1` log: stuck and off-route
+reports with the corner, its travel type and height, completed actions with
+their entry, exit and observed landing, and - rate limited - each route snap or
+final leg the navmesh refused, with the first test that failed and the entity
+that blocked it.
+
 Non-walk links are committed movements rather than loose proximity corners. The
 bot first reaches the entry, suppresses combat strafing, generic unsticking and
 periodic replans during the action, then advances only after it has left the
@@ -304,12 +373,43 @@ Jump input is pulsed on alternating grounded frames rather than held.
 `upmove` is released. Grounded pulses provide a fresh edge within one frame
 without spraying jump input through the flight.
 
+### Team orders
+
+A human player can order the bots on their own team in team chat, Quake III
+style. The line starts with who is addressed - one or more bot names joined by
+"and", or a group word (`everyone`, `everybody`, `all`, `team`, `bots`, `guys`,
+`squad`) - followed straight away by the order, optionally after `please`:
+
+| Order | Phrases | Effect |
+| --- | --- | --- |
+| Follow | `follow`, `follow me`, `escort me`, `cover me`, `with me`, `on me`, `come with me`, `regroup` | Escort the speaker in formation, fighting on the way. In every team mode. |
+| Defend | `defend`, `defend the base`, `guard`, `defense`, `hold the base`, `stay home`, ... | CTF: hold the team's base. Elsewhere, as below. |
+| Defend here | `defend here`, `hold here`, `hold this position`, `guard here`, `stay here`, `camp here` | Hold the area around the nearest spawn point or pickup to where the speaker stands; with nothing fixed within 512 units, follow instead. |
+| Attack | `attack`, `offense`, `get the flag`, `grab the flag`, `take the flag`, `capture the flag`, `push` | CTF: take the enemy flag, or escort a team-mate who has it. Elsewhere, free play. |
+| Free | `free`, `freelance`, `dismissed`, `roam`, `carry on`, `as you were`, `stop following`, `do your thing` | Back to the bot's own judgement. |
+
+Examples: `kane defend`, `everyone follow me`, `sorg and bagby hold here please`.
+Anchoring the order to the names keeps ordinary team talk ("I'll defend", "kane
+is following me") from turning into orders. Only humans give orders, only in
+team chat, and only to their own team. Up to two of the bots ordered
+acknowledge in team chat from their character's `order` lines, which skip the
+chattiness roll but respect the flood throttle; orders themselves work with
+`bot_chat 0`.
+
+An order outranks the role the allocator would have handed out, but not the
+rules' urgent steps: a carrier still takes the flag home, and anyone may still
+grab health at the edge of death. Bots under orders are left out of role
+allocation, so their team-mates share the remaining roles around them. An order
+lasts until it is replaced or dismissed, the bot changes team, or the map
+changes; a follow order lapses while its leader is dead and ends when the
+leader leaves or switches team.
+
 ## Characters
 
 `src/mpgame/bots/BotCharacter.{h,cpp}`. Difficulty used to be five numbers on a
 straight line, which made every bot at a given `bot_skill` identical and every
 match feel the same. It is now three layers of content that resolve, once per
-spawn, into one flat `botTraits_t` — 48 floats that are the only thing the
+spawn, into one flat `botTraits_t` — 50 floats that are the only thing the
 per-frame combat code reads:
 
 1. **Skill level, 1 to 5.** The baseline curve. Every trait has a value at every
@@ -378,6 +478,11 @@ The point of the curve is that the levels differ in kind, not only in degree.
   tremor it can never switch off, a 2 degree cone it refuses to shoot outside
   of, and 97 % lead correctness with a 5 % random error — so a strafing target
   at range still survives the occasional rocket.
+
+Awareness climbs with the same curve. `hearing` scales how far a bot hears
+fire, footsteps and pickups - 45% of the nominal range at skill 1, all of it at
+skill 5 - and `itemTiming` is how well it keeps a respawn timer it witnessed,
+from barely at all at skill 1 (0.05) to within a few percent at skill 5 (0.92).
 
 Note the trigger duty cycle runs the other way from intuition: skill 1 holds the
 trigger down about 86 % of an engagement and skill 5 about 79 %. Low skill
@@ -676,12 +781,14 @@ useful convention rather than the identity key.
 
 The events are: `entergame`, `levelstart`, `kill`, `killGauntlet`,
 `killStreak`, `revenge`, `death`, `deathAccident`, `itemDenied`, `leadTaken`,
-`leadLost`, `matchWin`, `matchLose`, `farewell`. A character with no lines for
-an event simply says nothing — silence is a valid answer and nothing invents a
-fallback line.
+`leadLost`, `matchWin`, `matchLose`, `farewell`, `order`. A character with no
+lines for an event simply says nothing — silence is a valid answer and nothing
+invents a fallback line. `order` is the acknowledgment of a team order (see
+"Team orders"); it goes to team chat, skips the chattiness roll so the speaker
+knows the order landed, and still respects the flood throttle.
 
-Every shipped character carries eight alternatives for each event: 112 lines
-per character and 1,792 across the roster. This is a content target, not a
+Every shipped character carries eight alternatives for each event: 120 lines
+per character and 1,920 across the roster. This is a content target, not a
 parser requirement; add-on characters may use smaller banks or intentional
 silence. The uniform depth keeps losses, lead changes and departures from
 becoming more repetitive than kills.
@@ -733,14 +840,14 @@ console text and malformed or rejected messages never reach reply matching.
 
 Each of the fifteen normally talkative characters ships four alternatives for
 each of the nine reply rules. Kane retains two terse alternatives per rule.
-That adds 558 reactive lines to the 1,792 event lines, for 2,350 authored lines
+That adds 558 reactive lines to the 1,920 event lines, for 2,478 authored lines
 across the roster.
 
 Lines may use `$self`, `$other`, `$weapon`, `$map` and `$item`. A line requiring
 a token that is unavailable for its event is skipped, preventing a partial or
 mangled sentence from reaching chat. `$map` is supplied for every event;
-opponent and weapon names come from combat events, while `$item` is specific to
-`itemDenied`. Match-end events do not identify the winner or loser as `$other`.
+opponent and weapon names come from combat events, `$item` is specific to
+`itemDenied`, and in `order` `$other` is the player who gave it. Match-end events do not identify the winner or loser as `$other`.
 Selection is uniform over the usable lines excluding whichever was used last,
 so a line never repeats back to back.
 
@@ -826,6 +933,7 @@ restricts delivery by the team field.
 | `bot_debug` | `0` | `1` logs navigation events, `2` adds a periodic per-bot status line. |
 | `bot_debugNav` | `0` | `1` draws the navmesh near the local player, `2` adds each bot's current route. |
 | `bot_debugAim` | `0` | Log the reaction, settle and lead values behind every shot. |
+| `bot_profile` | `0` | Every N seconds print one `botprofile:` line: bot think time (average and worst frame), path searches and their failures by cause (snap, search, final leg), A* expansions per search, goal-pricing searches, and navigation milliseconds per frame with the goal-pricing share. |
 | `bot_navCellSize` | `24` | Sampling resolution in world units. Smaller finds more ground and costs more to build. |
 | `bot_pause` | `0` | Freeze all bot input. |
 
@@ -892,13 +1000,12 @@ result-flow pass for that mode.
 
 ## Known limits
 
-- `heuristicScale` is one number for the whole map: the smallest
-  cost-to-distance ratio over every edge. Jump pads and teleporters carry a flat
-  cost over an arbitrary span, so a single long transport drives that ratio down
-  for every node on the map and A* degrades toward a Dijkstra flood on exactly
-  the maps that have one. The heuristic stays admissible and routes stay
-  optimal - this is a search-cost problem, not a correctness one - but a
-  differential or landmark heuristic would recover the guidance.
+- Ladders and lifts are not modelled. No stock multiplayer map routes through
+  either, but a custom map that needs one to connect its levels leaves those
+  levels unreachable to bots.
+- Role allocation and teammate claims compare straight-line distances, not
+  route costs, so on a stacked map a bot directly above the flag can be
+  preferred over one with a shorter run.
 - `FindNearestNode` spends at most `NAV_MAX_WALKABLE_PROBES` collision probes
   when asked to prove walkability. A bot standing somewhere that genuinely needs
   more than that to escape falls back to wandering rather than stalling the
@@ -916,7 +1023,11 @@ result-flow pass for that mode.
   deliberately fall back to combat, inventory pickups and directed roaming.
 - A jump pad's link lands on its target entity, but `rvJumpPad` aims the player
   to *arrive* there with its vertical speed spent, so the real landing spot is a
-  little past it. Bots re-route on arrival, so this costs a moment, not a route.
+  little past it. Off-route recovery re-routes on landing, so this costs a
+  moment, not a route.
+- The navmesh is rebuilt at every map load rather than cached on disk.
+  Generation runs once per map and is lazy, so a server without bots never pays
+  it.
 - `bot_debugNav` uses the renderer's fixed 16384-entry debug-line pool. Its draw
   is budgeted to stay inside that pool, but nothing on the server path calls
   `DebugClear`, so lines accumulate rather than expire.
@@ -926,89 +1037,69 @@ result-flow pass for that mode.
 
 ## Testing
 
-`tools/tests/mp_bot_navigation.py` pins the agreements that make the navigation
-work and that the compiler cannot check: the engine handing back the allocated
-slot, bots being re-begun after a map change, user info being restored on every
-update, bots thinking before entities do, and the navmesh deriving its agent
-from the movement cvars rather than hardcoding a size. It also guards walk-door
-classification, weighted route costs, the scaled transport-safe heuristic,
-live edge validation and repair, roaming retries, directed goal searches, and
-the action entry/airborne/grounded-exit contract that prevents a
-24-unit-adjacent jump landing from being consumed as an ordinary corner.
+Everything below runs in-tree and in CI with no game assets; the compiled
+fixtures need a C++17 compiler (`clang++` or `g++`, or `CXX`).
 
-`tools/tests/mp_bot_characters.py` does the same for the personality layer: that
-the character manager is actually initialised and shut down, that style,
-character and chat content is read with the non-fatal lexer flags and every file
-list is freed, that the trait field table and the baseline curve agree with
-`botTraits_t`, and that the curve moves monotonically in the direction that
-means "better" for every accuracy trait. Its content checks cover every shipped
-`.style`, `.bot` and `.chat` file: character files use known traits and styles,
-carry no inline dialogue, and each chat bank names a real character and contains
-only lines the broadcast path can deliver. It independently parses reply rules,
-checks their caps, priorities, sources, addressing modes, triggers, allowed
-tokens and required shipped categories, exercises whole-word matcher vectors,
-rejects duplicate responses, and pins the provenance, team routing, one-speaker
-cooldown and recursion brakes in the server path.
+- `tools/tests/mp_bot_navigation.py` pins the agreements that make navigation
+  work and that the compiler cannot check: the engine handing back the
+  allocated slot, bots re-begun after a map change, user info restored on every
+  update, bots thinking before entities, and the navmesh deriving its agent
+  from the movement cvars. It guards the body-free agent sweep, walk-door
+  classification, transport sealing and the walk slope bound, weighted route
+  costs, the landmark heuristic and goal pricing, dynamic-only edge validation
+  and repair, roaming retries, off-route recovery, the drop push-through, and
+  the action entry/airborne/grounded-exit contract.
+- `tools/tests/mp_bot_navmesh_search.py` splices the search core - components
+  and their closure, landmark selection, the heuristic, both cost fields and
+  pair pricing - into a native fixture and proves it on random two-floor graphs
+  with one-way drops, cheap transports and sealed pits: the closure equals
+  breadth-first reachability on 6,000 pairs, pair pricing equals the exact
+  route cost, the heuristic never overestimates and is consistent on every
+  edge, and ranked goal pricing returns exactly the exhaustive field's best four
+  in 180 runs while expanding 6% of its nodes.
+- `tools/tests/mp_bot_regressions.py` compiles the production decision
+  functions against a deterministic world: goal replacement and stall
+  recovery, inventory changes, hearing and item timing, fight-or-flight,
+  arming and duty pickups, perception against exhaustive target selection
+  over 240 cases, one goal-pricing search for 80 pickups, grenade bounce
+  threats, and bot message queues that never accumulate.
+- `tools/tests/mp_bot_team_orders.py` runs the team-order parser on phrasings
+  that must and must not be orders and pins who may give them, when they
+  lapse, and how every mode's planner reads them.
+- `tools/tests/mp_bot_intelligence.py`, `mp_bot_goal_contracts.py`,
+  `mp_bot_combat.py`, `mp_bot_objectives.py` and `mp_bot_team_balance.py` pin
+  goal selection, weapon-aware spacing and pursuit, splash and trajectory
+  safety, threat prediction, CTF/Freeze Tag/DeadZone roles with incumbency,
+  and pre-spawn team reservations.
+- `tools/tests/mp_bot_characters.py` covers the personality layer: the trait
+  table and baseline curve against `botTraits_t`, monotonic skill curves, and
+  every shipped `.style`, `.bot` and `.chat` file, including exactly eight
+  unique lines per chat event per character and the tokens each event may use.
 
-The companion GameLibs repository adds focused contracts for this pass.
-`tools/tests/mp_bot_objectives.py` pins live-match and same-instance filtering,
-deterministic CTF roles and assault chains, unique Freeze Tag rescues, DeadZone
-ownership/deadlock tactics and explicit fail-closed modes.
-`tools/tests/mp_bot_combat.py` pins lateral exposed-point visibility, segmented
-projectile-hull and gravity sweeps, moving-teammate and future-splash safety,
-world-impact/fuse threat prediction, and discovery of the combat translation
-unit by the Meson source collector. `tools/tests/mp_bot_intelligence.py` pins
-weapon-aware spacing, cached predictive pursuit, carrier protection, formation
-escorts, defend perimeters and opposite-side dodge recovery.
-`tools/tests/mp_bot_team_balance.py` pins pre-spawn team reservations and the
-downstream auto-balance rule that counts same-instance players who intend to
-join, including a four-bot batched-join model.
+**Live audit.** `tools/tests/mp_bot_audit.py --basepath <retail-install>` runs
+a hidden listen server with a fixed roster for a fixed time and reduces the log
+to the numbers that describe a bot implementation: kills, deaths to the map,
+navigation failures by kind (no route, stuck, off route, abandoned goals,
+timed-out traversals), the `bot_profile` cost rows, how close the simulation
+kept to real time, and process CPU. `--map`, `--gametype`, `--bots` and
+`--skill` choose the match; `--team-order "everyone follow me"` has the
+observer give an order and reports its team-mates' distance to it. Use the
+optimized `builddir-perf` runtime for absolute costs; `builddir` is a debug
+build and is several times slower.
 
-For a live check, run a dedicated server with `bot_debug 2` and read the status
-lines: each one carries the bot's position, health, armour, goal, path progress,
-current enemy and whether it is firing. Completed non-walk actions are logged
-with their entry, intended exit and observed landing position. For the combat
-model specifically, put two bots
-at `bot_skill 1` and two at `bot_skill 5` on `mp/q4dm1` with `bot_debugAim 1`,
-and read the per-shot reaction, settle and lead values. For obstacle traversal,
-watch the yellow armour beside the crates in `mp/q4dm1`: its intended approach
-is ground to the lower crate and then the upper crate, with two distinct jump
-actions before the pickup. For replies, address a bot by name in global chat,
-then repeat in team chat during a team game; exactly one eligible bot should
-answer after its typing delay, on the same route as the source message.
-For objective behavior, run standard and One Flag CTF long enough to observe a
-fetch, escort, intercept, return and capture; freeze a teammate during a live
-Freeze Tag round and confirm a bot holds the rescue radius; then verify that a
-DeadZone carrier enters and remains in its valid control zone. Keep
-`bot_debug 2` enabled so objective ownership, route progress and fallback
-decisions remain visible in the log.
+On `mp/q4dm5` with eight skill-4 bots in a debug build, the October 2026 pass
+took the server from 0.32 to 0.96 of real time, stuck reports from 29 to 3-4
+per two minutes, failed path searches from about 10% to under 2%, and goal
+pricing from about 7,600 settled nodes per decision to about 2,200 expanded,
+with no deaths to the map.
 
-`tools/tests/mp_bot_regressions.py` in the companion game repository compiles
-the production decision functions against deterministic world fixtures. It
-exercises failed goal replacement, repeated stalled-route repairs, inventory
-changes, pickup ownership and explosion reach. It compares perception against
-exhaustive visible-target selection across 240 cases and checks that an ordered
-80-item fixture needs 11 navigation snap queries instead of 81. The game
-repository runs this and the existing bot contracts in its CI jobs.
+For a live look, run a listen server with `bot_debug 2` and read the status
+lines: each carries the bot's position, health, armour, goal, path progress,
+current enemy and whether it is firing. `bot_debugNav 2` draws the mesh and
+every bot's route near the local player, and `bot_debugAim 1` logs the
+reaction, settle and lead behind every shot.
 
-The same fixture checks that thousands of bot-directed messages leave bot
-queues empty, while human spectators, broadcasts, demo recording and repeater
-forwarding retain their intended delivery.
-
-For repeatable stock gameplay, run `tools/tests/mp_bot_gameplay_smoke.py` in the
-engine repository with `--basepath <retail-install>` and `--gametype DM`,
-`--gametype "Team DM"` or `--gametype CTF`. The driver uses a hidden, windowed
-listen server with input disabled and an untargetable local participant because
-public matches require an active human. It checks live-match admission, bot
-movement, firing, damage/scoring and CTF objective decisions, and retains the
-engine log plus a JSON report under the selected `--output-dir`.
-Bot message-queue overflow is a test failure.
-
-The September 2026 audit passed Windows x64 build/staging, all eight existing
-bot contracts and the native regression fixture. Stock `mp/q4dm1` ran with four
-bots; `mp/q4ctf1` ran with six and observed fetch, defend, escort, capture and
-return goals. The final CTF run recorded 198 firing events without bot message
-queue overflows. These short runs establish gameplay coverage, not sustained
-performance or complete navigation coverage of every multiplayer map. Existing
-stock AAS, sound, material, non-precached declaration and embedded-pickup
-warnings remain in the logs.
+`tools/tests/mp_bot_gameplay_smoke.py` remains the repeatable stock-gameplay
+check for DM, Team DM and CTF: live-match admission, bot movement, firing,
+damage/scoring and CTF objective decisions, with bot message-queue overflow a
+failure.

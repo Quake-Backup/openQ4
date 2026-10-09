@@ -144,6 +144,16 @@ characterChat "Strauss" {
 		"I have collected enough field data from this exercise."
 		"Until next time. Improve in my absence."
 	}
+	chat order {
+		"A reasonable order, $other. I accept."
+		"Very well. I shall apply some intelligence to it."
+		"Agreed. It is, coincidentally, what I would have done."
+		"Acknowledged. Try to keep the rest of the plan this sensible."
+		"If you insist, $other. Executing with precision."
+		"Logical. I am proceeding."
+		"Fine. I will make it look effortless."
+		"Order noted. Expect a competent result."
+	}
 	reply help {
 		priority 40
 		source any

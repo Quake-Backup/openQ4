@@ -530,5 +530,6 @@ extern idCVar bot_chat;
 extern idCVar bot_chatDelay;
 extern idCVar bot_chatCPM;
 extern idCVar bot_debugAim;
+extern idCVar bot_profile;
 
 #endif /* !__SYS_CVAR_H__ */

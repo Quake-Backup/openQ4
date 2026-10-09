@@ -144,6 +144,16 @@ characterChat "Sledge" {
 		"Thank you for the competition. It was worthwhile."
 		"Sledge out. I wish you steady hands."
 	}
+	chat order {
+		"I understand, $other. I shall go."
+		"Very well. It shall be done."
+		"Your request is fair. I comply."
+		"I accept this task."
+		"I will do as you ask, $other."
+		"It is a good plan. I am going."
+		"So be it. I shall hold to it."
+		"You may rely on me."
+	}
 	reply help {
 		priority 40
 		source any

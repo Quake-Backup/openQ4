@@ -144,6 +144,16 @@ characterChat "Bagby" {
 		"If anyone finds my confidence, please send it to logistics."
 		"I'm done for now. The company was better than the scoreboard."
 	}
+	chat order {
+		"Right away, $other! I think I understood that."
+		"Yes, absolutely. Which way is that again?"
+		"Orders received. I'll try very hard not to get lost."
+		"On it, $other. This is the part where I'm useful."
+		"Understood! Mostly. Enough, anyway."
+		"Will do. I'll write that down later."
+		"Okay, $other, I'm going. Confidently. Ish."
+		"Got it. If it goes wrong, it was a bold plan."
+	}
 	reply help {
 		priority 40
 		source any

@@ -144,6 +144,16 @@ characterChat "Kane" {
 		"Until next time."
 		"Stay alive."
 	}
+	chat order {
+		"On it."
+		"Copy."
+		"Moving."
+		"Got it, $other."
+		"Understood."
+		"Heading there."
+		"Right."
+		"Will do, $other."
+	}
 	reply help {
 		priority 40
 		source any

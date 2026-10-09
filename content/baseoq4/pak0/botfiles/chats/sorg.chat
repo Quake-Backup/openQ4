@@ -144,6 +144,16 @@ characterChat "Sorg" {
 		"I'm done. Don't let the arena go quiet."
 		"Leaving now. I saw enough to want another match."
 	}
+	chat order {
+		"Copy, $other. Moving fast."
+		"On it. I'll scout the way in."
+		"Got it. Taking the quick lane."
+		"Heading there now. Keep up."
+		"Understood, $other. I'll read the ground."
+		"Moving. I'll call anything I see."
+		"Rerouting. Be there in a blink."
+		"Sure. Fastest path's already picked."
+	}
 	reply help {
 		priority 40
 		source any

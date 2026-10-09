@@ -144,6 +144,16 @@ characterChat "Morris" {
 		"Powering down comms before I say something heartfelt."
 		"See you next match. Bring better material."
 	}
+	chat order {
+		"Copy that, $other. Morris on the move."
+		"Loud and clear. Try to keep up with me."
+		"Roger, roger. This'll be fun."
+		"You heard the boss. Morris out."
+		"Message received, $other. Making you look good."
+		"On it. Somebody keep the channel warm."
+		"Read you five by five. Moving."
+		"Okay, okay, I'm going. No need to shout."
+	}
 	reply help {
 		priority 40
 		source any

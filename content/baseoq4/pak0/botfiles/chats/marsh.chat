@@ -144,6 +144,16 @@ characterChat "Marsh" {
 		"That's enough for me. Keep making each other work."
 		"See you next time. Bring the same pressure."
 	}
+	chat order {
+		"Sure thing, $other. I'm on it."
+		"Sounds like a plan. Heading over."
+		"Okay, I'll take that. Good call."
+		"You got it. I'll make it count."
+		"Happy to, $other. Let's keep it close."
+		"On my way. Shout if it changes."
+		"Fair enough. I'll cover that."
+		"Right behind the plan, $other."
+	}
 	reply help {
 		priority 40
 		source any

@@ -144,6 +144,16 @@ characterChat "Hollenbeck" {
 		"That's my last round. Stay organized."
 		"Good work. Await the next call."
 	}
+	chat order {
+		"Copy, $other. Adjusting position."
+		"Understood. Moving to it now."
+		"Roger. I'll hold up my end."
+		"Good call, $other. Executing."
+		"Orders received. On the double."
+		"Affirmative. Keep the channel open."
+		"On it. Report any change."
+		"Acknowledged, $other. Making it happen."
+	}
 	reply help {
 		priority 40
 		source any

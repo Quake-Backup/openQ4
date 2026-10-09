@@ -101,6 +101,7 @@ jobs:
             tools/tests/mp_match_control_team_join_smoke.py \
             tools/tests/mp_match_flow_smoke.py \
             tools/tests/mp_bot_gameplay_smoke.py \
+            tools/tests/mp_bot_audit.py \
             tools/tests/mp_roster_smoke.py \
             tools/tests/mp_round_remote_smoke.py \
             tools/tests/mp_tourney_smoke.py \
@@ -238,9 +239,16 @@ jobs:
             tools/tests/macos_metal_bridge.py \
             tools/tests/macos_moltenvk_policy.py \
             tools/tests/mp_bot_characters.py \
+            tools/tests/mp_bot_combat.py \
+            tools/tests/mp_bot_goal_contracts.py \
             tools/tests/mp_bot_intelligence.py \
             tools/tests/mp_bot_navigation.py \
+            tools/tests/mp_bot_navmesh_search.py \
+            tools/tests/mp_bot_objectives.py \
+            tools/tests/mp_bot_regressions.py \
             tools/tests/mp_bot_server_menu.py \
+            tools/tests/mp_bot_team_balance.py \
+            tools/tests/mp_bot_team_orders.py \
             tools/tests/mp_client_combat_effects.py \
             tools/tests/bse_retail_parity.py \
             tools/tests/mp_lag_compensation_contract.py \
@@ -593,9 +601,16 @@ jobs:
           python tools/tests/macos_metal_bridge.py
           python tools/tests/macos_moltenvk_policy.py
           python tools/tests/mp_bot_characters.py
+          python tools/tests/mp_bot_combat.py
+          python tools/tests/mp_bot_goal_contracts.py
           python tools/tests/mp_bot_intelligence.py
           python tools/tests/mp_bot_navigation.py
+          python tools/tests/mp_bot_navmesh_search.py
+          python tools/tests/mp_bot_objectives.py
+          python tools/tests/mp_bot_regressions.py
           python tools/tests/mp_bot_server_menu.py
+          python tools/tests/mp_bot_team_balance.py
+          python tools/tests/mp_bot_team_orders.py
           python tools/tests/mp_client_combat_effects.py
           python tools/tests/bse_retail_parity.py
           python tools/tests/mp_lag_compensation_contract.py

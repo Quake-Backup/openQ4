@@ -839,4 +839,5 @@ idCVar bot_chat(							"bot_chat",							"1",			CVAR_GAME | CVAR_INTEGER | CVAR_
 idCVar bot_chatDelay(						"bot_chatDelay",					"600",			CVAR_GAME | CVAR_INTEGER | CVAR_ARCHIVE, "initial thinking pause before a bot starts typing, in milliseconds" );
 idCVar bot_chatCPM(							"bot_chatCPM",						"900",			CVAR_GAME | CVAR_INTEGER | CVAR_ARCHIVE, "base bot typing speed in visible characters per minute", 60, 6000 );
 idCVar bot_debugAim(						"bot_debugAim",						"0",			CVAR_GAME | CVAR_INTEGER, "log the aim and fire decisions behind every shot, for tuning skill levels" );
+idCVar bot_profile(						"bot_profile",						"0",			CVAR_GAME | CVAR_INTEGER | CVAR_NOCHEAT, "print bot CPU and navigation query statistics every N seconds, 0 disables", 0, 600 );
 

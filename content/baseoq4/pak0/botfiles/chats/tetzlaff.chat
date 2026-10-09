@@ -144,6 +144,16 @@ characterChat "Tetzlaff" {
 		"I am finished here. The demonstration was adequate."
 		"Practice what you observed. Selectively."
 	}
+	chat order {
+		"Understood, $other. I'll find a firing line."
+		"Copy. Repositioning for clean sights."
+		"Acknowledged. Precision follows."
+		"On it. I'll measure the angles there."
+		"Fine, $other. I'll make every shot count."
+		"Moving. Somebody spot for me."
+		"Received. Expect accuracy, not noise."
+		"Relocating. The range will be mine."
+	}
 	reply help {
 		priority 40
 		source any

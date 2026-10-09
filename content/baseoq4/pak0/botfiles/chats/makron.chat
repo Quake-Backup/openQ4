@@ -144,6 +144,16 @@ characterChat "Makron" {
 		"The slaughter pauses."
 		"You survive by my decision alone."
 	}
+	chat order {
+		"You presume to command me, $other? Very well. This once."
+		"The Makron obliges. Do not grow used to it."
+		"A worthy instruction. It will be done."
+		"I go. Mark how it is done."
+		"Your request amuses me. I comply."
+		"Command is mine to give, $other. Today I allow it."
+		"As I would have chosen anyway."
+		"It shall be done, and done better than you imagined."
+	}
 	reply help {
 		priority 40
 		source any

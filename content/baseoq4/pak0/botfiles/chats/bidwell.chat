@@ -144,6 +144,16 @@ characterChat "Bidwell" {
 		"Good fighting. Keep training."
 		"Sergeant's leaving. Standards remain."
 	}
+	chat order {
+		"Heard, $other. Moving."
+		"Copy. Nobody slacks off while I'm doing it."
+		"Understood. Consider it done."
+		"On my way. Keep the line tight."
+		"Roger that, $other. Executing."
+		"It'll get done right. I'll see to it."
+		"Acknowledged. Eyes up, Marines."
+		"Moving now. Don't make me come back for you."
+	}
 	reply help {
 		priority 40
 		source any

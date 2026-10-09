@@ -109,6 +109,9 @@ public:
 	// Queued rather than sent: a bot that answers a frag on the frame it landed
 	// reads as a script.  A pending line is dropped if the bot leaves.
 	void					QueueChat( rvBotChatEvent event, const char *other, const char *weapon, const char *item );
+	// Answers an order in team chat.  No chatiness roll: the commander has to
+	// know the order landed.  The shared flood throttle still applies.
+	void					QueueOrderAck( const char *commander );
 	bool					TryQueueReply( const idStr &normalizedText, bool sourceIsBot, bool addressed,
 									   const char *other, bool teamOnly );
 	void					SayFarewell( void );
@@ -145,6 +148,9 @@ private:
 	void					UpdateWeapon( idPlayer *self );
 	void					UpdateFire( idPlayer *self, usercmd_t &cmd );
 	void					UpdateChat( idPlayer *self );
+	// Spends buy-menu credits where the rules allow it: a real weapon first,
+	// then armour, then ammunition, then a second gun or a team powerup.
+	void					UpdateBuying( idPlayer *self );
 
 	// Everything that happens the moment a target registers: the reaction
 	// deadline, the peripheral penalty, the mistake roll and the belief reset.
@@ -163,17 +169,52 @@ private:
 	idVec3					EnemyPursuitOrigin( void ) const;
 	bool					WantsHealth( idPlayer *self ) const;
 	bool					AtObjectiveHoldPosition( idPlayer *self ) const;
+	bool					HoldAllowsMove( idPlayer *self, const idVec3 &direction ) const;
 	bool					IsDodging( idPlayer *self ) const;
 	void					TrackDamage( idPlayer *self );
-	void					ScheduleDodge( const idVec3 &threatDirection );
+	// threatDirection is the direction of travel of what is coming (a round's
+	// velocity, or the damage direction); threatPoint, when known, is where it
+	// passes closest or lands, and the dodge goes away from it.
+	void					ScheduleDodge( const idVec3 &threatDirection, const idVec3 *threatPoint = NULL );
+	// The dodge step for this frame: perpendicular to the threat, or the
+	// strafe side around the current enemy when the threat has no direction.
+	bool					DodgeDirection( idPlayer *self, idVec3 &direction ) const;
+	// Flips the combat strafe side on the personality's rhythm.
+	void					UpdateStrafeRhythm( void );
 
 	bool					CanSee( idPlayer *self, idEntity *other, idVec3 *visiblePoint = NULL ) const;
 	bool					IsEnemy( idPlayer *self, idPlayer *other ) const;
 
+	// Hearing.  A noise locates an enemy approximately and turns the bot toward
+	// it; it never grants a shot, which still needs a sighting and pays the
+	// full reaction for it.
+	void					UpdateHearing( idPlayer *self );
+	int						EnemyLastKnownTime( void ) const;
+
+	// How the bot's whole loadout and condition compares with this opponent's,
+	// 1 for an even trade.  Drives fight-or-flight, not aim.
+	float					CombatAdvantage( idPlayer *self, idPlayer *foe ) const;
+	float					BestWeaponPower( idPlayer *self ) const;
+	// Breaking off: hurt below the retreat line, or outmatched by the current
+	// opponent.  The bot still fights while it withdraws toward health.
+	bool					Withdrawing( idPlayer *self ) const;
+
 	bool					Repath( idPlayer *self, const idVec3 &goal, bool preserveProgress = false );
 	bool					AdvancePath( idPlayer *self );
+	// Standing on a floor the current leg does not cross - knocked off it,
+	// carried away by a pad, or fallen past a landing.  The route is then
+	// wrong, not slow, and is replaced at once.
+	bool					OffRoute( idPlayer *self, float &offHeight ) const;
 	idEntity *				PickItemGoal( idPlayer *self, rvNavPath &goalPath, float &goalUtility );
 	float					ItemUtility( idPlayer *self, idItem *item ) const;
+	// Milliseconds until a taken item returns as far as this bot knows, 0 when
+	// it is available now, -1 when the bot has no idea.
+	int						ItemPendingMsec( const idItem *item ) const;
+	// A patrol destination with its proven route: the item spots that matter
+	// and the last place an enemy was known, weighted against recent visits.
+	bool					PickRoamGoal( idPlayer *self, idVec3 &roam, rvNavPath &roamPath );
+	void					RememberRoamPoint( const idVec3 &point );
+	float					RoamNovelty( const idVec3 &point ) const;
 	float					PathDistanceRemaining( const idVec3 &origin ) const;
 	void					AbandonGoal( int forMsec );
 	bool					RecoverToNavMesh( idPlayer *self, usercmd_t &cmd );
@@ -268,17 +309,33 @@ private:
 	int						stuckChecks;
 	int						stuckPathCorner;
 	float					stuckCornerDistance;
+	int						combatSteeringTime;	// last frame combat footwork altered the route direction
 
 	// -- combat --
 	idEntityPtr<idPlayer>	enemy;
 	int						enemyAcquiredTime;
 	int						enemyLastSeenTime;
-	idVec3					enemyLastSeenOrigin;
+	idVec3					enemyLastSeenOrigin;	// last known position: seen, or heard approximately
 	idVec3					enemyLastSeenVelocity;
 	idVec3					enemyVisiblePoint;
+	int						enemyLastHeardTime;	// last noise that located the current enemy
+	int						nextHearingTime;
 	bool					targetPickBest;		// this engagement's targetSelection roll
+	bool					aimAtFeet;			// this engagement's splash-aim roll
 	idEntityPtr<idPlayer>	lastAttacker;
 	int						lastAttackerTime;
+
+	// -- strategy --
+	// Where recent wanders ended, so patrols cover the map instead of
+	// shuttling between the two best item spots.
+	static const int		ROAM_HISTORY = 6;
+	idVec3					roamHistory[ROAM_HISTORY];
+	int						roamHistoryTime[ROAM_HISTORY];
+	int						roamHistoryNext;
+	int						goalSelectedTime;	// when the current goal was committed
+	bool					goalItemPending;	// waiting out a timed respawn at the item
+	bool					outmatched;			// decision-tick verdict of CombatAdvantage
+	bool					selfStrong;			// armed, healthy or powered up enough to take on a powered target
 
 	// -- aim --
 	// The bot aims at where it BELIEVES the target is, which trails where the
@@ -319,6 +376,7 @@ private:
 	float					strafeSide;
 	int						strafeFlipTime;
 	bool					dodgeJump;
+	idVec3					dodgeDirection;		// world-space step chosen for the pending dodge, zero for "strafe"
 
 	// -- chat --
 	idStr					chatPending;
@@ -331,6 +389,7 @@ private:
 
 	int						nextWeaponTime;
 	int						lastWeaponSwitchTime;
+	int						nextBuyTime;		// throttles buy-menu decisions
 	int						nextRejoinTime;		// throttles the leave-spectate request
 	int						nextStatusTime;		// bot_debug 2 throttle
 	int						nextAimDebugTime;	// bot_debugAim 2 throttle
@@ -341,6 +400,28 @@ private:
 //
 // Owns the bot slots and is the only thing the rest of the game talks to.
 //----------------------------------------------------------------
+//----------------------------------------------------------------
+// A standing order a human team-mate gave in team chat: "kane defend",
+// "everyone follow me", "sorg and bagby hold here".  Orders are gameplay, not
+// chat flavour, so they work with bot chat switched off; the objective planner
+// reads them before it shares roles out, and team-mates allocate around them.
+//----------------------------------------------------------------
+typedef enum {
+	BOTORDER_NONE,				// free play, or what "dismissed" restores
+	BOTORDER_ATTACK,			// take the enemy flag; outside CTF, play the map
+	BOTORDER_DEFEND,			// hold the base, or the spot the order was given at
+	BOTORDER_FOLLOW				// stay with the player who gave it
+} botOrderKind_t;
+
+typedef struct botOrder_s {
+	int						kind;				// botOrderKind_t
+	int						commander;			// client number of the player who gave it
+	int						commanderSpawnId;	// gameLocal.spawnIds: a reused slot is someone else
+	int						team;				// the bot's team when ordered; a team change ends it
+	idEntityPtr<idEntity>	anchor;				// a spot defence's hold centre, NULL for the base
+	int						issuedTime;
+} botOrder_t;
+
 class rvBotManager {
 public:
 							rvBotManager( void );
@@ -369,6 +450,9 @@ public:
 	void					OnSpawnPlayer( int clientNum, bool isBot, const char *botName );
 	void					OnClientDisconnect( int clientNum );
 	void					OnMapShutdown( void );
+	// Called from idPlayer::SpawnToPoint for every spawn, including the
+	// teleports a round or match restart makes without killing anyone.
+	void					OnPlayerRespawned( int clientNum );
 
 	// Match hooks, all server side.  OnMatchStart/OnMatchEnd belong on the
 	// GAMEON and GAMEREVIEW transitions in rvGameState::NewState; OnPlayerDeath
@@ -392,10 +476,53 @@ public:
 	// chatiness, delay and the shared flood throttle decide whether it speaks.
 	void					OnChatMessage( int sourceClientNum, bool teamOnly, const char *visibleText );
 
+	// The order this bot is under, or NULL for free play.  An order whose bot
+	// changed team, or a follow order whose commander left, reads as none.
+	const botOrder_t *		GetOrder( int clientNum ) const;
+
+	// The navmesh node a player stands on, re-snapped only once it has moved
+	// a cell or two, so role allocation can compare route bounds for the
+	// whole team every decision without a ring of probes per player.
+	int						ClientNavNode( int clientNum ) const;
+
 	bool					IsBot( int clientNum ) const;
 	int						NumBots( void ) const;
 	int						GoalClaimCount( const rvBot *requester, const idEntity *goal ) const;
+	// The objective role a bot is executing right now, BOTOBJ_NONE for anything
+	// else, and the entity it serves.  Role allocation reads these to give an
+	// incumbent a margin, so roles do not swap with every step anyone takes.
+	int						ObjectiveKindOf( int clientNum ) const;
+	const idEntity *		ObjectiveEntityOf( int clientNum ) const;
+
+	// Time slicing.  A full goal decision prices pickups and routes, and when
+	// several bots' decision ticks land on one server frame that frame pays for
+	// all of them.  Each frame grants a few decisions; a bot refused one simply
+	// decides on the next frame, a sixtieth of a second later.
+	bool					ClaimDecision( void );
 	void					FillUserInfo( int clientNum, idDict &info );
+
+	// Every idItem the map has spawned, hidden or not, refreshed once per
+	// server frame before any bot thinks.  A decision tick reads this instead
+	// of walking the whole spawned-entity list again for every bot.
+	const idList<idItem *> &	GetItems( void ) const { return items; }
+
+	// Item timing.  Called from idItem::Pickup when a respawn is scheduled.
+	// Only bots that witness the pickup - the taker, anyone within earshot,
+	// or everyone for a globally announced powerup - learn the timer, and each
+	// keeps it with its own itemTiming accuracy.
+	void					OnItemPickup( idItem *item, idPlayer *player, float respawnSeconds );
+	// Absolute respawn time as clientNum believes it, or 0 when it has no timer.
+	int						KnownItemRespawn( const idItem *item, int clientNum ) const;
+	// When the item was last taken and by whom; -1 for nobody since map load.
+	int						ItemPickupTime( const idItem *item ) const;
+
+	// The loudest recent noise each player made this server frame, for hearing.
+	typedef struct botNoise_s {
+		idVec3				origin;
+		float				range;			// audible distance for an average listener
+		int					time;			// gameLocal.time it was last made, 0 for never
+	} botNoise_t;
+	const botNoise_t &		GetNoise( int clientNum ) const { return noises[clientNum]; }
 
 	// Selects the least-populated side in the bot's gameplay instance.  The
 	// count includes active bot reservations whose idPlayer has not spawned yet.
@@ -407,14 +534,48 @@ public:
 
 private:
 	void					CheckMinPlayers( void );
+	// The bot autofill should remove now, or -1 to wait: from the larger team,
+	// dead or queued before alive, and never a seated duel or a live round
+	// player in the middle of what they are playing.
+	int						PickBotToRemove( void ) const;
+	bool					RemoveBotAt( int clientNum );
 	void					UpdateLeaderChat( void );
 	void					ResetReplyCooldowns( void );
+	// Parses "<names or everyone> <order>" from a human in team chat and gives
+	// the order.  True when the line was an order, which is then not small talk.
+	bool					HandleTeamOrder( int sourceClientNum, bool teamOnly, const idStr &normalizedText );
+	void					ClearOrder( int clientNum );
 	const char *			PickBotName( void ) const;
+	void					RefreshWorldCache( void );
+	void					UpdateProfile( double thinkTicks );
 
 	rvBot					bots[MAX_CLIENTS];
 	bool					navBuilt;
 	bool					navFailed;
 	int						nextMinPlayerCheck;
+
+	idList<idItem *>		items;
+
+	int						decisionFrame;			// gameLocal.framenum the count belongs to
+	int						decisionsThisFrame;
+
+	// Indexed by entity number; itemTimerSpawnId ties an entry to one spawn of
+	// that entity so a reused slot never inherits a stale timer.
+	int						itemTimerSpawnId[MAX_GENTITIES];
+	int						itemPickupAt[MAX_GENTITIES];
+	int						itemRespawnAt[MAX_GENTITIES];
+	unsigned int			itemTimerKnownBy[MAX_GENTITIES];	// bit per client
+
+	botNoise_t				noises[MAX_CLIENTS];
+	void					RecordNoise( int clientNum, const idVec3 &origin, float range );
+	void					ResetAwareness( void );
+
+	// bot_profile accumulators.  Wall-clock measurement only; nothing here
+	// feeds a decision.
+	double					profileThinkTicks;
+	double					profileMaxTicks;
+	int						profileFrames;
+	int						nextProfileTime;
 
 	// AddBot allocates the client slot and the engine calls straight back into
 	// OnSpawnPlayer, which is where the bot is actually built - so a per-bot
@@ -428,6 +589,12 @@ private:
 	int						leaderClientNum;
 	int						nextLeaderCheck;
 	int						nextReplySourceTime[MAX_CLIENTS];
+
+	botOrder_t				orders[MAX_CLIENTS];
+
+	mutable int				clientNode[MAX_CLIENTS];
+	mutable idVec3			clientNodeOrigin[MAX_CLIENTS];
+	mutable int				clientNodeTime[MAX_CLIENTS];
 };
 
 extern rvBotManager			botManager;

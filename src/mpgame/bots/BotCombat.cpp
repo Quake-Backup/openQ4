@@ -25,6 +25,13 @@ static const int   BOTCOMBAT_MAX_TRAJECTORY_STEPS = 48;
 static const float BOTCOMBAT_MAX_SHOT_FLIGHT	= 2.0f;
 static const float BOTCOMBAT_MIN_PROJECTILE_EXTENT = 0.25f;
 
+// Splash a bot will accept on itself when the same blast does at least twice
+// as much to the target, and the floor below which it refuses any more.
+static const float BOTCOMBAT_SELF_SPLASH_TOLERANCE	= 12.0f;
+static const float BOTCOMBAT_SELF_SPLASH_RESERVE	= 25.0f;
+// Team mates matter only when team damage is on, and then any real hurt counts.
+static const float BOTCOMBAT_TEAM_SPLASH_TOLERANCE	= 5.0f;
+
 struct botCombatShotModel_t {
 	const idDict *projectileDef;
 	float		 speed;
@@ -32,6 +39,10 @@ struct botCombatShotModel_t {
 	idBounds	 bounds;
 	float		 boundsRadius;
 	int			 clipMask;
+	float		 splashRadius;		// from def_splash_damage, 0 for none
+	float		 splashDamage;
+	float		 attackerScale;		// RadiusDamage's attackerDamageScale
+	float		 directDamage;		// def_damage on a direct hit
 
 	botCombatShotModel_t() :
 		projectileDef( NULL ),
@@ -40,7 +51,11 @@ struct botCombatShotModel_t {
 		bounds( idVec3( -BOTCOMBAT_MIN_PROJECTILE_EXTENT, -BOTCOMBAT_MIN_PROJECTILE_EXTENT, -BOTCOMBAT_MIN_PROJECTILE_EXTENT ),
 				idVec3( BOTCOMBAT_MIN_PROJECTILE_EXTENT, BOTCOMBAT_MIN_PROJECTILE_EXTENT, BOTCOMBAT_MIN_PROJECTILE_EXTENT ) ),
 		boundsRadius( BOTCOMBAT_MIN_PROJECTILE_EXTENT ),
-		clipMask( MASK_SHOT_BOUNDINGBOX ) {
+		clipMask( MASK_SHOT_BOUNDINGBOX ),
+		splashRadius( 0.0f ),
+		splashDamage( 0.0f ),
+		attackerScale( 0.5f ),
+		directDamage( 0.0f ) {
 	}
 };
 
@@ -151,6 +166,20 @@ static bool BotCombatCurrentShotModel( idPlayer *shooter, botCombatShotModel_t &
 	model.bounds		= BotCombatProjectileBoundsFromDef( model.projectileDef );
 	model.boundsRadius	= model.bounds.GetRadius();
 	model.clipMask		= BotCombatProjectileClipMask( model.projectileDef );
+
+	const char *splashName = model.projectileDef->GetString( "def_splash_damage", "" );
+	const idDict *splash = splashName[0] ? gameLocal.FindEntityDefDict( splashName, false ) : NULL;
+	if ( splash ) {
+		model.splashRadius	= Max( 0.0f, splash->GetFloat( "radius", "50" ) );
+		model.splashDamage	= Max( 0.0f, splash->GetFloat( "damage", "20" ) );
+		model.attackerScale	= Max( 0.0f, splash->GetFloat( "attackerDamageScale", "0.5" ) );
+	}
+
+	const char *directName = model.projectileDef->GetString( "def_damage", "" );
+	const idDict *direct = directName[0] ? gameLocal.FindEntityDefDict( directName, false ) : NULL;
+	if ( direct ) {
+		model.directDamage	= Max( 0.0f, direct->GetFloat( "damage", "0" ) );
+	}
 	return true;
 }
 
@@ -305,6 +334,47 @@ static bool BotCombatSplashThreatensPlayer( idPlayer *player, idEntity *splashIg
 
 /*
 ================
+BotCombatSplashDamageTo
+
+The health a blast at impact would cost this player, mirroring RadiusDamage:
+linear falloff over the distance from the hull's edge, the attacker's own
+scale for the shooter, nothing behind cover, and nothing for a team mate while
+team damage is off.  The hull is projected to impact time.
+================
+*/
+static float BotCombatSplashDamageTo( idPlayer *shooter, idPlayer *player, idEntity *splashIgnore,
+									  const idVec3 &impact, const botCombatShotModel_t &model,
+									  float impactTime ) {
+	if ( !player || model.splashRadius <= 0.0f || model.splashDamage <= 0.0f ||
+		 player->entityNumber < 0 || player->entityNumber >= MAX_CLIENTS || !player->GetPhysics() ) {
+		return 0.0f;
+	}
+	if ( player != shooter && gameLocal.IsTeamGame() && shooter && player->team == shooter->team &&
+		 !gameLocal.serverInfo.GetBool( "si_teamDamage" ) ) {
+		return 0.0f;
+	}
+
+	const idBounds predicted = player->GetPhysics()->GetAbsBounds() +
+		player->GetPhysics()->GetLinearVelocity() * Max( 0.0f, impactTime );
+	const float distance = predicted.ShortestDistance( impact );
+	if ( distance >= model.splashRadius ) {
+		return 0.0f;
+	}
+
+	float damage = model.splashDamage * ( 1.0f - distance / model.splashRadius );
+	if ( player == shooter ) {
+		damage *= model.attackerScale;
+	}
+	if ( damage <= 0.0f ) {
+		return 0.0f;
+	}
+
+	return BotCombatPredictedBoundsExposed( player, splashIgnore, impact, Max( 0.0f, impactTime ) ) ?
+		damage : 0.0f;
+}
+
+/*
+================
 BotCombatSplashThreatensTeamMate
 
 Direct traces only protect a teammate standing in the projectile path.  Splash
@@ -398,8 +468,13 @@ static bool BotCombatHostileProjectileOwner( idPlayer *self, idPlayer *owner ) {
 		 !gameLocal.mpGame.CanPlay( owner ) ) {
 		return true;
 	}
-	if ( owner == self || BotCombatSameTeam( self, owner ) ) {
-		return false;
+	// The bot's own blast always hurts it, and a team mate's does whenever
+	// team damage is on; both are threats to be dodged, if never targets.
+	if ( owner == self ) {
+		return true;
+	}
+	if ( BotCombatSameTeam( self, owner ) ) {
+		return gameLocal.serverInfo.GetBool( "si_teamDamage" );
 	}
 
 	return true;
@@ -541,10 +616,15 @@ bool BotCombatLineOfFireIsSafe( idPlayer *shooter, idPlayer *intendedFoe,
 	idVec3 actualImpact = aimPoint;
 	float impactTime = 0.0f;
 	idEntity *hit = NULL;
+	// Set when the sweep stopped because its flight budget ran out short of
+	// the aim point: the round is still flying and its blast point is unknown.
+	bool sweepCapped = false;
 
 	botCombatShotModel_t shotModel;
-	if ( BotCombatCurrentShotModel( shooter, shotModel ) ) {
+	const bool projectileShot = BotCombatCurrentShotModel( shooter, shotModel );
+	if ( projectileShot ) {
 		const float minimumFlight = Max( MS2SEC( gameLocal.GetMSec() ), 0.01f );
+		sweepCapped = aimDistance / shotModel.speed > BOTCOMBAT_MAX_SHOT_FLIGHT;
 		const float flightTime = idMath::ClampFloat( minimumFlight,
 			BOTCOMBAT_MAX_SHOT_FLIGHT, aimDistance / shotModel.speed );
 		const idVec3 launchVelocity = shotDirection * shotModel.speed;
@@ -602,15 +682,55 @@ bool BotCombatLineOfFireIsSafe( idPlayer *shooter, idPlayer *intendedFoe,
 	}
 
 	// Predict where the shooter and teammates will be when the projectile gets
-	// there.  Exposure tracing permits intentional cover-assisted splash shots.
+	// there, and what the blast would actually cost them.  A radius test alone
+	// refused every shot whose blast could reach the shooter at all: the Dark
+	// Matter Gun's 768-unit radius meant it was never fired, and team mates
+	// near a carrier vetoed each other's rockets with team damage off.  The
+	// trade is judged instead: a little self splash is accepted when the same
+	// blast hurts the target at least twice as much and the bot can afford it.
+	// A sweep that ran out of flight budget has no impact yet and proves
+	// nothing either way.  Exposure tracing still permits cover-assisted shots.
 	idEntity *splashIgnore = hit ? hit : intendedFoe;
-	if ( BotCombatSplashThreatensPlayer( shooter, splashIgnore, actualImpact,
-										 splashSafetyRadius, impactTime ) ) {
-		return false;
-	}
-	if ( BotCombatSplashThreatensTeamMate( shooter, splashIgnore, actualImpact,
-										 splashSafetyRadius, impactTime ) ) {
-		return false;
+	const bool impactKnown = hit != NULL || !sweepCapped;
+	if ( projectileShot && impactKnown && shotModel.splashRadius > 0.0f ) {
+		const float selfDamage = BotCombatSplashDamageTo( shooter, shooter, splashIgnore,
+			actualImpact, shotModel, impactTime );
+		if ( selfDamage > 0.0f ) {
+			const float foeDamage = ( hitPlayer == intendedFoe ) ?
+				shotModel.directDamage + shotModel.splashDamage :
+				BotCombatSplashDamageTo( shooter, intendedFoe, hit, actualImpact, shotModel, impactTime );
+			const float pool = (float)Max( 0, shooter->health ) +
+				(float)Max( 0, shooter->inventory.armor ) * 0.66f;
+			if ( selfDamage >= pool - BOTCOMBAT_SELF_SPLASH_RESERVE ||
+				 ( selfDamage > BOTCOMBAT_SELF_SPLASH_TOLERANCE && selfDamage * 2.0f > foeDamage ) ) {
+				return false;
+			}
+		}
+
+		if ( gameLocal.IsTeamGame() && gameLocal.serverInfo.GetBool( "si_teamDamage" ) ) {
+			for ( int i = 0; i < gameLocal.numClients; i++ ) {
+				idPlayer *teamMate = gameLocal.GetClientByNum( i );
+				if ( !BotCombatValidClientPlayer( teamMate ) || teamMate == shooter ||
+					 teamMate->GetInstance() != shooter->GetInstance() ||
+					 !gameLocal.mpGame.CanPlay( teamMate ) || teamMate->spectating ||
+					 teamMate->health <= 0 || !BotCombatSameTeam( shooter, teamMate ) ) {
+					continue;
+				}
+				if ( BotCombatSplashDamageTo( shooter, teamMate, splashIgnore, actualImpact,
+											   shotModel, impactTime ) > BOTCOMBAT_TEAM_SPLASH_TOLERANCE ) {
+					return false;
+				}
+			}
+		}
+	} else if ( !projectileShot && splashSafetyRadius > 0.0f ) {
+		// A caller-supplied radius without a projectile model keeps the old
+		// conservative proof.
+		if ( BotCombatSplashThreatensPlayer( shooter, splashIgnore, actualImpact,
+											 splashSafetyRadius, impactTime ) ||
+			 BotCombatSplashThreatensTeamMate( shooter, splashIgnore, actualImpact,
+											   splashSafetyRadius, impactTime ) ) {
+			return false;
+		}
 	}
 
 	if ( hitPlayer == intendedFoe ) {
@@ -644,8 +764,10 @@ bool BotCombatLineOfFireIsSafe( idPlayer *shooter, idPlayer *intendedFoe,
 		// taking if the resulting splash still reaches the foe.  Reuse the same
 		// impact-time bounds and exposure model used by splash safety instead of
 		// reintroducing a straight eye-to-foe ray.
+		const float usefulRadius = ( projectileShot && shotModel.splashRadius > 0.0f ) ?
+			shotModel.splashRadius : splashSafetyRadius;
 		return BotCombatSplashThreatensPlayer( intendedFoe, hit,
-			actualImpact, splashSafetyRadius, impactTime );
+			actualImpact, usefulRadius, impactTime );
 	}
 
 	// Hitting another hostile player or a distant piece of world is safe for
@@ -654,6 +776,7 @@ bool BotCombatLineOfFireIsSafe( idPlayer *shooter, idPlayer *intendedFoe,
 }
 
 struct botCombatProjectileImpact_t {
+	bool		 collided;		// the sweep met something inside the horizon
 	bool		 terminating;
 	bool		 hitsSelf;
 	float		 time;
@@ -661,7 +784,7 @@ struct botCombatProjectileImpact_t {
 	idEntity	*hit;
 
 	botCombatProjectileImpact_t() :
-		terminating( false ), hitsSelf( false ), time( 0.0f ),
+		collided( false ), terminating( false ), hitsSelf( false ), time( 0.0f ),
 		point( vec3_zero ), hit( NULL ) {
 	}
 };
@@ -723,6 +846,7 @@ static botCombatProjectileImpact_t BotCombatFindProjectileImpact(
 
 		if ( trace.fraction < 1.0f ) {
 			idEntity *hit = BotCombatTraceEntity( trace );
+			result.collided = true;
 			result.hitsSelf = ( hit == self );
 			result.terminating = result.hitsSelf ||
 				BotCombatProjectileImpactTerminates( projectile, hit );
@@ -879,12 +1003,15 @@ bool BotCombatFindIncomingProjectileThreat( idPlayer *self,
 		float candidateDistance = idMath::INFINITY;
 		idVec3 candidatePoint = vec3_zero;
 
+		// The bot's own round never strikes it directly - projectiles do not
+		// collide with their owner - so only its blast is a threat.
+		const bool ownRound = ( owner == self );
 		const idVec3 relativeOrigin = projectileOrigin - selfBounds.GetCenter();
 		const idVec3 relativeVelocity = projectileVelocity - selfVelocity;
 		const bool initiallyClosing = ( relativeOrigin * relativeVelocity ) < 0.0f;
 		const bool trajectoryApproaches = closestTime > 0.0f &&
 			closestDistance + 0.5f < currentDistance;
-		if ( closestDistance <= unsafeClearance &&
+		if ( !ownRound && closestDistance <= unsafeClearance &&
 			 ( trajectoryApproaches || ( initiallyClosing && currentDistance <= unsafeClearance ) ) ) {
 			projectileThreat = true;
 			candidateTime = closestTime;
@@ -892,7 +1019,12 @@ bool BotCombatFindIncomingProjectileThreat( idPlayer *self,
 			candidatePoint = projectedProjectile;
 		}
 
-		if ( impact.terminating ) {
+		// A bouncing grenade does not detonate where it first lands, but it
+		// rolls and settles near there; a first bounce inside its blast radius
+		// of the bot is already the time to move, not once it comes to rest.
+		const bool bounceNearby = impact.collided && !impact.terminating && splashRadius > 0.0f &&
+			projectile->spawnArgs.GetBool( "detonate_on_fuse", "0" );
+		if ( impact.terminating || bounceNearby ) {
 			const bool impactThreat = impact.hitsSelf ||
 				BotCombatSplashThreatensPlayer( self, impact.hit, impact.point,
 					splashRadius, impact.time );

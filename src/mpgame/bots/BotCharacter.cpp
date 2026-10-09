@@ -137,6 +137,10 @@ static const botTraitDef_t botTraitTable[] = {
 	// -- decision quality --
 	BOTTRAIT( weaponSkill,			0.0f,		1.0f,		0.20f,		0.38f,		0.55f,		0.75f,		0.92f ),
 	BOTTRAIT( targetSelection,		0.0f,		1.0f,		0.25f,		0.40f,		0.55f,		0.72f,		0.88f ),
+	// Awareness is competence: a novice does not turn toward gunfire behind it
+	// and has no idea when the mega health comes back; a strong player does both.
+	BOTTRAIT( hearing,				0.0f,		2.0f,		0.45f,		0.60f,		0.75f,		0.90f,		1.00f ),
+	BOTTRAIT( itemTiming,			0.0f,		1.0f,		0.05f,		0.25f,		0.50f,		0.75f,		0.92f ),
 
 	// -- chat --
 	// combatRange, aggression, patience, most tactical-personality traits and
@@ -172,7 +176,8 @@ static const char *botChatEventNames[] = {
 	"leadLost",				// BOTCHAT_LEAD_LOST
 	"matchWin",				// BOTCHAT_MATCH_WIN
 	"matchLose",			// BOTCHAT_MATCH_LOSE
-	"farewell"				// BOTCHAT_FAREWELL
+	"farewell",				// BOTCHAT_FAREWELL
+	"order"					// BOTCHAT_ORDER
 };
 
 // The table and the enum are indexed against each other in both directions, so

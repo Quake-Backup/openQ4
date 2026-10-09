@@ -287,7 +287,7 @@ def validate_dodging_and_projectiles(bot: str, header: str, combat: str) -> None
             "nextThreatScanTime = gameLocal.time +",
             "BotCombatFindIncomingProjectileThreat(",
             "timeToClosest",
-            "ScheduleDodge( threat->GetPhysics()->GetLinearVelocity() )",
+            "ScheduleDodge( threat->GetPhysics()->GetLinearVelocity(), &closestPoint )",
             "predictiveDelay",
             "dodgeEndTime = dodgeStartTime + BOT_DODGE_MSEC",
         ),
@@ -414,18 +414,24 @@ def validate_objectives_items_and_goals(
         "rvBot::ItemUtility inventory awareness",
     )
 
+    # One bounded cost field prices every pickup; only the winner pays for a
+    # validated route, and a blocked winner falls through to the next one.
     pick_item = function_body(bot, "idEntity *rvBot::PickItemGoal", "rvBot::PickItemGoal")
     require_all(
         pick_item,
         (
-            "ent->GetInstance() != self->GetInstance()",
+            "item->GetInstance() != self->GetInstance()",
             "ItemUtility( self, item )",
             "MAX_ROUTED_CANDIDATES",
-            "navMesh.FindPath(",
-            "candidatePath.LengthFrom( origin )",
-            "botManager.GoalClaimCount( this, candidates[i].item )",
+            "navMesh.BuildCostField( origin, searchRange * 1.5f + 256.0f,",
+            "targets.Ptr(), targets.Num(), MAX_ROUTED_CANDIDATES )",
+            "navMesh.NodeForEntity( item )",
+            "target.minWeight = pendingMsec > 0 ? option.utility * 0.5f : option.utility",
+            "navMesh.CostFieldDistance( option.node )",
+            "botManager.GoalClaimCount( this, item )",
             "claimScale",
-            "goalPath = candidatePath",
+            "ItemPendingMsec( item )",
+            "navMesh.FindPath( origin, candidates[i].item->GetPhysics()->GetOrigin(), goalPath )",
         ),
         "rvBot::PickItemGoal routed utility and claims",
     )
@@ -544,12 +550,17 @@ def validate_weapons_aim_and_fire(bot: str, combat: str) -> None:
             "const float speed = ProjectileSpeed( self )",
             "const idVec3 gravity = ProjectileGravity( self )",
             "foeVel - ownVel",
-            "gravity * ( -0.5f * flight * flight * traits.aimLead )",
+            "gravity * ( -0.5f * flight * flight )",
             "aimBelief + lead + gravityCompensation",
             "aimPoint = aimBelief + lead + gravityCompensation",
         ),
         "rvBot::UpdateAim ballistic lead/gravity compensation",
     )
+    # Drop is compensated in full at every skill; skill shows in the lead.
+    # Scaling gravity by aimLead landed novice grenades so short that the
+    # usefulness proof refused nearly every one.
+    if "flight * flight * traits.aimLead" in update_aim:
+        raise AssertionError("rvBot::UpdateAim scales projectile drop by lead skill")
     require_regex(
         update_aim,
         r"for\s*\(\s*int\s+i\s*=\s*0\s*;\s*i\s*<\s*[23]\s*;.*?"
@@ -665,8 +676,10 @@ def validate_safe_route_progress(bot: str, header: str) -> None:
             "MASK_PLAYERSOLID",
             "sweep.fraction",
             "gameLocal.TracePoint(",
-            "floor.fraction < 1.0f",
+            "floor.fraction >= 1.0f",
             "floor.c.normal.z",
+            # Solid ground can still be lava or a kill volume.
+            "navMesh.IsHazardous( floor.endpos, true )",
         ),
         "BotMoveDirectionSafe hull/floor validation",
     )

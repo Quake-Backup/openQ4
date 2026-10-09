@@ -144,6 +144,16 @@ characterChat "Voss" {
 		"That's my last call. Watch each other's blind side."
 		"Until next time. Make the safe choice before the brave one."
 	}
+	chat order {
+		"Copy, $other. Keep it simple."
+		"Understood. Moving with purpose."
+		"On it. Watch my lane while I go."
+		"Roger. Stay together on this one."
+		"Good order, $other. Executing."
+		"Moving now. Comms stay clear."
+		"Acknowledged. Stay disciplined."
+		"Will do. Hold the formation."
+	}
 	reply help {
 		priority 40
 		source any

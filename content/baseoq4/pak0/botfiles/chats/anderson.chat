@@ -144,6 +144,16 @@ characterChat "Anderson" {
 		"Good work out there. Anderson out."
 		"Take care, everyone. I'll see you next time."
 	}
+	chat order {
+		"Copy that, $other. I've got you."
+		"On it. Holler if you need patching up."
+		"Understood. I'll be where you need me."
+		"Roger, $other. Moving now."
+		"You got it. Keep your head down."
+		"Will do. Stay in one piece out there."
+		"Heard you, $other. Doc's on the way."
+		"Affirmative. I'll keep the team standing."
+	}
 	reply help {
 		priority 40
 		source any

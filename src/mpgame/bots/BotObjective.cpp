@@ -21,6 +21,15 @@ static const float BOTOBJ_PRIORITY_ESCORT	= 72.0f;
 static const float BOTOBJ_PRIORITY_CONTROL	= 68.0f;
 static const float BOTOBJ_PRIORITY_FETCH	= 60.0f;
 static const float BOTOBJ_PRIORITY_DEFEND	= 54.0f;
+// An order outranks the role the allocator would have handed out, but not the
+// rules' urgent steps: a carrier still captures and anyone may still grab
+// health at the edge of death.
+static const float BOTOBJ_ORDER_BONUS		= 20.0f;
+
+// A bot already filling a role keeps it unless a challenger is clearly closer:
+// three quarters of its distance, less a fixed margin.
+static const float BOTOBJ_INCUMBENT_SCALE	= 0.75f;
+static const float BOTOBJ_INCUMBENT_MARGIN	= 256.0f;
 
 /*
 ================
@@ -166,16 +175,57 @@ static int BotObjectiveCountRolePlayers( idPlayer *self, idPlayer *excluded,
 
 /*
 ================
+BotObjectiveRoleDistance
+
+Straight-line distance to a role's target, with the bot already filling that
+role given an incumbent's margin.  Without it every bot re-ranked by raw
+distance on its own decision tick, so an escort trailing its carrier lost the
+role to a defender the carrier ran past, dropped back, and won it again - two
+bots trading the same two jobs every quarter second.
+================
+*/
+static float BotObjectiveRoleDistance( idPlayer *candidate, const idVec3 &targetOrigin,
+									   botObjectiveKind_t kind, const idEntity *target ) {
+	float distance = ( candidate->GetPhysics()->GetOrigin() - targetOrigin ).Length();
+
+	// How far the run is, not how far the crow flies: on a stacked map the bot
+	// standing over the flag can be the furthest from it.  The landmark bound
+	// is constant time and sees walls and floors; a player the navmesh cannot
+	// place keeps the straight line, and one that cannot get there at all
+	// goes last.
+	if ( target && navMesh.IsValid() ) {
+		const int from = botManager.ClientNavNode( candidate->entityNumber );
+		const int to = ( target->entityNumber >= 0 && target->entityNumber < MAX_CLIENTS ) ?
+			botManager.ClientNavNode( target->entityNumber ) : navMesh.NodeForEntity( target );
+		if ( from >= 0 && to >= 0 ) {
+			const float bound = navMesh.RouteLowerBound( from, to );
+			distance = ( bound >= 1.0e29f ) ? 1.0e8f : Max( bound, 0.0f );
+		}
+	}
+
+	if ( kind != BOTOBJ_NONE && botManager.ObjectiveKindOf( candidate->entityNumber ) == kind &&
+		 ( !target || botManager.ObjectiveEntityOf( candidate->entityNumber ) == target ) ) {
+		distance = Max( 0.0f, distance * BOTOBJ_INCUMBENT_SCALE - BOTOBJ_INCUMBENT_MARGIN );
+	}
+
+	return distance;
+}
+
+/*
+================
 BotObjectiveSelectClosestRolePlayers
 
 Produces the same mask for every bot on a team.  Distance assigns the useful
 players while the entity number makes exact ties deterministic, avoiding the
-all-team dogpile that a nearest-objective query creates.
+all-team dogpile that a nearest-objective query creates.  Incumbents keep a
+role unless a challenger is clearly better placed.
 ================
 */
 static int BotObjectiveSelectClosestRolePlayers( idPlayer *self, const idVec3 &targetOrigin,
 										  int requested, idPlayer *excluded,
-										  const bool *blocked, bool selected[MAX_CLIENTS] ) {
+										  const bool *blocked, bool selected[MAX_CLIENTS],
+										  botObjectiveKind_t kind = BOTOBJ_NONE,
+										  const idEntity *target = NULL ) {
 	memset( selected, 0, sizeof( bool ) * MAX_CLIENTS );
 	requested = Max( 0, requested );
 	int selectedCount = 0;
@@ -190,8 +240,7 @@ static int BotObjectiveSelectClosestRolePlayers( idPlayer *self, const idVec3 &t
 				continue;
 			}
 
-			const float distanceSqr =
-				( candidate->GetPhysics()->GetOrigin() - targetOrigin ).LengthSqr();
+			const float distanceSqr = Square( BotObjectiveRoleDistance( candidate, targetOrigin, kind, target ) );
 			if ( distanceSqr < bestDistanceSqr ||
 				 ( distanceSqr == bestDistanceSqr &&
 				   ( !best || candidate->entityNumber < best->entityNumber ) ) ) {
@@ -250,7 +299,7 @@ and deterministic without persistent squad state in the objective query.
 */
 static idEntity *BotObjectiveAssignUniqueTarget( idPlayer *self,
 										  idEntity **targets, int targetCount,
-										  const bool *blocked ) {
+										  const bool *blocked, botObjectiveKind_t kind ) {
 	idPlayer *rolePlayers[MAX_CLIENTS];
 	bool playerAssigned[MAX_CLIENTS];
 	bool targetAssigned[MAX_CLIENTS];
@@ -283,8 +332,8 @@ static idEntity *BotObjectiveAssignUniqueTarget( idPlayer *self,
 					continue;
 				}
 
-				const float distanceSqr = ( rolePlayers[playerIndex]->GetPhysics()->GetOrigin() -
-					 target->GetPhysics()->GetOrigin() ).LengthSqr();
+				const float distanceSqr = Square( BotObjectiveRoleDistance( rolePlayers[playerIndex],
+					target->GetPhysics()->GetOrigin(), kind, target ) );
 				const bool lowerPlayer = bestPlayer < 0 ||
 					rolePlayers[playerIndex]->entityNumber < rolePlayers[bestPlayer]->entityNumber;
 				const bool lowerTarget = bestTarget < 0 ||
@@ -465,6 +514,88 @@ static rvCTF_AssaultPoint *BotObjectiveNextAssaultPoint( idPlayer *self, int tea
 
 /*
 ================
+BotObjectiveBlockOrdered
+
+Bots under a team order are not the allocator's to place.  Every bot on the
+team marks the same ones - the orders table is shared - so the masks the
+allocator promises to agree on still agree.
+================
+*/
+static void BotObjectiveBlockOrdered( idPlayer *self, bool blocked[MAX_CLIENTS] ) {
+	for ( int i = 0; i < gameLocal.numClients; i++ ) {
+		idPlayer *candidate = gameLocal.GetClientByNum( i );
+		if ( candidate && candidate->team == self->team && botManager.GetOrder( i ) ) {
+			blocked[i] = true;
+		}
+	}
+}
+
+/*
+================
+BotObjectiveFromOrder
+
+What a standing order means in the current mode.  False leaves the bot to its
+own judgement for now - a follow order whose leader is dead, an attack order
+outside CTF - without cancelling the order.
+================
+*/
+static bool BotObjectiveFromOrder( idPlayer *self, const botOrder_t &order, botObjective_t &out ) {
+	switch ( order.kind ) {
+		case BOTORDER_FOLLOW: {
+			idPlayer *leader = gameLocal.GetClientByNum( order.commander );
+			idVec3 leaderOrigin;
+			if ( !leader || !BotObjectiveLivePlayer( self, leader ) || leader->team != self->team ||
+				 !BotObjectiveOrigin( leader, leaderOrigin ) ) {
+				return false;
+			}
+			return BotObjectiveSet( out, BOTOBJ_ESCORT, leader, leaderOrigin,
+				BOTOBJ_PRIORITY_ESCORT + BOTOBJ_ORDER_BONUS, false );
+		}
+
+		case BOTORDER_DEFEND: {
+			idEntity *anchor = order.anchor.GetEntity();
+			if ( !anchor && MPGameTypeHasAny( gameLocal.gameType, GTF_FLAG ) ) {
+				anchor = BotObjectiveFindFlag( self, self->team, false, true );
+			}
+			idVec3 anchorOrigin;
+			if ( !anchor || !BotObjectiveSameInstance( self, anchor ) || !BotObjectiveOrigin( anchor, anchorOrigin ) ) {
+				return false;
+			}
+			return BotObjectiveSet( out, BOTOBJ_DEFEND, anchor, anchorOrigin,
+				BOTOBJ_PRIORITY_DEFEND + BOTOBJ_ORDER_BONUS, true );
+		}
+
+		case BOTORDER_ATTACK: {
+			if ( !MPGameTypeHasAny( gameLocal.gameType, GTF_FLAG ) ) {
+				return false;
+			}
+			// The flag to take, wherever it lies; once a team-mate has it, its
+			// escort is where an attacker is useful.
+			const bool oneFlag = MPGameTypeHasAny( gameLocal.gameType, GTF_ONEFLAG );
+			const int enemyTeam = gameLocal.mpGame.OpposingTeam( self->team );
+			rvItemCTFFlag *flag = BotObjectiveFindFlag( self, oneFlag ? TEAM_MAX : enemyTeam, true, false );
+			idVec3 flagOrigin;
+			if ( flag && BotObjectiveOrigin( flag, flagOrigin ) ) {
+				return BotObjectiveSet( out, BOTOBJ_FETCH, flag, flagOrigin,
+					BOTOBJ_PRIORITY_FETCH + BOTOBJ_ORDER_BONUS, false );
+			}
+			idPlayer *carrier = BotObjectiveTeamCarrier( self, self->team,
+				oneFlag ? POWERUP_CTF_ONEFLAG : BotObjectiveFlagPowerup( enemyTeam ) );
+			idVec3 carrierOrigin;
+			if ( carrier && BotObjectiveOrigin( carrier, carrierOrigin ) ) {
+				return BotObjectiveSet( out, BOTOBJ_ESCORT, carrier, carrierOrigin,
+					BOTOBJ_PRIORITY_ESCORT + BOTOBJ_ORDER_BONUS, false );
+			}
+			return false;
+		}
+
+		default:
+			return false;
+	}
+}
+
+/*
+================
 BotFindCTFObjective
 ================
 */
@@ -509,6 +640,12 @@ static bool BotFindCTFObjective( idPlayer *self, botObjective_t &out ) {
 		state = static_cast<rvCTFGameState *>( rawState );
 	}
 
+	// A standing order comes after the carrier's duty and before any role.
+	const botOrder_t *order = botManager.GetOrder( self->entityNumber );
+	if ( order && BotObjectiveFromOrder( self, *order, out ) ) {
+		return true;
+	}
+
 	rvItemCTFFlag *droppedOwnFlag = NULL;
 	if ( !oneFlag && state && state->GetFlagState( ownTeam ) == FS_DROPPED ) {
 		rvItemCTFFlag *candidate = BotObjectiveFindFlag( self, ownTeam, true, false );
@@ -520,6 +657,7 @@ static bool BotFindCTFObjective( idPlayer *self, botObjective_t &out ) {
 	bool assigned[MAX_CLIENTS];
 	bool selected[MAX_CLIENTS];
 	memset( assigned, 0, sizeof( assigned ) );
+	BotObjectiveBlockOrdered( self, assigned );
 	const int selfNum = self->entityNumber;
 
 	// One or two nearby returners are enough; the rest keep pressure on the
@@ -530,7 +668,7 @@ static bool BotFindCTFObjective( idPlayer *self, botObjective_t &out ) {
 			const int available = BotObjectiveCountRolePlayers( self, friendlyCarrier, assigned );
 			const int returners = Min( available, available >= 5 ? 2 : 1 );
 			BotObjectiveSelectClosestRolePlayers( self, flagOrigin, returners,
-				friendlyCarrier, assigned, selected );
+				friendlyCarrier, assigned, selected, BOTOBJ_RETURN, droppedOwnFlag );
 			if ( selected[selfNum] ) {
 				return BotObjectiveSet( out, BOTOBJ_RETURN, droppedOwnFlag, flagOrigin,
 					BOTOBJ_PRIORITY_RETURN + 9.0f, false );
@@ -549,7 +687,7 @@ static bool BotFindCTFObjective( idPlayer *self, botObjective_t &out ) {
 			const int interceptors = friendlyCarrier ? BotObjectiveSupportSlots( available ) :
 				BotObjectiveMajoritySlots( available );
 			BotObjectiveSelectClosestRolePlayers( self, carrierOrigin, interceptors,
-				friendlyCarrier, assigned, selected );
+				friendlyCarrier, assigned, selected, BOTOBJ_INTERCEPT, enemyCarrier );
 			if ( selected[selfNum] ) {
 				const float urgency = friendlyCarrier ? 0.0f : 6.0f;
 				return BotObjectiveSet( out, BOTOBJ_INTERCEPT, enemyCarrier, carrierOrigin,
@@ -570,7 +708,7 @@ static bool BotFindCTFObjective( idPlayer *self, botObjective_t &out ) {
 				escorts = Min( available, escorts + 1 );
 			}
 			BotObjectiveSelectClosestRolePlayers( self, carrierOrigin, escorts,
-				friendlyCarrier, assigned, selected );
+				friendlyCarrier, assigned, selected, BOTOBJ_ESCORT, friendlyCarrier );
 			if ( selected[selfNum] ) {
 				return BotObjectiveSet( out, BOTOBJ_ESCORT, friendlyCarrier, carrierOrigin,
 					BOTOBJ_PRIORITY_ESCORT + ( carrierHurt ? 8.0f : 0.0f ), false );
@@ -586,7 +724,7 @@ static bool BotFindCTFObjective( idPlayer *self, botObjective_t &out ) {
 		const int available = BotObjectiveCountRolePlayers( self, friendlyCarrier, assigned );
 		const int attackers = available <= 2 ? available : BotObjectiveMajoritySlots( available );
 		BotObjectiveSelectClosestRolePlayers( self, flagOrigin, attackers,
-			friendlyCarrier, assigned, selected );
+			friendlyCarrier, assigned, selected, BOTOBJ_FETCH, flag );
 		if ( selected[selfNum] ) {
 			return BotObjectiveSet( out, BOTOBJ_FETCH, flag, flagOrigin,
 				BOTOBJ_PRIORITY_FETCH, false );
@@ -642,11 +780,19 @@ static bool BotFindFreezeTagObjective( idPlayer *self, botObjective_t &out ) {
 		}
 	}
 
+	const botOrder_t *order = botManager.GetOrder( self->entityNumber );
+	if ( order && BotObjectiveFromOrder( self, *order, out ) ) {
+		return true;
+	}
+
 	if ( !frozenCount ) {
 		return false;
 	}
 
-	idEntity *assignedBody = BotObjectiveAssignUniqueTarget( self, frozenBodies, frozenCount, NULL );
+	bool blocked[MAX_CLIENTS];
+	memset( blocked, 0, sizeof( blocked ) );
+	BotObjectiveBlockOrdered( self, blocked );
+	idEntity *assignedBody = BotObjectiveAssignUniqueTarget( self, frozenBodies, frozenCount, blocked, BOTOBJ_RESCUE );
 	idVec3 frozenOrigin;
 	if ( !assignedBody || !BotObjectiveOrigin( assignedBody, frozenOrigin ) ) {
 		return false;
@@ -757,11 +903,17 @@ static bool BotFindDeadZoneObjective( idPlayer *self, botObjective_t &out ) {
 		return false;
 	}
 
+	const botOrder_t *order = botManager.GetOrder( self->entityNumber );
+	if ( order && BotObjectiveFromOrder( self, *order, out ) ) {
+		return true;
+	}
+
 	idPlayer *enemyCarrier = BotObjectiveTeamCarrier( self, enemyTeam, POWERUP_DEADZONE );
 	idPlayer *friendlyCarrier = BotObjectiveTeamCarrier( self, self->team, POWERUP_DEADZONE );
 	bool assigned[MAX_CLIENTS];
 	bool selected[MAX_CLIENTS];
 	memset( assigned, 0, sizeof( assigned ) );
+	BotObjectiveBlockOrdered( self, assigned );
 	const int selfNum = self->entityNumber;
 
 	if ( enemyCarrier ) {
@@ -771,7 +923,7 @@ static bool BotFindDeadZoneObjective( idPlayer *self, botObjective_t &out ) {
 			const int interceptors = ( enemyControls || deadlocked ) ?
 				BotObjectiveMajoritySlots( available ) : BotObjectiveSupportSlots( available );
 			BotObjectiveSelectClosestRolePlayers( self, carrierOrigin, interceptors,
-				friendlyCarrier, assigned, selected );
+				friendlyCarrier, assigned, selected, BOTOBJ_INTERCEPT, enemyCarrier );
 			if ( selected[selfNum] ) {
 				return BotObjectiveSet( out, BOTOBJ_INTERCEPT, enemyCarrier, carrierOrigin,
 					BOTOBJ_PRIORITY_INTERCEPT + ( enemyControls ? 8.0f : ( deadlocked ? 5.0f : 0.0f ) ),
@@ -788,7 +940,7 @@ static bool BotFindDeadZoneObjective( idPlayer *self, botObjective_t &out ) {
 			const int escorts = ( ownControls || deadlocked ) ?
 				BotObjectiveSupportSlots( available ) : BotObjectiveMajoritySlots( available );
 			BotObjectiveSelectClosestRolePlayers( self, carrierOrigin, escorts,
-				friendlyCarrier, assigned, selected );
+				friendlyCarrier, assigned, selected, BOTOBJ_ESCORT, friendlyCarrier );
 			if ( selected[selfNum] ) {
 				return BotObjectiveSet( out, BOTOBJ_ESCORT, friendlyCarrier, carrierOrigin,
 					BOTOBJ_PRIORITY_ESCORT + ( deadlocked ? 10.0f : ( ownControls ? 6.0f : 0.0f ) ),
@@ -807,7 +959,7 @@ static bool BotFindDeadZoneObjective( idPlayer *self, botObjective_t &out ) {
 		const int controllers = ownControls && !deadlocked ? Min( 1, available ) :
 			BotObjectiveMajoritySlots( available );
 		BotObjectiveSelectClosestRolePlayers( self, zoneOrigin, controllers,
-			friendlyCarrier, assigned, selected );
+			friendlyCarrier, assigned, selected, BOTOBJ_CONTROL, openZone );
 		if ( selected[selfNum] ) {
 			const float urgency = enemyControls ? 16.0f : ( deadlocked ? 12.0f :
 				( ownControls ? 2.0f : 7.0f ) );
@@ -822,7 +974,7 @@ static bool BotFindDeadZoneObjective( idPlayer *self, botObjective_t &out ) {
 	// nearest to itself and converging on the same pickup.
 	idEntity *artifacts[MAX_CLIENTS];
 	const int artifactCount = BotObjectiveCollectArtifacts( self, artifacts );
-	idEntity *artifact = BotObjectiveAssignUniqueTarget( self, artifacts, artifactCount, assigned );
+	idEntity *artifact = BotObjectiveAssignUniqueTarget( self, artifacts, artifactCount, assigned, BOTOBJ_FETCH );
 	idVec3 artifactOrigin;
 	if ( !assigned[selfNum] && artifact && BotObjectiveOrigin( artifact, artifactOrigin ) ) {
 		return BotObjectiveSet( out, BOTOBJ_FETCH, artifact, artifactOrigin,
@@ -868,6 +1020,13 @@ bool BotFindObjective( idPlayer *self, botObjective_t &out ) {
 	}
 	if ( gameLocal.gameType == GAME_DEADZONE ) {
 		return BotFindDeadZoneObjective( self, out );
+	}
+
+	// Team Deathmatch and the round modes have no objective of their own, but
+	// an order to follow or to hold a spot still is one.
+	const botOrder_t *order = gameLocal.IsTeamGame() ? botManager.GetOrder( self->entityNumber ) : NULL;
+	if ( order ) {
+		return BotObjectiveFromOrder( self, *order, out );
 	}
 
 	return false;

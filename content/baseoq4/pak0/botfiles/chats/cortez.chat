@@ -144,6 +144,16 @@ characterChat "Cortez" {
 		"Cortez out. Leave me one good angle next time."
 		"That is enough shooting for now. Take care."
 	}
+	chat order {
+		"Understood, $other. I will see to it."
+		"Very well. I am moving."
+		"Of course. Consider it handled."
+		"As you wish, $other."
+		"A sensible plan. I am on my way."
+		"Claro. I will hold my end."
+		"Received. I will find the right angle there."
+		"Then that is where I am needed."
+	}
 	reply help {
 		priority 40
 		source any

@@ -195,6 +195,27 @@ stays inside the team, and replies cannot trigger reply chains. Set
 to keep them quiet. Messages wait briefly according to their visible length,
 and the stock Quake 4 typing icon appears above the bot until the line is sent.
 
+### Giving bots orders
+
+In a team game you can tell the bots on your side what to do in team chat.
+Start with a bot's name - or `everyone` for all of them - and follow it with the
+order:
+
+| Type | The bot |
+| --- | --- |
+| `kane follow me` | stays with you and fights beside you |
+| `everyone defend` | holds your team's base in Capture the Flag |
+| `sorg hold here` | holds the area where you are standing |
+| `kane attack` | goes for the enemy flag, or escorts whoever has it |
+| `everyone dismissed` | goes back to playing on its own |
+
+`escort me`, `cover me`, `guard`, `get the flag` and `free` work too, and you
+can name several bots at once: `sorg and bagby defend`. The bots answer in team
+chat so you know the order landed. An order lasts until you give another one or
+dismiss them, and it ends if the bot changes team or the map changes. A bot
+carrying the flag still takes it home, and a badly hurt bot still grabs health
+on the way.
+
 The bot cvars are archived, so setting them once in your server config is
 enough. For the full command list, the character file format, and how to add
 your own characters, see [Multiplayer bots](../dev/mp-bots.md).

@@ -78,6 +78,8 @@ TRAIT_DIRECTION = {
     "dodgeReactMsec": -1,
     "weaponSkill": +1,
     "targetSelection": +1,
+    "hearing": +1,
+    "itemTiming": +1,
 }
 
 # Deliberately flat across the whole curve: these are the axes a style or a
@@ -1079,6 +1081,7 @@ def validate_content() -> None:
     allowed_tokens["itemDenied"].update(("$other", "$item"))
     allowed_tokens["leadTaken"].add("$other")
     allowed_tokens["leadLost"].add("$other")
+    allowed_tokens["order"].add("$other")
 
     chats_by_owner: dict[str, Block] = {}
     normalized_lines: dict[str, tuple[str, str, int]] = {}

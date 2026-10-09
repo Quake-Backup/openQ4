@@ -144,6 +144,16 @@ characterChat "Rhodes" {
 		"Good shootin', folks. Let's do it again."
 		"Time to pack the tools. See ya next match."
 	}
+	chat order {
+		"You got it, partner."
+		"Yeehaw, $other. On my way."
+		"Sure thing. Let's make some noise over there."
+		"Heard you loud and clear, partner."
+		"Saddlin' up. Be there quick."
+		"Hell yeah, $other, I'm on it."
+		"Consider it done, partner."
+		"Rollin' out. Save some for me."
+	}
 	reply help {
 		priority 40
 		source any

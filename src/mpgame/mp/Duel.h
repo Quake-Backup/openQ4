@@ -52,6 +52,8 @@ public:
 private:
 	void			UpdateQueue( void );
 	void			PromoteFromQueue( void );
+	// A seat a bot holds goes to a person waiting in the queue, between matches.
+	void			PreferHumanContenders( void );
 	void			RotateLoser( void );
 
 	// the two players currently holding the arena

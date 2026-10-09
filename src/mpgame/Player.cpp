@@ -3637,6 +3637,13 @@ void idPlayer::SpawnToPoint( const idVec3 &spawn_origin, const idAngles &spawn_a
 
 // openQ4 BEGIN
 	SpawnLiquidTestVolume();
+
+	// A bot moved here by a round or match restart never passes through the
+	// dead frame that resets its route, enemy memory and aim, so tell it that
+	// this is a new life.
+	if ( gameLocal.isServer && gameLocal.isMultiplayer ) {
+		botManager.OnPlayerRespawned( entityNumber );
+	}
 // openQ4 END
 }
 
@@ -10003,6 +10010,13 @@ bool idPlayer::AttemptToBuyItem( const char* itemName )
 	}
 
 	if( !itemName ) {
+		return false;
+	}
+
+	// openQ4: the authoritative gate.  Clients test CanBuy before sending the
+	// buy impulse, but the server never did, so a raw impulse bought armour or
+	// weapons in modes and at moments where buying is off.
+	if ( !CanBuy() ) {
 		return false;
 	}
 

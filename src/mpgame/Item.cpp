@@ -985,6 +985,11 @@ bool idItem::Pickup( idPlayer *player ) {
 		}
 	}
 
+	// openQ4: bots time the pickups they witness, the way a player does.
+	if ( gameLocal.isMultiplayer && gameLocal.isServer ) {
+		botManager.OnItemPickup( this, player, ( respawn && !dropped && !no_respawn ) ? respawn : 0.0f );
+	}
+
 	if ( respawn && !dropped && !no_respawn ) {
 		const char *sfx = spawnArgs.GetString( "fx_Respawn" );
 		if ( sfx && *sfx ) {
