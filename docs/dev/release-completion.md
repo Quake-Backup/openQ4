@@ -47,9 +47,26 @@
   asks for the player's action; the Competitive preset (`ui_hudLayout 3`) gives
   multiplayer the match bar with network quality, the team status lists and a
   15% larger status bar. Message mode opens the Remastered chat input under up
-  to eight lines of history. Settings > Game Options > HUD offers the layout,
-  size, width and safe-area inset, and Toggle Objectives (`g_objectivesToggle`)
-  opens and closes the objectives display with presses, with a Close prompt.
+  to eight lines of history, and the quick-chat wheel (`_quickChat`, D-pad
+  Down and V for new configurations) sends one of eight localized phrases to
+  the team or everyone ([quick chat](ui/weapon-wheels.md#quick-chat)).
+  Settings > Game Options > HUD offers the layout,
+  size, width and safe-area inset, the HUD's opacity (`ui_hudOpacity`), the
+  damage direction, pickup messages and weapon strip toggles
+  (`ui_hudDamageDirection`, `ui_hudPickups`, `ui_hudWeaponStrip`), and Toggle
+  Objectives (`g_objectivesToggle`), which opens and closes the objectives
+  display with presses, with a Close prompt. HUD prompts draw the controller
+  button's glyph in the family of the controller in use (`in_promptStyle`
+  forces one), and Remastered Tourney sets its message bar, timer and ROUND
+  and ARENA plate under the bracket strip. The HUD's alarms follow section
+  14.10: the carried flag beats as the stock one does, the one flag swings to
+  its carrier's team color, and under reduced motion every loop rests on its
+  static cue (a taken flag at 34 u, the exit chevron still, Dead Zone's team
+  color held a second per tick). Medical Labs' implant activation
+  (`guis/vehicles/medchange.gui`, section 14.19) is a Remastered document: the
+  stock hex sequence on the centered screen continued through every band, the
+  corner pieces at the view's corners, readouts at the screen edges, the hurt
+  pulse and the save notice, with steady cells under reduced motion.
   The held scoreboard is the multiplayer menus' card (section 14.18) as tall
   as its lists, with Tourney's bracket chart of open-plate arenas, and scrolls
   past its height by whole rows on the weapon-cycle controls and the right

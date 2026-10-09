@@ -40,6 +40,7 @@ struct idStr : std::string {
     int Length() const { return static_cast<int>(size()); }
     bool IsEmpty() const { return empty(); }
     static int Cmp(const char* a,const char* b) { return std::string(a).compare(b); }
+    static char ToUpper(char c) { return static_cast<char>(std::toupper(static_cast<unsigned char>(c))); }
     void StripLeading(char value) { erase(0,find_first_not_of(value)); }
     static int Icmpn(const char* a,const char* b,int length) { return Icmp(std::string(a,length).c_str(),std::string(b,length).c_str()); }
     static int Length(const char* value) { return static_cast<int>(std::char_traits<char>::length(value)); }
@@ -80,7 +81,10 @@ template<class T> struct idList {
 struct idVec4 { void Zero() {} } vec4_origin;
 struct idRectangle {};
 struct sysEvent_t { int evType=0,evValue=0,evValue2=0; };
-struct idMath { static float ClampFloat(float low,float high,float value) { return std::clamp(value,low,high); } };
+struct idMath {
+    static float ClampFloat(float low,float high,float value) { return std::clamp(value,low,high); }
+    static int ClampInt(int low,int high,int value) { return std::clamp(value,low,high); }
+};
 struct wrapInfo_t {};
 struct idKeyValue {
     idStr key,value;

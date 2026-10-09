@@ -127,7 +127,8 @@ def weapon_strip(doc: HudDocument, *, strogg: bool = False, awakening: bool = Fa
     for node in name:
         doc.bind(node["id"] + ".text", node["id"], "text", S("weaponname"))
     strip = full("strip", name + slots, display=ui.keyword("none"), opacity=num(1))
-    doc.show("strip", S("oq4.strip"))
+    # The weapon strip setting (13.9) keeps it hidden.
+    doc.show("strip", AND(S("oq4.strip"), S("hud.strip")))
     # Shown in the frame of a change, never before the first weapon or while
     # the HUD is hidden; hidden 1000 ms after the latest change or at once on
     # firing (hud.gui:194-255).
@@ -219,7 +220,10 @@ def pickup_lines(doc: HudDocument, *, strogg: bool = False, multiply_key: str = 
     doc.on("itemPickup", when(op("==", S("oq4.pickNewest"), 0),
                               [when(repeat(0), merge(0), fill(1))],
                               [when(repeat(1), merge(1), fill(0))]))
-    return full("pickups", lines)
+    group = full("pickups", lines)
+    # The pickup messages setting (13.9) hides them.
+    doc.bind("pickups.setting", "pickups", "display", sel(S("hud.pickups"), "block", "none"))
+    return group
 
 
 # ============================================================ transmission
@@ -346,6 +350,8 @@ def hit_indicator(doc: HudDocument) -> dict:
                                            blend="additive")])
     fading = full("hit-fade", [disc, chevron], opacity=num(0))
     turning = full("hit", [fading], transform=ui.transform())
+    # The damage direction setting (13.9) hides it.
+    doc.bind("hit.setting", "hit", "display", sel(S("hud.damageDir"), "block", "none"))
     doc.bind("hit.rotation", "hit", "transform", [0, 0, 1, 1, op("-", 0, S("hitdir"))])
     doc.timeline("hit-flash", 500, [tr("hit-fade", "opacity", [(0, num(0.7)), (500, num(0))])], essential=True)
     doc.on("playerHit", play("hit-flash"))
@@ -505,8 +511,11 @@ def notices(doc: HudDocument) -> list:
     chevron = vec("exit-chevron", [pts_path("chevron", chevron_pts, stroke=stroke(orange, u(3.4), join="miter"))],
                   {"transform": ui.transform(), "opacity": num(0.5)})
     accel = [0.455, 0.03, 0.515, 0.955]   # accel(500, 500): constant acceleration, then deceleration
-    doc.timeline("exit-rise", 1000, [tr("exit-chevron", "transform", [(0, transform_value(0, 0), accel), (1000, transform_value(0, u(-11)))]),
-                                     tr("exit-chevron", "opacity", [(0, num(0.5)), (1000, num(0))])], iterations=0)
+    # Each cycle snaps back to rest on its last millisecond, where reduced
+    # motion ends it: a static chevron at 0.50 (14.10).
+    doc.timeline("exit-rise", 1000, [tr("exit-chevron", "transform", [(0, transform_value(0, 0), accel), (999, transform_value(0, u(-11))),
+                                                                      (1000, transform_value(0, 0))]),
+                                     tr("exit-chevron", "opacity", [(0, num(0.5)), (999, num(0)), (1000, num(0.5))])], iterations=0)
     exit_group = full("exit", [chevron, exit_text], display=ui.keyword("none"), opacity=num(1))
     doc.show("exit", S("oq4.exit"))
     doc.timeline("exit-hold", 5000, [tr("exit", "opacity", [(0, num(1)), (5000, num(1))])], complete="exitDone", essential=True)
@@ -616,8 +625,21 @@ def powerups(doc: HudDocument) -> dict:
         flags.append(node)
     flag_disc = vec("pu-flag-disc", [pts_path("d", [(u(20 + 13 * math.cos(a * math.pi / 24)), u(13 + 13 * math.sin(a * math.pi / 24)))
                                                     for a in range(48)], fill=ui.solid([0, 0, 0, 0.5]))])
+    # The stock beat about the disc's center: 22 to 28 u over 150 ms and back
+    # over 500 ms; reduced motion ends it at rest, so the wrapper holds 28 u.
+    grow = 28 / 22
+    beat = box("pu-flag-beat", 0, 0, u(40), u(26), flags, transform=ui.transform())
+    peak = sel(S("oq4.reduced"), grow, 1)
+    held = box("pu-flag-held", 0, 0, u(40), u(26), [beat], transform=ui.transform())
+    doc.bind("pu-flag-held.reduced", "pu-flag-held", "transform", [0, 0, peak, peak, 0])
+    doc.timeline("pu-flag-beat", 650, [tr("pu-flag-beat", "transform", [(0, transform_value()), (150, transform_value(sx=grow, sy=grow)),
+                                                                        (650, transform_value())])], iterations=0)
+    # The game sends oq4_carriedFlag when the flag comes or goes.
+    step = when(op("!=", S("powerup_flag_visible"), 0), [play("pu-flag-beat")], [cancel("pu-flag-beat")])
+    doc.on("oq4_carriedFlag", step)
+    doc.joins.append(step)
     flag = ui.group("pu-flag", {"position": ui.keyword("relative"), "display": ui.keyword("none"), "width": ui.length(u(40)),
-                                "height": ui.length(u(34)), "flex-shrink": ui.number(0)}, [flag_disc, *flags])
+                                "height": ui.length(u(34)), "flex-shrink": ui.number(0)}, [flag_disc, held])
     doc.show("pu-flag", op("!=", S("powerup_flag_visible"), 0))
     column = ui.group("powerups", {**ui.absolute(left=u(592), top=u(100), width=u(40), height=u(313)), "display": ui.keyword("none"),
                                    "flex-direction": ui.keyword("column-reverse"), "align-items": ui.keyword("flex-end")},

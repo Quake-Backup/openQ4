@@ -21,6 +21,7 @@
 
 #if defined(USE_SDL3)
 bool Sys_SDL_IsGameWindowFocused(void);
+int Sys_SDL_GamepadGlyphFamily(int faceLabels[4]);
 #endif
 
 namespace {
@@ -38,9 +39,121 @@ bool NumberDraftState(const char* name) {
 	return name && (!idStr::Icmp(name,NumberDraftPending) || !idStr::Icmp(name,NumberDraftMessage));
 }
 
+// A bound key's escape (^ikHH or ^iKHH, HH its key number in hex), which
+// common->KeysFromBinding writes for the stock GUIs' key plates.
+int KeyEscapeDigit(char c) {
+	return c >= '0' && c <= '9' ? c - '0' : (c | 0x20) >= 'a' && (c | 0x20) <= 'f' ? (c | 0x20) - 'a' + 10 : -1;
+}
+int KeyEscape(const char* p) {
+	return p[0] == '^' && p[1] == 'i' && (p[2] == 'k' || p[2] == 'K') && p[3] && KeyEscapeDigit(p[3]) >= 0 && p[4] &&
+		KeyEscapeDigit(p[4]) >= 0 ? KeyEscapeDigit(p[3]) * 16 + KeyEscapeDigit(p[4]) : -1;
+}
+
+// In a retained document's string state a key escape reads as the key's name.
+std::string KeyEscapeNames(const char* text) {
+	if (!std::strstr(text,"^i")) return text;
+	std::string result;
+	for (const char* p = text; *p; ) {
+		const int key = KeyEscape(p);
+		if (key >= 0) {
+			result += idKeyInput::KeyNumToString(key,true);
+			p += 5;
+		} else {
+			result += *p++;
+		}
+	}
+	return result;
+}
+
+// The glyph a prompt's chip draws for a bound key (ui-visual-design.md 13.4,
+// 13.5, 14.8), in the family of the controller in use, and its label. A
+// document that declares "<key>.glyph" beside a key state receives the kind;
+// the key state then holds the label. The kinds are the documents' contract
+// (tools/ui/remastered_hud_base.py, GLYPH_*): 0 keycap (the key's name), 1 a
+// face button's letter, 2-5 the cross, circle, square and triangle, 6-9 the
+// south, east, west and north face buttons by position, 10 bumper, 11
+// trigger, 12-15 the d-pad's up, down, left and right, 16 stick click, 17
+// menu, 18 view, 19 home, 20 touchpad, 21 paddle, 22 another labelled button,
+// 23-25 the mouse's left, right and middle buttons, 26-27 the wheel up and
+// down, 28 a side button.
+struct KeyGlyph { int kind = 0; std::string label; };
+KeyGlyph PromptGlyph(int key) {
+	KeyGlyph glyph;
+	if (key >= K_MOUSE1 && key <= K_MOUSE8) {
+		glyph.kind = key == K_MOUSE1 ? 23 : key == K_MOUSE2 ? 24 : key == K_MOUSE3 ? 25 : 28;
+		if (glyph.kind == 28) glyph.label = std::to_string(key - K_MOUSE1 + 1);
+		return glyph;
+	}
+	if (key == K_MWHEELUP || key == K_MWHEELDOWN) {
+		glyph.kind = key == K_MWHEELUP ? 26 : 27;
+		return glyph;
+	}
+	const char* code = idKeyInput::KeyNumToString(key,false);
+	if (idStr::Icmpn(code,"JOY",3)) {
+		glyph.kind = idStr::Icmpn(code,"AUX",3) ? 0 : 22;
+		glyph.label = idKeyInput::KeyNumToString(key,true);
+		if (glyph.label.size() == 1) glyph.label[0] = static_cast<char>(idStr::ToUpper(glyph.label[0]));
+		return glyph;
+	}
+	// 0 generic, 1 Xbox, 2 PlayStation, 3 Nintendo, 4 Steam Deck.
+	int face[4] = {0,0,0,0}, family = 0;
+#if defined(USE_SDL3)
+	family = idMath::ClampInt(0,4,Sys_SDL_GamepadGlyphFamily(face));
+#endif
+	static const char* const bumpers[5][2] = {{"L1","R1"},{"LB","RB"},{"L1","R1"},{"L","R"},{"L1","R1"}};
+	static const char* const triggers[5][2] = {{"L2","R2"},{"LT","RT"},{"L2","R2"},{"ZL","ZR"},{"L2","R2"}};
+	static const char* const sticks[5][2] = {{"L3","R3"},{"LS","RS"},{"L3","R3"},{"LS","RS"},{"L3","R3"}};
+	static const char* const letters[5] = {"","A","B","X","Y"};
+	const int button = std::atoi(code + 3);
+	switch (button) {
+		case 1: case 2: glyph.kind = 10; glyph.label = bumpers[family][button - 1]; break;
+		case 3: case 4: case 5: case 6: {
+			// JOY3-6 are the south, east, north and west buttons.
+			const int position = button == 3 ? 0 : button == 4 ? 1 : button == 5 ? 3 : 2;
+			const int label = face[position];
+			if (label >= 1 && label <= 4) { glyph.kind = 1; glyph.label = letters[label]; }
+			else if (label >= 5 && label <= 8) glyph.kind = label - 3;
+			else glyph.kind = 6 + position;
+			break;
+		}
+		case 7: case 8:
+			if (family == 2) { glyph.kind = 22; glyph.label = button == 7 ? "OPTIONS" : "CREATE"; }
+			else if (family == 3) { glyph.kind = 22; glyph.label = button == 7 ? "+" : "-"; }
+			else glyph.kind = button == 7 ? 17 : 18;
+			break;
+		case 9: glyph.kind = 12; break;
+		case 10: glyph.kind = 13; break;
+		case 11: glyph.kind = 15; break;
+		case 12: glyph.kind = 14; break;
+		case 13: case 14: glyph.kind = 16; glyph.label = sticks[family][button - 13]; break;
+		case 15: glyph.kind = 11; glyph.label = triggers[family][1]; break;
+		case 16: glyph.kind = 11; glyph.label = triggers[family][0]; break;
+		case 17: glyph.kind = 19; break;
+		case 18: glyph.kind = 20; break;
+		case 19: case 20: case 21: case 22: {
+			// The right and left upper paddles, then the lower ones.
+			static const char* const deck[4] = {"R4","L4","R5","L5"};
+			static const char* const elite[4] = {"P1","P3","P2","P4"};
+			glyph.kind = 21; glyph.label = family == 4 ? deck[button - 19] : elite[button - 19];
+			break;
+		}
+		default: glyph.kind = 22; glyph.label = idKeyInput::KeyNumToString(key,true); break;
+	}
+	return glyph;
+}
+
+// The first bound key a key state names, or -1.
+int FirstKeyEscape(const char* text) {
+	for (const char* p = text ? std::strstr(text,"^i") : nullptr; p; p = std::strstr(p + 1,"^i")) {
+		const int key = KeyEscape(p);
+		if (key >= 0) return key;
+	}
+	return -1;
+}
+
 bool ConvertState(const char* text, size_t type, StateValue& value) {
 	if (!text) return false;
-	if (type == 2) value = std::string(text);
+	if (type == 2) value = KeyEscapeNames(text);
 	else if (type == 1) {
 		if (!idStr::Cmp(text,"1") || !idStr::Cmp(text,"true")) value = true;
 		else if (!idStr::Cmp(text,"0") || !idStr::Cmp(text,"false")) value = false;
@@ -58,7 +171,20 @@ bool ApplicationState(const DocumentModel& model, const idDict& dictionary, Stat
 	for (const auto& [name,declaration] : model.state) {
 		if (!declaration.cvar.empty() || name.starts_with("settings.") || NumberDraftState(name.c_str())) continue;
 		StateValue value = declaration.initial;
+		// A key state's glyph, and the key state as its label.
+		if (name.ends_with(".glyph") && declaration.initial.index() == 0) {
+			const int key = FirstKeyEscape(dictionary.GetString(name.substr(0,name.size() - 6).c_str()));
+			result.emplace(name,static_cast<double>(key >= 0 ? PromptGlyph(key).kind : 0));
+			continue;
+		}
 		const auto* entry = dictionary.FindKey(name.c_str());
+		if (entry && declaration.initial.index() == 2 && model.state.contains(name + ".glyph")) {
+			const int key = FirstKeyEscape(entry->GetValue().c_str());
+			if (key >= 0) {
+				result.emplace(name,PromptGlyph(key).label);
+				continue;
+			}
+		}
 		if (entry && !ConvertState(entry->GetValue().c_str(),declaration.initial.index(),value)) {
 			error = "Invalid application state: " + name; return false;
 		}

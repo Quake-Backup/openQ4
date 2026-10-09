@@ -22,6 +22,16 @@ int idPlayer::GetWeaponWheelSlotCount() const {
 	return !gameLocal.isMultiplayer && spawnArgs.GetString( "def_weapon12" )[0] ? 13 : 11;
 }
 
+// The wheels' placement in their 720 dp canvas: ui_weaponWheelOffset, kept
+// inside a narrow view without changing the archived preference.
+static void WeaponWheelPlacement( float &offset, float &fit ) {
+	const float width = 720.0f * gameLocal.GetScreenAspectRatio();
+	fit = Min( 1.0f, Max( 0.1f, ( width - 32.0f ) / 560.0f ) );
+	const float reach = Max( 0.0f, width * 0.5f - 264.0f * fit - 16.0f );
+	const float requested = width * idMath::ClampFloat( -40.0f, 40.0f, cvarSystem->GetCVarFloat( "ui_weaponWheelOffset" ) ) / 100.0f;
+	offset = idMath::ClampFloat( -reach, reach, requested );
+}
+
 bool idPlayer::DrawRetainedWeaponWheel() {
 	if ( !cvarSystem->GetCVarBool( "ui_retained" ) ) {
 		FreeWeaponWheelGui();
@@ -35,13 +45,10 @@ bool idPlayer::DrawRetainedWeaponWheel() {
 		weaponWheelGui = uiManager->FindGui( path, true, true );
 		if ( !weaponWheelGui ) { weaponWheelGuiSlot = -2; return false; }
 	}
-	// Work in the document's isotropic 720 dp canvas. Keep the archived
-	// preference intact when a narrow viewport needs a temporary safety fit.
-	const float width = 720.0f * gameLocal.GetScreenAspectRatio();
-	const float fit = Min( 1.0f, Max( 0.1f, ( width - 32.0f ) / 560.0f ) );
-	const float reach = Max( 0.0f, width * 0.5f - 264.0f * fit - 16.0f );
-	const float requested = width * idMath::ClampFloat( -40.0f, 40.0f, cvarSystem->GetCVarFloat( "ui_weaponWheelOffset" ) ) / 100.0f;
-	weaponWheelGui->SetStateFloat( "offset", idMath::ClampFloat( -reach, reach, requested ) );
+	// Work in the document's isotropic 720 dp canvas.
+	float offset, fit;
+	WeaponWheelPlacement( offset, fit );
+	weaponWheelGui->SetStateFloat( "offset", offset );
 	weaponWheelGui->SetStateFloat( "fit", fit );
 	weaponWheelGui->SetStateFloat( "blend", weaponWheelBlend );
 	weaponWheelGui->SetStateInt( "selected", Max( 0, weaponWheelHoveredSlot ) );
@@ -86,7 +93,13 @@ bool idPlayer::DrawRetainedWeaponWheel() {
 }
 
 float idPlayer::GetWeaponWheelBlend() const {
-	return entityNumber == gameLocal.localClientNum ? weaponWheelBlend : 0;
+	if ( entityNumber != gameLocal.localClientNum ) return 0;
+#ifdef GAME_MPAPI
+	// The quick-chat wheel softens the scene as the weapon wheel does.
+	return Max( weaponWheelBlend, quickChatBlend );
+#else
+	return weaponWheelBlend;
+#endif
 }
 
 void idPlayer::DrawWeaponWheel() {
@@ -289,33 +302,39 @@ bool idPlayer::IsWeaponWheelSlotLowAmmo( int slot ) {
 	return ammoCount <= lowAmmo;
 }
 
-void idPlayer::UpdateWeaponWheelCursor( void ) {
-	const int mouseDx = usercmd.mx - weaponWheelLastMouseX;
-	const int mouseDy = usercmd.my - weaponWheelLastMouseY;
+// The wheels' selector: the mouse's motion, else the look stick's turn, added
+// to a cursor that stays within the ring.
+static void WeaponWheelAdvanceCursor( const usercmd_t &cmd, idVec2 &cursor, int &lastMouseX, int &lastMouseY, idAngles &lastAngles ) {
+	const int mouseDx = cmd.mx - lastMouseX;
+	const int mouseDy = cmd.my - lastMouseY;
 	idAngles currentCmdAngles;
-	currentCmdAngles[ PITCH ] = SHORT2ANGLE( usercmd.angles[ PITCH ] );
-	currentCmdAngles[ YAW ] = SHORT2ANGLE( usercmd.angles[ YAW ] );
-	currentCmdAngles[ ROLL ] = SHORT2ANGLE( usercmd.angles[ ROLL ] );
-	const float lookDx = idMath::AngleNormalize180( currentCmdAngles[ YAW ] - weaponWheelLastCmdAngles[ YAW ] );
-	const float lookDy = idMath::AngleNormalize180( currentCmdAngles[ PITCH ] - weaponWheelLastCmdAngles[ PITCH ] );
+	currentCmdAngles[ PITCH ] = SHORT2ANGLE( cmd.angles[ PITCH ] );
+	currentCmdAngles[ YAW ] = SHORT2ANGLE( cmd.angles[ YAW ] );
+	currentCmdAngles[ ROLL ] = SHORT2ANGLE( cmd.angles[ ROLL ] );
+	const float lookDx = idMath::AngleNormalize180( currentCmdAngles[ YAW ] - lastAngles[ YAW ] );
+	const float lookDy = idMath::AngleNormalize180( currentCmdAngles[ PITCH ] - lastAngles[ PITCH ] );
 
-	weaponWheelLastMouseX = usercmd.mx;
-	weaponWheelLastMouseY = usercmd.my;
-	weaponWheelLastCmdAngles = currentCmdAngles;
+	lastMouseX = cmd.mx;
+	lastMouseY = cmd.my;
+	lastAngles = currentCmdAngles;
 
-	weaponWheelCursor.x += mouseDx * WEAPON_WHEEL_MOUSE_SENSITIVITY;
-	weaponWheelCursor.y += mouseDy * WEAPON_WHEEL_MOUSE_SENSITIVITY;
+	cursor.x += mouseDx * WEAPON_WHEEL_MOUSE_SENSITIVITY;
+	cursor.y += mouseDy * WEAPON_WHEEL_MOUSE_SENSITIVITY;
 	if ( mouseDx == 0 && mouseDy == 0 ) {
 		const float sensitivity = idMath::ClampFloat( 0.25f, 16.0f, cvarSystem->GetCVarFloat( "in_weaponWheelSensitivity" ) );
 		// Turning right decreases yaw; wheel coordinates increase to the right.
-		weaponWheelCursor.x -= lookDx * sensitivity;
-		weaponWheelCursor.y += lookDy * sensitivity;
+		cursor.x -= lookDx * sensitivity;
+		cursor.y += lookDy * sensitivity;
 	}
 
-	const float cursorLength = weaponWheelCursor.Length();
+	const float cursorLength = cursor.Length();
 	if ( cursorLength > WEAPON_WHEEL_CURSOR_RADIUS ) {
-		weaponWheelCursor *= ( WEAPON_WHEEL_CURSOR_RADIUS / cursorLength );
+		cursor *= ( WEAPON_WHEEL_CURSOR_RADIUS / cursorLength );
 	}
+}
+
+void idPlayer::UpdateWeaponWheelCursor( void ) {
+	WeaponWheelAdvanceCursor( usercmd, weaponWheelCursor, weaponWheelLastMouseX, weaponWheelLastMouseY, weaponWheelLastCmdAngles );
 }
 
 void idPlayer::UpdateWeaponWheelEffects( void ) {

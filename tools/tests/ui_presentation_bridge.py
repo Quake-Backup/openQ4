@@ -29,6 +29,10 @@ struct idStr {
     int Find(const char* needle) const {auto pos=text.find(needle);return pos==text.npos?-1:static_cast<int>(pos);}
     idStr Left(int count) const {return text.substr(0,count);}
     idStr Right(int count) const {return text.substr(text.size()-count);}
+    static int Icmp(const char* a,const char* b) {
+        while(*a && *b) {const int d=std::tolower(static_cast<unsigned char>(*a++))-std::tolower(static_cast<unsigned char>(*b++)); if(d)return d;}
+        return static_cast<unsigned char>(*a)-static_cast<unsigned char>(*b);
+    }
 };
 struct idRectangle {float x=0,y=0,w=0,h=0;};
 struct idWinVar {
@@ -71,6 +75,9 @@ struct idDict {
 const char* va(const char* format,int value){static char result[64];std::snprintf(result,sizeof result,format,value);return result;}
 struct idUserInterfaceLocal {
     idWindow* desktop=nullptr;idDict state;
+    // The HUD bridge's and the Remastered peer's state (RetainedHud.cpp).
+    struct RetainedHud { bool drawn=false; bool DrawSucceeded() const {return drawn;} } bridge,*retainedHud=nullptr;
+    bool remastered=false; bool RemasteredActive() const {return remastered;}
     const idDict& State() const {return state;}
     bool GetPresentationValue(const char*,idStr&) const;
     bool SetPresentationValue(const char*,const char*,bool overrideExpression=true);
@@ -84,6 +91,14 @@ int main(){
     idStr out="unchanged";
     assert(!gui.GetPresentationValue("curr",out) && out.text=="unchanged");
     assert(!gui.SetPresentationValue("curr","1"));
+    // The HUD's reserved reads answer without a desktop.
+    assert(gui.GetPresentationValue("__retained::hudDrawSucceeded",out) && out.text=="0");
+    gui.retainedHud=&gui.bridge;gui.bridge.drawn=true;
+    assert(gui.GetPresentationValue("__RETAINED::hudDrawSucceeded",out) && out.text=="1");
+    assert(gui.GetPresentationValue("__remastered::active",out) && out.text=="0");
+    gui.remastered=true;
+    assert(gui.GetPresentationValue("__remastered::active",out) && out.text=="1");
+    out="unchanged";
     idWindow root,child;
     idSimpleWindow simple;
     root.values["curr"]={};root.values["skill"]={};

@@ -573,7 +573,21 @@
 							set "cmd" "play main_menu_selection" ;
 						}
 
-					}					
+					}
+					bindDef set_ctrls_weap_quickchat_key
+					{
+						rect	452,407,149,17
+						visible	1
+						forecolor	1,0.745,0.137,0.8
+						bind	_quickChat
+						textscale	0.24
+						font	"fonts/lowpixel"
+
+						onAction {
+							set "cmd" "play main_menu_selection" ;
+						}
+
+					}
 					windowDef set_ctrls_weap_blastergaunt
 					{
 						rect	260,119,189,18
@@ -681,7 +695,16 @@
 						text	"#str_222014"
 						textscale	0.24
 						font	"fonts/lowpixel"
-					}					
+					}
+					windowDef set_ctrls_weap_quickchat
+					{
+						rect	260,407,189,17
+						visible	1
+						forecolor	1,1,1,0.8
+						text	"#str_231269"
+						textscale	0.24
+						font	"fonts/lowpixel"
+					}
 				}
 				windowDef p_set_ctrls_attk
 				{

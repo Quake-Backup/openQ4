@@ -17,7 +17,8 @@ import math
 
 import build_retained_screens as ui
 import hud_svg
-from remastered_hud_base import (AND, BOUND_TEXT, NOT, OR, S, HudDocument, anchor, beyond_minimal, box, face_metrics, join_events,
+from remastered_hud_base import (AND, BOUND_TEXT, NOT, OR, S, HudDocument, anchor, beyond_minimal, box, face_metrics, gameplay_root,
+                                 join_events,
                                  layout_state, num, op, play, pts_path, rgb, rounded_rect, sel, shear_group, stroke, svg_path,
                                  text_box, tr, transform_value, u, vec, when)
 
@@ -229,7 +230,7 @@ def turret_document() -> dict:
     pairs += [(f"ship_target_{i + 1:02d}::visible", f"ship_target_{i + 1:02d}_on") for i in range(5)]
     joins = join_events(doc, pairs)
     # Minimal (ui_hudLayout 2) keeps the ship panel, the prompt and the save notice.
-    root = full("hud-root", [
+    root = gameplay_root(doc, "hud-root", [
         center_box("hud-world", [brackets]),
         anchor(doc, "tr", [beyond_minimal(doc, "tr-full", [radio]), panel]),
         anchor(doc, "tc", [beyond_minimal(doc, "tc-full", [boss, missile_text, exit_notice]), saved]),
@@ -325,7 +326,7 @@ def mcc_document() -> dict:
     doc.on("hudJoin", *doc.joins)
     doc.on("onInit", *doc.joins)
     # Minimal (ui_hudLayout 2) keeps the hull readout, the prompt and the save notice.
-    root = full("hud-root", [
+    root = gameplay_root(doc, "hud-root", [
         anchor(doc, "tr", [beyond_minimal(doc, "tr-full", [radio]), readout]),
         anchor(doc, "tc", [beyond_minimal(doc, "tc-full", [missile_text, exit_notice]), saved]),
         anchor(doc, "br", [prompt]),
@@ -516,7 +517,7 @@ def speeder_document() -> dict:
     doc.on("onInit", *doc.joins)
     # Minimal (ui_hudLayout 2) keeps the status bar, the race display, the
     # prompt and the save notice.
-    root = full("hud-root", [
+    root = gameplay_root(doc, "hud-root", [
         streak,
         beyond_minimal(doc, "hit-full", [hit]),
         anchor(doc, "cl", [beyond_minimal(doc, "cl-full", [elec_l])]),
@@ -681,7 +682,7 @@ def gev_document() -> dict:
     doc.on("hudJoin", *doc.joins)
     doc.on("onInit", *doc.joins)
     # Minimal (ui_hudLayout 2) keeps the cluster, the prompt and the save notice.
-    root = full("hud-root", [
+    root = gameplay_root(doc, "hud-root", [
         anchor(doc, "bc", [cluster], scale="hud.centerScale"),
         anchor(doc, "tr", [beyond_minimal(doc, "tr-full", [radio])]),
         anchor(doc, "tc", [beyond_minimal(doc, "tc-full", [missile_text, exit_notice]), saved]),

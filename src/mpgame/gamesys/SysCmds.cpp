@@ -3971,6 +3971,13 @@ static void Cmd_TestWeaponWheel_f( const idCmdArgs &args ) {
 	if ( player ) player->DebugWeaponWheel( args );
 }
 
+// openQ4: the quick-chat wheel without host input (open, slot N, channel,
+// release, cancel); release sends the selected phrase.
+static void Cmd_TestQuickChat_f( const idCmdArgs &args ) {
+	idPlayer *player = gameLocal.GetLocalPlayer();
+	if ( player ) player->DebugQuickChat( args );
+}
+
 // testScoreboard <msec>: holds the local player's scoreboard open, as a tournament's
 // end does, so headless captures can show it without input.
 static void Cmd_TestScoreboard_f( const idCmdArgs &args ) {
@@ -4196,6 +4203,7 @@ void idGameLocal::InitConsoleCommands( void ) {
 	cmdSystem->AddCommand( "testRadioChatter", Cmd_TestRadioChatter_f, CMD_FL_GAME|CMD_FL_CHEAT, "plays or probes the radio HUD audio graph", idCmdSystem::ArgCompletion_SoundName );
 	cmdSystem->AddCommand( "testStatusBar", Cmd_TestStatusBar_f, CMD_FL_GAME|CMD_FL_CHEAT, "status bar: probe or stats <health> <armor>" );
 	cmdSystem->AddCommand( "testWeaponWheel", Cmd_TestWeaponWheel_f, CMD_FL_GAME|CMD_FL_CHEAT, "weapon wheel: open, slot N, release, cancel, family marine|strogg, probe" );
+	cmdSystem->AddCommand( "testQuickChat", Cmd_TestQuickChat_f, CMD_FL_GAME|CMD_FL_CHEAT, "quick-chat wheel: open, slot N, channel, release, cancel" );
 	cmdSystem->AddCommand( "testScoreboard", Cmd_TestScoreboard_f, CMD_FL_GAME|CMD_FL_CHEAT, "holds the scoreboard open for <msec>" );
 
 // mekberg: added.

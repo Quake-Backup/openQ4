@@ -13566,6 +13566,8 @@ void idMultiplayerGame::CommonRun( void ) {
 				idPlayer *from = ( idPlayer * )gameLocal.entities[clientNum];
 				if( from && hudTransmitOther != clientNum ) {
 					player->mphud->SetStateString( "audio_name", from->GetUserInfo()->GetString( "ui_name" ) );
+					// openQ4: the Remastered talker plate's trace takes the talker's team color
+					player->mphud->SetStateInt( "oq4_audio_team", gameLocal.IsTeamGame() ? from->team : -1 );
 					player->mphud->HandleNamedEvent( "show_transmit" );
 					hudTransmitOther = clientNum;
 				}
@@ -19624,6 +19626,8 @@ void idMultiplayerGame::UpdateHud( idUserInterface* _mphud ) {
 		{
 			/// Pulse the bar's color
 			marineScoreBarPulseAmount = 1.0f;
+			// openQ4: the Remastered score's reduced-motion hold
+			_mphud->HandleNamedEvent( "oq4_zonePulse0" );
 
 			// Play the pulse sound
 			idStr pulseSnd = "snd_dzpulse_happy";
@@ -19643,6 +19647,8 @@ void idMultiplayerGame::UpdateHud( idUserInterface* _mphud ) {
 		{
 			/// Pulse the bar's color
 			stroggScoreBarPulseAmount = 1.0f;
+			// openQ4: the Remastered score's reduced-motion hold
+			_mphud->HandleNamedEvent( "oq4_zonePulse1" );
 
 			// Play the pulse sound
 			idStr pulseSnd = "snd_dzpulse_happy";
@@ -19985,6 +19991,9 @@ void idMultiplayerGame::PublishRemasteredCompetitive( idUserInterface *_mphud, i
 	}
 	_mphud->SetStateString( "oq4_mb_sub", sub.c_str() );
 	_mphud->SetStateString( "oq4_mb_ready", va( common->GetLocalizedString( "#str_231250" ), va( "%d", readyPlayerCount ), va( "%d", eligiblePlayerCount ) ) );
+	// Remastered Tourney's plate under the message bar: ROUND n beside the arena.
+	_mphud->SetStateString( "oq4_tourney_round", tourney && round > 0
+		? va( common->GetLocalizedString( "#str_41330" ), va( "%d", round ) ) : "" );
 
 	// Team status: up to eight players a team, best score first.
 	const int maxRows = 8;

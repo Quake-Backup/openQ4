@@ -363,16 +363,23 @@ names your attack key once you can return, with a countdown while overtime
 delays your respawn.
 
 **Settings > Game Options > HUD** sets the layout, size, width and safe area,
-and whether the objectives open while you hold the scores button or with one
-press. The same settings are console variables, saved automatically:
+whether the objectives open while you hold the scores button or with one
+press, the HUD's opacity, and whether the damage direction indicator, the
+pickup messages and the weapon strip appear (these four apply to the Remastered
+and Minimal layouts). The same settings are console variables, saved
+automatically:
 
 | Setting | Default | Range | Effect |
 | --- | --- | --- | --- |
 | `ui_hudLayout` | `1` | `0`–`3` | `1` Remastered layout, `2` Minimal (health, armor, ammunition and the crosshair, keeping prompts, chat and votes), `3` Competitive (multiplayer: a match bar at the top with both sides' scores, the timer and network quality, your team's health and armor at the left edge and a larger status bar), `0` Classic (the original Quake 4 positions) |
 | `ui_hudWidth` | `1` | `0`–`2` | How far edge HUD items spread on wide screens: `0` 16:9, `1` 21:9, `2` the full width |
-| `ui_hudScale` | `1` | `0.5`–`2` | HUD size, independent of menu size |
+| `ui_hudScale` | `1` (`1.25` on Steam Deck) | `0.5`–`2` | HUD size, independent of menu size |
 | `ui_hudSafeInset` | `0` | `0`–`10` | Distance inward, as a percentage of the viewport |
 | `g_objectivesToggle` | `0` | `0`–`1` | Toggle Objectives: `0` shows the objectives while the scores button is held, `1` opens and closes them with each press (the Remastered display then shows a Close prompt) |
+| `ui_hudOpacity` | `1` | `0.25`–`1` | HUD Opacity: fades the whole HUD |
+| `ui_hudDamageDirection` | `1` | `0`–`1` | Damage Direction: `0` hides the indicator pointing toward damage |
+| `ui_hudPickups` | `1` | `0`–`1` | Pickup Messages: `0` hides the item lines |
+| `ui_hudWeaponStrip` | `1` | `0`–`1` | Weapon Strip: `0` keeps the strip of weapons hidden when you change weapon |
 
 For example, `ui_hudScale 1.25` enlarges the HUD by 25%. On narrow screens the
 status bar's size is limited to keep every gauge visible. `ui_retained 0`

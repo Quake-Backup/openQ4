@@ -18,7 +18,7 @@ This guide covers the main ways to configure keyboard, mouse, and controller inp
 | Menu | Use it for |
 |---|---|
 | `Settings -> Controls -> Movement` | Forward, back, strafe, jump, crouch, turn, run/walk. |
-| `Settings -> Controls -> Weapons` | Direct weapon slots and buy menu. |
+| `Settings -> Controls -> Weapons` | Direct weapon slots, buy menu and the quick-chat wheel. |
 | `Settings -> Controls -> Attack` | Attack, reload, zoom, next/previous weapon, flashlight, objectives, weapon wheel. |
 | `Settings -> Controls -> Other` | Quick save/load, chat, vote, ready, stats, emotes, voice chat. |
 | `Settings -> Game Options` | Free look, toggle zoom, mouse input tuning, controller tuning, console access. |
@@ -179,6 +179,7 @@ The shipped defaults are defined in `content/baseoq4/pak0/default.cfg`.
 | Objectives / scores | `Tab` |
 | Chat | `T` |
 | Team chat | `Y` |
+| Quick-chat wheel (multiplayer) | `V` |
 | Quick save / quick load | `F5` / `F9` |
 | Screenshot | `F12` |
 
@@ -197,7 +198,7 @@ SDL gamepads use stable `JOY` button names so binds work across common Xbox, Pla
 | `JOY7` / Start | Menu |
 | `JOY8` / Back or Select | Menu |
 | `JOY9` / D-pad Up | Objectives or scores |
-| `JOY10` / D-pad Down | Center view |
+| `JOY10` / D-pad Down | Quick-chat wheel (multiplayer) |
 | `JOY11` / D-pad Right | Previous weapon |
 | `JOY12` / D-pad Left | Next weapon |
 | `JOY13` / Left stick click | Run or walk modifier |
@@ -210,6 +211,16 @@ SDL gamepads use stable `JOY` button names so binds work across common Xbox, Pla
 | `JOY20` / Left paddle 1 | Crouch |
 | `JOY21` / Right paddle 2 | Reload |
 | `JOY22` / Left paddle 2 | Weapon wheel |
+
+**Button prompts.** In the new interface's HUD, prompts such as Exit, Respawn
+and the quick-chat wheel's channel switch show the control you would press: a
+key's name while you play with keyboard and mouse, and your controller's button
+once you use a controller, drawn the way the controller labels it (A, B, X, Y
+or the PlayStation symbols, LB/L1, LT/L2/ZL, the d-pad's arm). openQ4 picks the
+style from the controller SDL reports, or Steam Deck's on the Steam Deck
+profile. If a remapping tool hides your controller, force a style with
+`in_promptStyle`: `0` automatic, `1` Xbox, `2` PlayStation, `3` Nintendo, `4`
+Steam Deck, `5` generic (positions instead of letters).
 
 Menu behavior:
 

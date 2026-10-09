@@ -47,7 +47,9 @@ struct ScreenHost final : Host {
 		{"cl_player_outline_enemy",std::string("0")},{"cl_player_outline_team",std::string("0")},{"cl_player_rimlight_enemy",std::string("0")},
 		{"cl_player_rimlight_team",std::string("0")},{"cl_player_brightskin_enemy",std::string("0")},{"cl_player_brightskin_team",std::string("0")},
 		{"cl_player_visibility_enemy_color",std::string("1 0.12 0.05")},{"cl_player_visibility_team_color",std::string("1 0.12 0.05")},
-		{"cl_player_brightskin_enemy_color",std::string("1 0.05 0.02")},{"cl_player_brightskin_team_color",std::string("1 0.05 0.02")}};
+		{"cl_player_brightskin_enemy_color",std::string("1 0.05 0.02")},{"cl_player_brightskin_team_color",std::string("1 0.05 0.02")},
+		// The HUD settings (section 13.9) at their defaults.
+		{"ui_hudOpacity",1.0},{"ui_hudDamageDirection",true},{"ui_hudPickups",true},{"ui_hudWeaponStrip",true}};
 	bool ReadCVar(const std::string& name, size_t type, StateValue& value) override {
 		if (type == 2 && name == "sys_lang") { value = language; return true; }
 		if (const auto found = cvars.find(name); found != cvars.end()) {
@@ -1447,6 +1449,76 @@ static void CheckWeaponWheels(ScreenHost& host, char** paths) {
 	}
 }
 
+// The multiplayer quick-chat wheel (ui-visual-design.md 14.6 Quick chat): the
+// weapon wheel's ring with eight phrases, the selection in the stock olive or
+// your team's text color, the hub naming the channel and, in a team game, the
+// zoom control's key that switches it.
+static void CheckQuickChat(ScreenHost& host, const char* path) {
+	Runtime chat(host); std::vector<Diagnostic> diagnostics; std::string error; Runtime::EventEffects effects;
+	const bool loaded = chat.Initialize() && chat.LoadDocument(Read(path),"guis/hud/quick_chat.q4ui",diagnostics);
+	for (const auto& d:diagnostics) std::fprintf(stderr,"quick chat %s: %s\n",d.pointer.c_str(),d.message.c_str());
+	Check(loaded,"quick-chat document loads");
+	const auto opacity = [&](const char* id) { const auto value = chat.PresentedValue(id,"opacity"); return value ? float(value->data[0]) : -1.f; };
+	const auto shown = [&](const char* id) { const auto value = chat.PresentedValue(id,"display"); return value && value->text != "none"; };
+	Check(chat.SetState({{"blend",1.0},{"selected",2.0},{"team",-1.0},{"channel",0.0},{"zoomKey",std::string("MOUSE2")}},error,0),error.c_str());
+	Viewport viewport; viewport.canvasHeight=720; viewport.width=1280; viewport.height=720;
+	const double width=720.0*16/9, fit=std::min(1.0,(width-32)/560), offset=std::clamp(width*.27,-(width*.5-264*fit-16),width*.5-264*fit-16);
+	Check(chat.SetState({{"offset",offset},{"fit",fit}},error,0),error.c_str());
+	host.draws.clear(); chat.Frame(viewport,.1);
+	Check(host.errors == 0,"the quick-chat wheel frames without runtime errors");
+	const auto placement=chat.PresentedValue("wheel-center","transform");
+	Check(placement && Near(float(placement->data[0]),float(offset),.01f) && Near(float(placement->data[2]),float(fit),.01f),
+		"the wheel takes the weapon wheel's placement");
+	// Eight phrases clockwise from the top, the selected one at full alpha.
+	for (int i = 0; i < 8; ++i) {
+		const auto text = chat.PresentedValue("phrase"+std::to_string(i)+"-text","text");
+		Check(text && text->text == "#str_2312"+std::to_string(61+i),"each segment names its phrase");
+	}
+	Check(Near(opacity("phrase2-text"),1) && Near(opacity("phrase0-text"),.6f),"the selected phrase reads at full alpha, the rest at 0.60");
+	Bounds top, right, label;
+	Check(chat.GetBounds("phrase0-label",top) && chat.GetBounds("phrase2-label",right) && Near(top.x+top.width*.5f,right.x-168*fit+right.width*.5f,2.f) &&
+		right.x > top.x,"the first phrase sits at the top and the third on the right");
+	Check(chat.GetBounds("phrase3-text",label) && label.height <= 48*fit+.5f && label.width <= 112*fit+.5f,"a phrase fits its segment");
+	// Deathmatch: the stock olive selection and pointer, ALL, no channel switch.
+	Check(Near(opacity("phrase2-selected-olive"),1) && Near(opacity("phrase2-selected-team0"),0) && Near(opacity("phrase0-selected-olive"),0),
+		"the selection lights its segment in the stock olive");
+	Check(Near(opacity("pointer-olive"),1) && Near(opacity("pointer-team0"),0),"the olive pointer faces the selection");
+	const auto pointer = chat.PresentedValue("pointer-olive","transform");
+	Check(pointer && Near(float(pointer->data[4]),90),"the pointer turns 45 degrees a phrase");
+	Check(shown("hub-all") && !shown("hub-team0") && !shown("hub-team1") && !shown("hub-hint"),"deathmatch names ALL without a switch");
+	// A team game: TEAM in your team's text color and the zoom key's switch.
+	Check(chat.SetState({{"team",0.0},{"channel",1.0}},error,.2),error.c_str());
+	chat.Frame(viewport,.25);
+	const auto key = chat.PresentedValue("hub-key","text");
+	Check(!shown("hub-all") && shown("hub-team0") && !shown("hub-team1") && shown("hub-hint") && key && key->text == "MOUSE2",
+		"a Marine names TEAM in the Marine color with the switch on the zoom key");
+	Check(Near(opacity("phrase2-selected-team0"),1) && Near(opacity("phrase2-selected-olive"),0) && Near(opacity("pointer-team0"),1),
+		"the selection takes the Marine text color");
+	Check(chat.SetState({{"team",1.0}},error,.3),error.c_str());
+	chat.Frame(viewport,.35);
+	Check(shown("hub-team1") && !shown("hub-team0") && Near(opacity("phrase2-selected-team1"),1),"a Strogg names TEAM in the Strogg color");
+	Check(chat.SetState({{"channel",0.0}},error,.4),error.c_str());
+	chat.Frame(viewport,.45);
+	Check(shown("hub-all") && !shown("hub-team1") && shown("hub-hint"),"the team game can switch to ALL");
+	// No selection: no lit segment and no pointer.
+	Check(chat.SetState({{"selected",-1.0}},error,.5),error.c_str());
+	chat.Frame(viewport,.55);
+	Check(Near(opacity("phrase2-selected-team1"),0) && Near(opacity("pointer-team1"),0) && Near(opacity("phrase2-text"),.6f),
+		"an unselected wheel lights nothing");
+	size_t vertices=0; for (const auto& draw:host.draws) vertices+=draw.vertices.size();
+	Check(vertices*64<48*1024*1024,"the wheel leaves half of the Vulkan GUI ring for gameplay");
+	// Transitions as the weapon wheel's; a new channel re-tunes the word.
+	Check(chat.RunEvent("open",1,effects,error),"the open transition runs"); chat.Frame(viewport,1.4);
+	Check(Near(opacity("phrase7-entry"),1),"opening finishes fully visible");
+	Check(chat.RunEvent("channel",1.5,effects,error),"the channel transition runs"); chat.Frame(viewport,1.55);
+	Check(opacity("hub-all") < 1,"the channel word re-tunes");
+	Check(chat.RunEvent("close",2,effects,error),"the close transition runs"); chat.Frame(viewport,2.2);
+	Check(Near(opacity("phrase0-entry"),0),"closing removes the plates");
+	chat.SetReducedMotion(true,3); Check(chat.RunEvent("open",3,effects,error),"the reduced-motion open runs"); chat.Frame(viewport,3.09);
+	Check(Near(opacity("phrase7-entry"),1),"reduced motion finishes within 80 ms");
+	Check(host.errors == 0,"no runtime diagnostics across the quick-chat exercise");
+}
+
 #include "UiStatusBarChecks.inl"
 
 #include "UiHudChecks.inl"
@@ -1456,6 +1528,10 @@ int main(int argc, char** argv) {
  if (argc == 3 && std::string(argv[1]) == "--summary") {
      ScreenHost host; CheckSummary(host,argv[2]);
      std::printf("retained summary: %d checks passed\n",checks); return 0;
+ }
+ if (argc == 3 && std::string(argv[1]) == "--quick-chat") {
+     ScreenHost host; CheckQuickChat(host,argv[2]);
+     std::printf("quick chat: %d checks passed\n",checks); return 0;
  }
  if (argc >= 3 && std::string(argv[1]) == "--hud-bench") {
      for (int i = 2; i < argc; ++i) BenchRemasteredHud(argv[i]);
@@ -1473,6 +1549,7 @@ int main(int argc, char** argv) {
          if (path.find("_mcc") != std::string::npos) { CheckRemasteredMccHud(host,argv[i]); continue; }
          if (path.find("_speeder") != std::string::npos) { CheckRemasteredSpeederHud(host,argv[i]); continue; }
          if (path.find("_gev") != std::string::npos) { CheckRemasteredGevHud(host,argv[i]); continue; }
+         if (path.find("_medchange") != std::string::npos) { CheckRemasteredMedchangeHud(host,argv[i]); continue; }
          if (path.find("_objectives") != std::string::npos) { CheckRemasteredObjectivesHud(host,argv[i],strogg); continue; }
          if (path.find("_scoreboard") != std::string::npos) { CheckRemasteredScoreboardHud(host,argv[i]); continue; }
          CheckRemasteredHud(host,argv[i],std::string("openq4.hud.remastered.")+(strogg ? "strogg" : "marine")+(awakening ? ".awakening" : ""),strogg);

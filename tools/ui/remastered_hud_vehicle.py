@@ -19,13 +19,14 @@ from __future__ import annotations
 import build_retained_scopes as scopes
 import build_retained_screens as ui
 import hud_svg
-from remastered_hud_base import (AND, NOT, OR, S, U, HudDocument, anchor, beyond_minimal, box, join_events, layout_state, num,
+from remastered_hud_base import (AND, NOT, OR, S, U, HudDocument, anchor, beyond_minimal, box, gameplay_root, join_events,
+                                 layout_state, num,
                                  op, play,
                                  cancel, pts_path,
                                  rgb, rounded_rect, sel, shadowed, shear_group, sheared_points, stroke, svg_path, text_box,
                                  tr, transform_value, u, vec)
 from remastered_hud_groups import boss_bar, missile_chevron, notices, transmission
-from remastered_hud_mp import bound_label, flex_row, label, plate_vec
+from remastered_hud_mp import bound_label, flex_row, glyph_chip, label, plate_vec
 from remastered_hud_status import BACK, ST_BACK, backing_nodes, clip_polygon, full, scaled
 
 # The vehicle gauge: the Marine gauge art from x 36.2, without its numeral zone.
@@ -354,8 +355,10 @@ def electric_warning(doc: HudDocument) -> list:
     doc.boolean("oq4.elec")
     for holder in (holder_l, holder_r):
         doc.show(holder["id"], S("oq4.elec"))
-    doc.timeline("velec-pulse", 1000, [tr("velec-l-on", "opacity", [(0, num(0.7)), (1000, num(0.3))]),
-                                       tr("velec-r-on", "opacity", [(0, num(0.7)), (1000, num(0.3))])], iterations=0)
+    # The stock sawtooth snaps back on its last millisecond, where reduced
+    # motion ends it: a steady 0.70 (14.10).
+    doc.timeline("velec-pulse", 1000, [tr("velec-l-on", "opacity", [(0, num(0.7)), (999, num(0.3)), (1000, num(0.7))]),
+                                       tr("velec-r-on", "opacity", [(0, num(0.7)), (999, num(0.3)), (1000, num(0.7))])], iterations=0)
     doc.on("electricWarningOn", {"op": "setState", "values": {"oq4.elec": True}}, play("velec-pulse"))
     doc.on("electricWarningOff", {"op": "setState", "values": {"oq4.elec": False}}, cancel("velec-pulse"))
     return [holder_l, holder_r]
@@ -375,17 +378,10 @@ def lock_icon(ident: str, colour: list) -> dict:
 
 
 def prompt_chip(doc: HudDocument, ident: str, key_expr) -> dict:
-    """The active control's cap (13.4): its key name in dark ProFont 6.4 u on
-    a white chip at 0.85, 10.6 u tall with a cut lower-leading corner."""
-    return ui.group(ident + "-chip", {"position": ui.keyword("relative"), "display": ui.keyword("block"), "height": ui.length(u(10.6)),
-                                      "min-width": ui.length(u(10.6)), "padding-left": ui.length(u(3)), "padding-right": ui.length(u(3)),
-                                      "margin-right": ui.length(u(4)), "text-align": ui.keyword("center")},
-                    [vec(ident + "-chip-bg", [{"id": "k", "fill": ui.solid([1, 1, 1, 0.85]), "commands": [
-                        {"id": "a", "op": "move", "points": [[0, 0]]}, {"id": "b", "op": "line", "points": [[{"fraction": 1}, 0]]},
-                        {"id": "c", "op": "line", "points": [[{"fraction": 1}, {"fraction": 1}]]},
-                        {"id": "d", "op": "line", "points": [[u(2.6), {"fraction": 1}]]},
-                        {"id": "e", "op": "line", "points": [[0, {"fraction": 1, "dp": -u(2.6)}]]}, {"id": "f", "op": "close"}]}]),
-                     bound_label(doc, ident + "-key", key_expr, 6.4, rgb("#10140A"), face="profont", line=10.6)])
+    """The active control (13.4): a keycap with its key name in dark ProFont
+    6.4 u on a white chip at 0.85, 10.6 u tall with a cut lower-leading
+    corner, or the controller button's glyph (glyph_chip)."""
+    return glyph_chip(doc, ident, key_expr, h=10.6, size=6.4, cut=2.6, pad=(3, 3), gap=4, min_width=10.6)
 
 
 def hud_prompt(doc: HudDocument, lead: list = ()) -> dict:
@@ -442,7 +438,7 @@ def vehicle_document() -> dict:
     doc.on("hudJoin", *doc.joins)
     doc.on("onInit", *doc.joins)
     # Minimal (ui_hudLayout 2) keeps the status bar, the prompt and the save notice.
-    root = full("hud-root", [
+    root = gameplay_root(doc, "hud-root", [
         beyond_minimal(doc, "hit-full", [hit]),
         anchor(doc, "cl", [beyond_minimal(doc, "cl-full", [elec_l])]),
         anchor(doc, "cr", [beyond_minimal(doc, "cr-full", [elec_r])]),
@@ -522,7 +518,7 @@ def airdef_document() -> dict:
     doc.on("hudJoin", *doc.joins)
     doc.on("onInit", *doc.joins)
     # Minimal (ui_hudLayout 2) keeps the optic, the prompt and the save notice.
-    root = full("hud-root", [
+    root = gameplay_root(doc, "hud-root", [
         *lens,
         anchor(doc, "tr", [beyond_minimal(doc, "tr-full", [radio])]),
         anchor(doc, "tc", [beyond_minimal(doc, "tc-full", [exit_notice, missile_text]), saved]),

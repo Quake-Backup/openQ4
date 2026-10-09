@@ -185,6 +185,25 @@ static void CheckRemasteredHud(ScreenHost& host, const char* path, const std::st
 	runtime.Frame(RemasteredViewport(1280,720),7.8);
 	Check(runtime.PresentedValue("hit-fade","opacity")->data[0] < .01,"the hit indicator is gone after 500 ms");
 
+	// The HUD settings (13.9): the damage direction, the pickup messages and
+	// the weapon strip can be turned off, and the opacity fades the whole HUD.
+	host.cvars["ui_hudDamageDirection"] = false;
+	host.cvars["ui_hudPickups"] = false;
+	host.cvars["ui_hudWeaponStrip"] = false;
+	host.cvars["ui_hudOpacity"] = 0.5;
+	Check(runtime.RunEvent("weaponChange",7.82,effects,error) && runtime.RunEvent("itemPickup",7.82,effects,error),"a change and a pickup run");
+	runtime.Frame(RemasteredViewport(1280,720),7.84);
+	const auto rootOpacity = runtime.PresentedValue("hud-root","opacity");
+	Check(!Shown(runtime,"hit") && !Shown(runtime,"pickups") && !Shown(runtime,"strip") && rootOpacity &&
+		Near(float(rootOpacity->data[0]),.5f,.001f),"the HUD settings hide their groups and fade the HUD");
+	host.cvars["ui_hudDamageDirection"] = true;
+	host.cvars["ui_hudPickups"] = true;
+	host.cvars["ui_hudWeaponStrip"] = true;
+	host.cvars["ui_hudOpacity"] = 1.0;
+	runtime.Frame(RemasteredViewport(1280,720),7.86);
+	Check(Shown(runtime,"hit") && Shown(runtime,"pickups") && Near(float(runtime.PresentedValue("hud-root","opacity")->data[0]),1),
+		"the groups and the full opacity return");
+
 	// A ride (the flatbed, the tram) replaces the three gauges with its silhouette gauge.
 	const char* healthKey = strogg ? "tram_healthpct" : "vehicle_health";
 	Check(runtime.SetState({{healthKey,0.5}},error,7.9),error.c_str());
@@ -227,11 +246,40 @@ static void CheckRemasteredHud(ScreenHost& host, const char* path, const std::st
 	RemasteredLayoutPreference(host,1);
 	runtime.Frame(RemasteredViewport(1280,720),8.2);
 
+	// Alarms (14.10): the carried flag beats 22 to 28 u in 150 ms and the exit
+	// chevron rises; reduced motion holds the flag at 28 u and the chevron
+	// still at 0.50.
+	if (id.find(".awakening") == std::string::npos && !strogg) {
+		Check(runtime.SetState({{"mp",true},{"powerup_flag_visible",1.0}},error,8.21),error.c_str());
+		Check(runtime.RunEvent("oq4_carriedFlag",8.21,effects,error) && runtime.RunEvent("showExit",8.21,effects,error),
+			"the carried flag and the exit run");
+		runtime.Frame(RemasteredViewport(1280,720),8.36);
+		const auto grown = runtime.PresentedValue("pu-flag-beat","transform"), risen = runtime.PresentedValue("exit-chevron","transform");
+		Check(Shown(runtime,"pu-flag") && grown && Near(float(grown->data[2]),28/22.f,.02f),"the carried flag grows to 28 u in 150 ms");
+		Check(Shown(runtime,"exit") && risen && float(risen->data[1]) < -.2f,"the exit chevron rises");
+		host.reducedMotion = true;
+		runtime.SetReducedMotion(true,8.37);
+		runtime.Frame(RemasteredViewport(1280,720),8.5);
+		const auto still = runtime.PresentedValue("pu-flag-beat","transform"), peak = runtime.PresentedValue("pu-flag-held","transform");
+		const auto rest = runtime.PresentedValue("exit-chevron","transform"), faint = runtime.PresentedValue("exit-chevron","opacity");
+		Check(still && Near(float(still->data[2]),1) && peak && Near(float(peak->data[2]),28/22.f,.001f),
+			"reduced motion holds the carried flag at 28 u");
+		Check(rest && Near(float(rest->data[1]),0) && faint && Near(float(faint->data[0]),.5f,.01f),
+			"reduced motion leaves the exit chevron still at 0.50");
+		host.reducedMotion = false;
+		runtime.SetReducedMotion(false,8.55);
+		Check(runtime.SetState({{"mp",false},{"powerup_flag_visible",0.0}},error,8.56),error.c_str());
+		Check(runtime.RunEvent("oq4_carriedFlag",8.56,effects,error) && runtime.RunEvent("hideExit",8.56,effects,error),
+			"the carried flag and the exit leave");
+		runtime.Frame(RemasteredViewport(1280,720),8.6);
+		Check(!Shown(runtime,"pu-flag") && !Shown(runtime,"exit"),"the carried flag and the exit go");
+	}
+
 	// The Awakening's m03 script also sends the ship panel to the player's HUD.
 	if (id.find(".awakening") != std::string::npos) {
 		Check(!Shown(runtime,"ship"),"the ship panel waits for the script");
-		Check(runtime.RunEvent("ship_target_01_on",8.2,effects,error),"a marker reaches the player's HUD");
-		runtime.Frame(RemasteredViewport(1280,720),8.25);
+		Check(runtime.RunEvent("ship_target_01_on",8.7,effects,error),"a marker reaches the player's HUD");
+		runtime.Frame(RemasteredViewport(1280,720),8.75);
 		Bounds cone;
 		Check(Shown(runtime,"ship") && Shown(runtime,"ship-target1") && !runtime.GetBounds("ship-cone",cone),
 			"on foot the panel appears without the gun's view cone");
@@ -280,6 +328,17 @@ static void CheckRemasteredMpHud(ScreenHost& host, const char* path) {
 	Check(runtime.SetState({{"gametype",2.0}},error,.4),error.c_str());
 	runtime.Frame(RemasteredViewport(1280,720),.45);
 	Check(runtime.GetBounds("feed0-c",line) && Near(line.y,(70-11.5f)*1.5f,1.f),"the Tourney feed sits under the strip");
+	// Tourney's message bar, its timer and the ROUND and ARENA plate sit at the
+	// top of the center screen under the strip; the standing's timer gives way.
+	Check(runtime.SetState({{"oq4_tourney_round",std::string("ROUND 2")},{"oq4_mb_sub",std::string("ARENA 3")}},error,.42),error.c_str());
+	runtime.Frame(RemasteredViewport(1280,720),.46);
+	Bounds tbar, tunder;
+	const auto troundText = runtime.PresentedValue("tplace-round","text"), tarenaText = runtime.PresentedValue("tplace-arena","text");
+	Check(Shown(runtime,"tourney-bar") && runtime.GetBounds("tourney-bar",tbar) && Near(tbar.x,160,1.f) && Shown(runtime,"tourney-under") &&
+		runtime.GetBounds("tourney-under",tunder) && Near(tunder.x,160+6*1.5f,1.f) && Near(tunder.y,58*1.5f,1.f) && !Shown(runtime,"timer"),
+		"Tourney's bar and timer sit in the center screen under the strip");
+	Check(troundText && troundText->text == "ROUND 2" && tarenaText && tarenaText->text == "ARENA 3" && Shown(runtime,"ttimer-c"),
+		"the plate names the round and the arena beside the timer");
 	Check(runtime.SetState({{"gametype",1.0},{"oq4_feed0_live",false}},error,.5),error.c_str());
 
 	// Standing: the leader and you, your gap, the limit.
@@ -328,6 +387,10 @@ static void CheckRemasteredMpHud(ScreenHost& host, const char* path) {
 		{"oq4_rank_notice_text",std::string("3rd place with 19")},{"oq4_rank_notice_lead",std::string("3rd")},
 		{"oq4_rank_notice_post",std::string(" place with 19")}},error,1.2),error.c_str());
 	Check(runtime.RunEvent("frag_notice",1.2,effects,error) && runtime.RunEvent("main_notice",1.2,effects,error),"notices run");
+	runtime.Frame(RemasteredViewport(1280,720),1.25);
+	const auto sliding = runtime.PresentedValue("center-b1","transform");
+	Check(sliding && float(sliding->data[1]) < -2 && float(sliding->data[1]) > -(17.3f*1.35f+3)*1.5f,
+		"the lines under a new frag notice slide down into place");
 	runtime.Frame(RemasteredViewport(1280,720),1.3);
 	Bounds frag, main;
 	Check(Shown(runtime,"frag") && Shown(runtime,"main") && runtime.GetBounds("frag",frag) && runtime.GetBounds("main",main) &&
@@ -497,6 +560,63 @@ static void CheckRemasteredMpHud(ScreenHost& host, const char* path) {
 		{"oq4_chatin_before",std::string("")}},error,5.85),error.c_str());
 	runtime.Frame(RemasteredViewport(1280,720),5.9);
 	Check(!Shown(runtime,"chatin"),"closing the input removes it");
+
+	// Alarms (14.10). A taken flag beats 28 to 34 u once a second.
+	Check(runtime.SetState({{"gametype",4.0},{"oq4_team_game",true},{"oq4_my_team",1.0},{"oq4_flag0_state",1.0},
+		{"oq4_flag2_state",0.0}},error,5.95),error.c_str());
+	Check(runtime.RunEvent("oq4_flags",5.95,effects,error),"a flag change runs");
+	runtime.Frame(RemasteredViewport(1280,720),6.075);
+	const auto beat = runtime.PresentedValue("team0-flag-pulse","transform");
+	Check(Shown(runtime,"team0-flag-held") && beat && float(beat->data[2]) > 1.05f && float(beat->data[2]) < 1.2144f,
+		"a taken flag beats toward 34 u");
+	// One flag: on its carrier's panel the neutral flag swings to the carrier's
+	// team color with the beat, there in 250 ms.
+	Check(runtime.SetState({{"gametype",5.0},{"oq4_flag0_state",0.0},{"oq4_flag2_state",1.0},{"oq4_flag2_carrier",std::string("Nyx")},
+		{"oq4_flag2_carrier_team",1.0}},error,6.1),error.c_str());
+	Check(runtime.RunEvent("oq4_flags",6.1,effects,error),"the one flag's change runs");
+	runtime.Frame(RemasteredViewport(1280,720),6.35);
+	const auto wash = runtime.PresentedValue("team1-neutral-wash","opacity");
+	Check(Shown(runtime,"team1-neutral-held") && !Shown(runtime,"team1-neutral-wash-rest") && wash && float(wash->data[0]) > .9f,
+		"the one flag swings to its carrier's team color");
+	// Reduced motion holds the flag at 34 u in the carrier's color.
+	host.reducedMotion = true;
+	runtime.SetReducedMotion(true,6.36);
+	runtime.Frame(RemasteredViewport(1280,720),6.4);
+	const auto still = runtime.PresentedValue("team1-neutral-pulse","transform"), peak = runtime.PresentedValue("team1-neutral-held","transform");
+	Check(still && Near(float(still->data[2]),1) && peak && Near(float(peak->data[2]),1.2143f,.001f) &&
+		Shown(runtime,"team1-neutral-wash-rest"),"reduced motion holds the one flag at 34 u in its carrier's color");
+	// Dead Zone under reduced motion: a control tick holds the team's color for
+	// a second instead of the game's relaxing pulse.
+	Check(runtime.SetState({{"gametype",8.0},{"oq4_flag2_state",0.0},{"marine_pulse_amount",0.6},{"strogg_pulse_amount",0.0}},error,6.45),
+		error.c_str());
+	Check(runtime.RunEvent("oq4_zonePulse1",6.45,effects,error),"a control tick runs");
+	runtime.Frame(RemasteredViewport(1280,720),6.5);
+	const auto held = runtime.PresentedValue("team1-score","color"), calm = runtime.PresentedValue("team0-score","color");
+	Check(held && Near(float(held->data[1]),0x8E/255.f,.01f) && calm && Near(float(calm->data[2]),1),
+		"reduced motion: a tick holds the team's color and a fading pulse stays white");
+	runtime.Frame(RemasteredViewport(1280,720),7.5);
+	const auto released = runtime.PresentedValue("team1-score","color");
+	Check(released && Near(float(released->data[1]),1),"the held color goes after a second");
+	host.reducedMotion = false;
+	runtime.SetReducedMotion(false,7.55);
+	runtime.Frame(RemasteredViewport(1280,720),7.6);
+	const auto pulsing = runtime.PresentedValue("team0-score","color");
+	Check(pulsing && float(pulsing->data[2]) < .9f,"with motion the score follows the game's pulse");
+
+	// Voice (14.9): your transmission on the band plate with a microphone, a
+	// talker with the speaker symbol, each trace in its team's text color.
+	Check(runtime.SetState({{"gametype",4.0},{"oq4_my_team",1.0},{"oq4_audio_team",0.0},{"audio_name",std::string("Kaz")}},error,7.65),
+		error.c_str());
+	Check(runtime.RunEvent("show_transmit_self",7.65,effects,error) && runtime.RunEvent("show_transmit",7.65,effects,error),"the talkers run");
+	runtime.Frame(RemasteredViewport(1280,720),7.7);
+	const auto mine = runtime.PresentedValue("voice-self-b0","background-color"), theirs = runtime.PresentedValue("voice-other-b0","background-color");
+	const auto talker = runtime.PresentedValue("voice-other-name","text");
+	Check(Shown(runtime,"voice-self") && Shown(runtime,"voice-other") && talker && talker->text == "Kaz","both talker plates show");
+	Check(mine && Near(float(mine->data[1]),0x8E/255.f,.01f) && theirs && Near(float(theirs->data[1]),0xE3/255.f,.01f),
+		"each trace takes its talker's team text color");
+	Check(runtime.RunEvent("hide_transmit_self",7.75,effects,error) && runtime.RunEvent("hide_transmit",7.75,effects,error),"the talkers stop");
+	runtime.Frame(RemasteredViewport(1280,720),7.8);
+	Check(!Shown(runtime,"voice-self") && !Shown(runtime,"voice-other"),"the talker plates go");
 	Check(host.errors == 0,"no runtime diagnostics across the MP HUD exercise");
 	runtime.Shutdown();
 }
@@ -830,6 +950,40 @@ static void CheckRemasteredVehicleHud(ScreenHost& host, const char* path) {
 	Check(key && key->text == "SPACE","the prompt names the jump key");
 	Bounds prompt;
 	Check(runtime.GetBounds("vpr",prompt) && Near(prompt.x+prompt.width,320+629*1.5f,1.5f),"the prompt trails at 629 u");
+	Check(Shown(runtime,"vpr-chip") && !Shown(runtime,"vpr-pad-round") && !Shown(runtime,"vpr-pad-mouse"),"a keyboard key is a keycap");
+	// A controller's button draws its family's glyph (13.5): the engine gives
+	// the kind in "<key>.glyph" and the label in the key state.
+	const auto glyphShows = [&](double kind, const char* label, std::initializer_list<const char*> shown, std::initializer_list<const char*> hidden) {
+		Check(runtime.SetState({{"oq4_key_jump.glyph",kind},{"oq4_key_jump",std::string(label)}},error,2.9),error.c_str());
+		runtime.Frame(RemasteredViewport(1280,720),2.95);
+		bool ok = !Shown(runtime,"vpr-chip");
+		for (const char* id : shown) ok = ok && Shown(runtime,id);
+		for (const char* id : hidden) ok = ok && !Shown(runtime,id);
+		Bounds trailing;
+		return ok && runtime.GetBounds("vpr",trailing) && Near(trailing.x+trailing.width,320+629*1.5f,1.5f);
+	};
+	Check(glyphShows(1,"A",{"vpr-pad-round","vpr-ring","vpr-letter"},{"vpr-cross","vpr-dots","vpr-stick"}) &&
+		runtime.PresentedValue("vpr-letter","text")->text == "A","an Xbox south button reads A in a ring");
+	Check(glyphShows(2,"",{"vpr-pad-round","vpr-ring","vpr-cross"},{"vpr-letter","vpr-circle"}),"a PlayStation south button draws the cross");
+	Check(glyphShows(5,"",{"vpr-triangle"},{"vpr-cross","vpr-square"}),"a PlayStation north button draws the triangle");
+	Check(glyphShows(6,"",{"vpr-dots","vpr-dot6"},{"vpr-dot7","vpr-dot9","vpr-letter"}),"an unknown family lights the south position");
+	Check(glyphShows(10,"LB",{"vpr-pad-bumper","vpr-bumper","vpr-bumper-label"},{"vpr-pad-round"}) &&
+		runtime.PresentedValue("vpr-bumper-label","text")->text == "LB","a bumper reads its family's name");
+	Check(glyphShows(11,"ZR",{"vpr-pad-trigger","vpr-trigger-label"},{"vpr-pad-bumper"}),"a trigger draws the trigger");
+	Check(glyphShows(13,"",{"vpr-pad-dpad","vpr-dpad","vpr-arm13"},{"vpr-arm12","vpr-arm14","vpr-arm15"}),"the d-pad lights its bound arm");
+	Check(glyphShows(16,"L3",{"vpr-pad-round","vpr-stick","vpr-stick-label"},{"vpr-letter"}),"a stick click draws the stick");
+	Check(glyphShows(17,"",{"vpr-pad-pill","vpr-menu"},{"vpr-view"}) && glyphShows(18,"",{"vpr-view"},{"vpr-menu"}),
+		"menu and view draw their symbols");
+	Check(glyphShows(19,"",{"vpr-home"},{"vpr-letter"}) && glyphShows(20,"",{"vpr-pad-touch"},{"vpr-pad-round"}) &&
+		glyphShows(21,"R4",{"vpr-pad-paddle","vpr-paddle-label"},{}),"home, the touchpad and a paddle draw theirs");
+	Check(glyphShows(22,"OPTIONS",{"vpr-pad-button","vpr-button-label"},{"vpr-pad-pill"}) &&
+		runtime.PresentedValue("vpr-button-label","text")->text == "OPTIONS","another button is a pill with its label");
+	Check(glyphShows(23,"",{"vpr-pad-mouse","vpr-mouse","vpr-mouse-left"},{"vpr-mouse-right","vpr-mouse-middle"}) &&
+		glyphShows(27,"",{"vpr-mouse-middle","vpr-wheel-down"},{"vpr-wheel-up"}) && glyphShows(28,"4",{"vpr-side-label"},{"vpr-mouse-left"}),
+		"the mouse lights the bound button or the wheel's direction");
+	Check(runtime.SetState({{"oq4_key_jump.glyph",0.0},{"oq4_key_jump",std::string("SPACE")}},error,3.0),error.c_str());
+	runtime.Frame(RemasteredViewport(1280,720),3.05);
+	Check(Shown(runtime,"vpr-chip") && !Shown(runtime,"vpr-pad-mouse"),"the keyboard's keycap returns");
 	runtime.Frame(RemasteredViewport(1280,720),.5+5.6);
 	Check(!Shown(runtime,"vmsg"),"the lines are gone after 5.5 s");
 	Check(runtime.SetState({{"vehicle_locked",1.0}},error,6.2),error.c_str());
@@ -1338,6 +1492,94 @@ static void CheckRemasteredGevHud(ScreenHost& host, const char* path) {
 	Check(!Shown(runtime,"tr-full") && Shown(runtime,"vpr") && runtime.GetBounds("gev",cluster),"Minimal keeps the cluster and the prompt");
 	RemasteredLayoutPreference(host,1);
 	Check(host.errors == 0,"no runtime diagnostics across the GEV exercise");
+	runtime.Shutdown();
+}
+
+// The Medical Labs implant activation (14.19): hidden until `activate`, the
+// cells lit two passes over from 500 ms in the stock order, the corner pieces
+// and readouts fading from 4150 ms and the overlay gone at 4650 ms; every
+// activate restarts it. `hurt` and `saveMessage` run on their own. Reduced
+// motion keeps steady faint cells and still readouts, and no travelling data.
+static void CheckRemasteredMedchangeHud(ScreenHost& host, const char* path) {
+	const auto source = Read(path);
+	Document document; std::vector<Diagnostic> diagnostics;
+	if (!document.Load(source,diagnostics)) for (const auto& d : diagnostics) std::fprintf(stderr,"%s %u:%u %s\n",path,unsigned(d.line),unsigned(d.column),d.message.c_str());
+	Check(diagnostics.empty() && document.Model().id == "openq4.hud.remastered.medchange","Remastered implant overlay validates");
+	Check(document.Model().canvasHeight == 720 && document.Model().canvasMinWidth == 960,"the implant overlay uses the 4:3 center-screen canvas");
+	RemasteredLayoutPreference(host,1);
+	Runtime runtime(host);
+	Check(runtime.Initialize(),"retained runtime");
+	Check(runtime.LoadDocument(source,"guis/hud/remastered_medchange.q4ui",diagnostics),"Remastered implant overlay loads into a runtime");
+	std::string error;
+	Runtime::EventEffects effects;
+	Check(runtime.SetState(RemasteredLayout(1280,720),error,0),error.c_str());
+	Check(runtime.RunEvent("hudJoin",0,effects,error),"the join program runs");
+	runtime.Frame(RemasteredViewport(1280,720),.1);
+	Check(host.errors == 0,"the implant overlay frames without runtime errors");
+	Check(!Shown(runtime,"med-all") && !Shown(runtime,"med-hurt") && !Shown(runtime,"med-saved"),"the overlay starts hidden");
+	const auto opacity = [&](const char* id) {
+		const auto value = runtime.PresentedValue(id,"opacity");
+		return value ? float(value->data[0]) : -1.f;
+	};
+
+	// The first cell (hex10) lights at 500 ms and fades over 500 ms; the
+	// sixth (hex4) waits until 750 ms; the readouts cycle every 100 ms.
+	Check(runtime.RunEvent("activate",1,effects,error),"activate runs");
+	runtime.Frame(RemasteredViewport(1280,720),1.55);
+	Check(Shown(runtime,"med-all") && Near(opacity("med-p0"),.9f,.03f) && Near(opacity("med-p5"),0,.001f),
+		"the cells light in the stock order from 500 ms");
+	Check(Near(opacity("med-proc0-v5"),1,.001f) && Near(opacity("med-proc0-v0"),0,.001f),"the processor readout steps every 100 ms");
+	Check(Near(opacity("med-x-v5"),1,.001f) && Near(opacity("med-x-v0"),0,.001f) && Near(opacity("med-z-v2"),1,.001f),
+		"the X/Y/Z readouts cycle the stock data at 100 and 200 ms");
+	const auto fall = runtime.PresentedValue("med-data0","transform");
+	runtime.Frame(RemasteredViewport(1280,720),1.6);
+	const auto fell = runtime.PresentedValue("med-data0","transform");
+	Check(Shown(runtime,"med-data") && fall && fell && float(fell->data[1]) > float(fall->data[1]),"the rune data falls");
+	// The second pass: hex10 again 37 steps later, at 2350 ms.
+	runtime.Frame(RemasteredViewport(1280,720),3.4);
+	Check(Near(opacity("med-p0"),.9f,.03f),"the second pass relights the first cell");
+	// From 4150 ms the corner pieces and readouts fade, and at 4650 ms the overlay hides.
+	runtime.Frame(RemasteredViewport(1280,720),5.2);
+	Check(Near(opacity("med-frame"),.9f,.03f) && Shown(runtime,"med-all"),"the frame fades from 4150 ms");
+	runtime.Frame(RemasteredViewport(1280,720),5.7);
+	Check(!Shown(runtime,"med-all"),"the overlay hides at 4650 ms");
+
+	// Another activate restarts every clock.
+	Check(runtime.RunEvent("activate",6,effects,error),"activate runs again");
+	runtime.Frame(RemasteredViewport(1280,720),6.55);
+	Check(Shown(runtime,"med-all") && Near(opacity("med-p0"),.9f,.03f) && Near(opacity("med-frame"),1,.001f),"a repeat activation starts over");
+
+	// Hurt: a red edge pulse from 0.6 over a second, with the overlay or without.
+	Check(runtime.RunEvent("hurt",6.6,effects,error),"hurt runs");
+	runtime.Frame(RemasteredViewport(1280,720),7.1);
+	Check(Shown(runtime,"med-hurt") && Near(opacity("med-hurt"),.3f,.03f),"the hurt pulse falls from 0.6");
+	runtime.Frame(RemasteredViewport(1280,720),7.7);
+	Check(!Shown(runtime,"med-hurt"),"the hurt pulse ends after a second");
+
+	// The save notice: 2000 ms, then fading over 1000 ms.
+	Check(runtime.RunEvent("saveMessage",7.8,effects,error),"the save notice runs");
+	runtime.Frame(RemasteredViewport(1280,720),8.9);
+	Check(Shown(runtime,"med-saved") && Near(opacity("med-saved"),1,.001f),"the save notice shows");
+	runtime.Frame(RemasteredViewport(1280,720),10.9);
+	Check(!Shown(runtime,"med-saved"),"the save notice leaves after 3 s");
+
+	// Reduced motion: steady faint cells, still readouts and no travelling data.
+	host.reducedMotion = true;
+	runtime.SetReducedMotion(true,11);
+	Check(runtime.RunEvent("activate",11,effects,error),"activate runs under reduced motion");
+	runtime.Frame(RemasteredViewport(1280,720),11.2);
+	Check(Near(opacity("med-p0"),.1f,.005f) && Near(opacity("med-p20"),.1f,.005f),"reduced motion keeps steady faint cells");
+	runtime.Frame(RemasteredViewport(1280,720),11.65);
+	Check(Near(opacity("med-p0"),.1f,.005f) && Near(opacity("med-proc0-v0"),1,.001f) && Near(opacity("med-proc0-v3"),0,.001f),
+		"no cell flashes and the readouts hold still");
+	Check(!Shown(runtime,"med-data"),"reduced motion leaves out the travelling data");
+	runtime.Frame(RemasteredViewport(1280,720),15.4);
+	Check(Near(opacity("med-center"),.5f,.03f),"the steady cells fade with the frame");
+	runtime.Frame(RemasteredViewport(1280,720),15.7);
+	Check(!Shown(runtime,"med-all"),"the timed activation still hides at 4650 ms");
+	host.reducedMotion = false;
+	runtime.SetReducedMotion(false,15.8);
+	Check(host.errors == 0,"no runtime diagnostics across the implant overlay exercise");
 	runtime.Shutdown();
 }
 

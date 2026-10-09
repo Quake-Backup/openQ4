@@ -3494,6 +3494,75 @@ static bool SDL3_IsSteamDeckPlatformProfile(void) {
 	return profile != NULL && idStr::Icmp(profile, "steamdeck") == 0;
 }
 
+// openQ4: prompts draw a controller's buttons in the glyph family of the
+// controller SDL reports (ui-visual-design.md 13.5). in_promptStyle forces a
+// family when a remapping layer hides the real device, and the steamdeck
+// platform profile selects Steam Deck glyphs for the built-in controls.
+static idCVar in_promptStyle("in_promptStyle", "0", CVAR_SYSTEM | CVAR_ARCHIVE | CVAR_INTEGER,
+	"controller prompt glyphs: 0 the controller's own, 1 Xbox, 2 PlayStation, 3 Nintendo, 4 Steam Deck, 5 generic", 0, 5);
+
+static int SDL3_FaceLabel(SDL_GamepadButtonLabel label) {
+	switch (label) {
+		case SDL_GAMEPAD_BUTTON_LABEL_A: return 1;
+		case SDL_GAMEPAD_BUTTON_LABEL_B: return 2;
+		case SDL_GAMEPAD_BUTTON_LABEL_X: return 3;
+		case SDL_GAMEPAD_BUTTON_LABEL_Y: return 4;
+		case SDL_GAMEPAD_BUTTON_LABEL_CROSS: return 5;
+		case SDL_GAMEPAD_BUTTON_LABEL_CIRCLE: return 6;
+		case SDL_GAMEPAD_BUTTON_LABEL_SQUARE: return 7;
+		case SDL_GAMEPAD_BUTTON_LABEL_TRIANGLE: return 8;
+		default: return 0;
+	}
+}
+
+/*
+===============
+Sys_SDL_GamepadGlyphFamily
+
+The prompt glyph family: 0 generic, 1 Xbox, 2 PlayStation, 3 Nintendo,
+4 Steam Deck. faceLabels receives the label printed on the south, east, west
+and north buttons, as SDL reports it: 1 A, 2 B, 3 X, 4 Y, 5 cross, 6 circle,
+7 square, 8 triangle, 0 unknown.
+===============
+*/
+int Sys_SDL_GamepadGlyphFamily(int faceLabels[4]) {
+	static const int xbox[4] = { 1, 2, 3, 4 }, playstation[4] = { 5, 6, 7, 8 }, nintendo[4] = { 2, 1, 4, 3 }, unknown[4] = { 0, 0, 0, 0 };
+	int family = in_promptStyle.GetInteger();
+	if (family == 0) {
+		if (SDL3_IsSteamDeckPlatformProfile()) {
+			family = 4;
+		} else if (s_sdlGamepad != NULL) {
+			switch (SDL_GetGamepadType(s_sdlGamepad)) {
+				case SDL_GAMEPAD_TYPE_XBOX360: case SDL_GAMEPAD_TYPE_XBOXONE: family = 1; break;
+				case SDL_GAMEPAD_TYPE_PS3: case SDL_GAMEPAD_TYPE_PS4: case SDL_GAMEPAD_TYPE_PS5: family = 2; break;
+				case SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_PRO: case SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_JOYCON_LEFT:
+				case SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_JOYCON_RIGHT: case SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_JOYCON_PAIR: family = 3; break;
+				default: family = 5; break;
+			}
+		} else {
+			family = 5;
+		}
+		// The printed labels, which the forced families below assume.
+		if (family != 4 && family != 5 && s_sdlGamepad != NULL) {
+			static const SDL_GamepadButton positions[4] = { SDL_GAMEPAD_BUTTON_SOUTH, SDL_GAMEPAD_BUTTON_EAST, SDL_GAMEPAD_BUTTON_WEST,
+				SDL_GAMEPAD_BUTTON_NORTH };
+			bool known = true;
+			for (int i = 0; i < 4; ++i) {
+				faceLabels[i] = SDL3_FaceLabel(SDL_GetGamepadButtonLabel(s_sdlGamepad, positions[i]));
+				known = known && faceLabels[i] != 0;
+			}
+			if (known) {
+				return family;
+			}
+		}
+	}
+	const int *labels = family == 2 ? playstation : family == 3 ? nintendo : family == 1 || family == 4 ? xbox : unknown;
+	for (int i = 0; i < 4; ++i) {
+		faceLabels[i] = labels[i];
+	}
+	return family == 5 ? 0 : family;
+}
+
 static int SDL3_DetectSteamDeckFrameCap(void) {
 	const int configuredCap = com_steamDeckFrameCap.GetInteger();
 	if (configuredCap > 0) {

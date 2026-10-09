@@ -679,6 +679,21 @@ void Key_ListBinds_f( const idCmdArgs &args ) {
 
 /*
 ============
+Key_TestPromptDevice_f
+
+openQ4: testPromptDevice controller|desktop sets the device the prompts name
+until the next real input, so headless captures can show controller glyphs.
+============
+*/
+static void Key_TestPromptDevice_f( const idCmdArgs &args ) {
+	if ( args.Argc() == 2 ) {
+		key_lastInputFamily = idStr::Icmp( args.Argv( 1 ), "controller" ) == 0 ? KEY_INPUT_FAMILY_CONTROLLER : KEY_INPUT_FAMILY_DESKTOP;
+	}
+	common->Printf( "prompt device: %s\n", key_lastInputFamily == KEY_INPUT_FAMILY_CONTROLLER ? "controller" : "desktop" );
+}
+
+/*
+============
 idKeyInput::KeysFromBinding
 returns the localized name of the key for the binding
 ============
@@ -967,6 +982,7 @@ void idKeyInput::Init( void ) {
 	cmdSystem->AddCommand( "unbind", Key_Unbind_f, CMD_FL_SYSTEM, "unbinds any command from a key", idKeyInput::ArgCompletion_KeyName );
 	cmdSystem->AddCommand( "unbindall", Key_Unbindall_f, CMD_FL_SYSTEM, "unbinds any commands from all keys" );
 	cmdSystem->AddCommand( "listBinds", Key_ListBinds_f, CMD_FL_SYSTEM, "lists key bindings" );
+	cmdSystem->AddCommand( "testPromptDevice", Key_TestPromptDevice_f, CMD_FL_SYSTEM | CMD_FL_CHEAT, "sets the device prompts name until the next input: controller or desktop" );
 }
 
 /*

@@ -10,11 +10,14 @@ and the header-band plate for you.
 """
 from __future__ import annotations
 
+import math
+
 import build_retained_screens as ui
 import hud_svg
 from remastered_hud_base import (AND, BOUND_TEXT, NOT, OR, S, U, HudDocument, anchor, beyond_minimal, cancel, fitted_plate_path,
-                                 layout_state, num, op, play, pts_path, rgb, sel, svg_path, tr, transform_value, u, vec,
-                                 when)
+                                 gameplay_root,
+                                 layout_state, num, op, play, pts_path, rgb, rounded_rect, sel, stroke, svg_path, tr, transform_value,
+                                 u, vec, when)
 from remastered_hud_status import MP_ROSTER, full
 
 NOTE, MAR, STR, MAR_T, STR_T = "#FFFF8D", "#6AA42B", "#FF7B04", "#AAE355", "#FF8E00"
@@ -141,16 +144,217 @@ def flex_row(ident: str, children: list, **props) -> dict:
 
 def key_chip(doc: HudDocument, ident: str, key_expr, *, size: float = 6, h: float = 10) -> dict:
     """The active control (13.4): its key name in dark ProFont on a white chip
-    at 0.85 with a cut lower-leading corner, `h` u tall."""
-    return ui.group(ident + "-chip", {"position": ui.keyword("relative"), "display": ui.keyword("block"), "height": ui.length(u(h)),
-                                      "padding-left": ui.length(u(4)), "padding-right": ui.length(u(3)),
-                                      "margin-right": ui.length(u(4))},
-                    [vec(ident + "-chipbg", [{"id": "k", "fill": ui.solid([1, 1, 1, 0.85]), "commands": [
-                        {"id": "a", "op": "move", "points": [[0, 0]]}, {"id": "b", "op": "line", "points": [[{"fraction": 1}, 0]]},
-                        {"id": "c", "op": "line", "points": [[{"fraction": 1}, {"fraction": 1}]]},
-                        {"id": "d", "op": "line", "points": [[u(3), {"fraction": 1}]]},
-                        {"id": "e", "op": "line", "points": [[0, {"fraction": 1, "dp": -u(3)}]]}, {"id": "f", "op": "close"}]}]),
-                     bound_label(doc, ident + "-key", key_expr, size, rgb(DARK), face="profont", line=h)])
+    at 0.85 with a cut lower-leading corner, `h` u tall; a key state shows the
+    controller's button in its glyph family instead (glyph_chip)."""
+    return glyph_chip(doc, ident, key_expr, h=h, size=size, cut=3, pad=(4, 3), gap=4)
+
+
+# ------------------------------------------------------------------ prompt glyphs
+
+# The glyph kinds a key state's "<key>.glyph" holds (UserInterfaceRetained.cpp
+# PromptGlyph): the documents' contract with the engine.
+GLYPH_KEYCAP, GLYPH_LETTER = 0, 1
+GLYPH_CROSS, GLYPH_CIRCLE, GLYPH_SQUARE, GLYPH_TRIANGLE = 2, 3, 4, 5
+GLYPH_SOUTH, GLYPH_EAST, GLYPH_WEST, GLYPH_NORTH = 6, 7, 8, 9
+GLYPH_BUMPER, GLYPH_TRIGGER = 10, 11
+GLYPH_DPAD_UP, GLYPH_DPAD_DOWN, GLYPH_DPAD_LEFT, GLYPH_DPAD_RIGHT = 12, 13, 14, 15
+GLYPH_STICK, GLYPH_MENU, GLYPH_VIEW, GLYPH_HOME, GLYPH_TOUCHPAD, GLYPH_PADDLE, GLYPH_BUTTON = 16, 17, 18, 19, 20, 21, 22
+GLYPH_MOUSE_LEFT, GLYPH_MOUSE_RIGHT, GLYPH_MOUSE_MIDDLE, GLYPH_WHEEL_UP, GLYPH_WHEEL_DOWN, GLYPH_MOUSE_SIDE = 23, 24, 25, 26, 27, 28
+GLYPH_INK = [1, 1, 1, 0.92]
+
+
+def _circle(name: str, cx: float, cy: float, r: float, *, fill=None, stroke_=None) -> dict:
+    """A circle as four cubic arcs."""
+    k = r * 0.552284749831
+    def pt(x, y):
+        return [round(x, 2), round(y, 2)]
+    quads = [(pt(cx + r, cy + k), pt(cx + k, cy + r), pt(cx, cy + r)), (pt(cx - k, cy + r), pt(cx - r, cy + k), pt(cx - r, cy)),
+             (pt(cx - r, cy - k), pt(cx - k, cy - r), pt(cx, cy - r)), (pt(cx + k, cy - r), pt(cx + r, cy - k), pt(cx + r, cy))]
+    path = {"id": name, "commands": [{"id": "m", "op": "move", "points": [pt(cx + r, cy)]}] +
+            [{"id": f"q{i}", "op": "cubic", "points": list(q)} for i, q in enumerate(quads)] + [{"id": "z", "op": "close"}]}
+    path["fill"] = fill if fill is not None else {"type": "none"}
+    if stroke_ is not None:
+        path["stroke"] = stroke_
+    return path
+
+
+def _rect(x: float, y: float, w: float, h: float) -> list:
+    return [(x, y), (x + w, y), (x + w, y + h), (x, y + h)]
+
+
+def _kinds(glyph, kinds) -> dict:
+    """Whether the glyph is one of `kinds`: runs of kinds as ranges."""
+    runs, start = [], None
+    ordered = sorted(set(kinds))
+    for index, kind in enumerate(ordered):
+        start = kind if start is None else start
+        if index + 1 == len(ordered) or ordered[index + 1] != kind + 1:
+            runs.append(op("==", glyph, kind) if start == kind else AND(op(">=", glyph, start), op("<=", glyph, kind)))
+            start = None
+    return runs[0] if len(runs) == 1 else OR(*runs)
+
+
+def glyph_chip(doc: HudDocument, ident: str, key_expr, *, h: float, size: float, cut: float, pad: tuple, gap: float,
+               min_width: float = 0) -> dict:
+    """The control a prompt names (13.4, 13.5, 14.8), `h` u tall. A keyboard
+    key is a keycap: its name in dark ProFont `size` u on a white plate at
+    0.85 with the 45-degree cut. A controller button draws the glyph of the
+    family in use, a vector symbol in the HUD's white whose shape and letter
+    carry the identity: a face button's letter or the cross, circle, square
+    and triangle (by position when the family is unknown), bumper, trigger,
+    d-pad arm, stick, menu, view, home, touchpad, paddle or a labelled
+    button; the mouse's buttons and wheel draw the mouse. The engine resolves
+    the kind into "<key>.glyph" and the label into the key state."""
+    plate = vec(ident + "-chipbg", [{"id": "k", "fill": ui.solid([1, 1, 1, 0.85]), "commands": [
+        {"id": "a", "op": "move", "points": [[0, 0]]}, {"id": "b", "op": "line", "points": [[{"fraction": 1}, 0]]},
+        {"id": "c", "op": "line", "points": [[{"fraction": 1}, {"fraction": 1}]]},
+        {"id": "d", "op": "line", "points": [[u(cut), {"fraction": 1}]]},
+        {"id": "e", "op": "line", "points": [[0, {"fraction": 1, "dp": -u(cut)}]]}, {"id": "f", "op": "close"}]}])
+    cap = ui.group(ident + "-chip", {"position": ui.keyword("relative"), "display": ui.keyword("block"), "height": ui.length(u(h)),
+                                     "min-width": ui.length(u(min_width)), "text-align": ui.keyword("center"),
+                                     "padding-left": ui.length(u(pad[0])), "padding-right": ui.length(u(pad[1]))},
+                   [plate, bound_label(doc, ident + "-key", key_expr, size, rgb(DARK), face="profont", line=h)])
+    if not (isinstance(key_expr, dict) and "state" in key_expr):
+        cap["properties"]["margin-right"] = ui.length(u(gap))
+        return cap
+    key = key_expr["state"]
+    glyph = S(doc.number(key + ".glyph", GLYPH_KEYCAP))
+    doc.show(cap["id"], op("==", glyph, GLYPH_KEYCAP))
+    s = u(h)
+    sw = round(max(1.0, s * 0.075), 3)
+    ink = GLYPH_INK
+
+    # Hundredths of a dp are ample for glyphs this size and keep the document small.
+    def outline(name, points, width=sw, closed=True):
+        return pts_path(name, [(round(x, 2), round(y, 2)) for x, y in points], stroke=stroke(ink, width, join="round", cap="round"),
+                        closed=closed)
+
+    def solid(name, points):
+        return pts_path(name, [(round(x, 2), round(y, 2)) for x, y in points], fill=ui.solid(ink))
+
+    def ring(name, x, y, radius, width=sw):
+        return _circle(name, x, y, radius, stroke_=stroke(ink, width, join="round", cap="round"))
+
+    def art(name, paths, kinds):
+        node = vec(f"{ident}-{name}", paths, {"display": ui.keyword("none")})
+        doc.show(node["id"], _kinds(glyph, kinds))
+        return node
+
+    def text(name, line_size, kinds):
+        node = bound_label(doc, f"{ident}-{name}", key_expr, line_size, ink, face="profont", line=h,
+                           **{"position": ui.keyword("absolute"), "left": ui.length(0), "top": ui.length(0),
+                              "width": ui.length(100, "%"), "text-align": ui.keyword("center")})
+        node["properties"]["display"] = ui.keyword("none")
+        doc.show(node["id"], _kinds(glyph, kinds))
+        return node
+
+    def box(name, width, children, kinds):
+        node = ui.group(f"{ident}-{name}", {"position": ui.keyword("relative"), "display": ui.keyword("none"),
+                                           "width": ui.length(round(width, 3)), "height": ui.length(s)}, children)
+        doc.show(node["id"], _kinds(glyph, kinds))
+        return node
+
+    c = s / 2
+    r = s * 0.46
+    round_kinds = [GLYPH_LETTER, GLYPH_CROSS, GLYPH_CIRCLE, GLYPH_SQUARE, GLYPH_TRIANGLE, GLYPH_SOUTH, GLYPH_EAST, GLYPH_WEST,
+                   GLYPH_NORTH, GLYPH_STICK, GLYPH_HOME]
+    k = s * 0.19
+    dots = {GLYPH_SOUTH: (c, c + s * 0.25), GLYPH_EAST: (c + s * 0.25, c), GLYPH_WEST: (c - s * 0.25, c), GLYPH_NORTH: (c, c - s * 0.25)}
+    roof = [(c - s * 0.24, c + s * 0.02), (c, c - s * 0.22), (c + s * 0.24, c + s * 0.02)]
+    round_box = box("pad-round", s, [
+        art("ring", [ring("ring", c, c, r)], round_kinds),
+        art("cross", [outline("a", [(c - k, c - k), (c + k, c + k)]), outline("b", [(c + k, c - k), (c - k, c + k)])], [GLYPH_CROSS]),
+        art("circle", [ring("o", c, c, s * 0.2)], [GLYPH_CIRCLE]),
+        art("square", [outline("q", _rect(c - k, c - k, 2 * k, 2 * k))], [GLYPH_SQUARE]),
+        art("triangle", [outline("t", [(c, c - s * 0.21), (c + s * 0.21, c + s * 0.15), (c - s * 0.21, c + s * 0.15)])],
+            [GLYPH_TRIANGLE]),
+        art("dots", [ring(f"d{kind}", x, y, s * 0.075, sw * 0.8) for kind, (x, y) in dots.items()],
+            [GLYPH_SOUTH, GLYPH_EAST, GLYPH_WEST, GLYPH_NORTH]),
+        *[art(f"dot{kind}", [_circle("d", x, y, s * 0.095, fill=ui.solid(ink))], [kind]) for kind, (x, y) in dots.items()],
+        art("stick", [ring("s", c, c, s * 0.31, sw * 0.8)], [GLYPH_STICK]),
+        art("home", [outline("roof", roof + [roof[0]]), outline("walls", [(c - s * 0.16, c - s * 0.04), (c - s * 0.16, c + s * 0.2),
+                                                                           (c + s * 0.16, c + s * 0.2), (c + s * 0.16, c - s * 0.04)],
+                                                         closed=False)],
+            [GLYPH_HOME]),
+        text("letter", h * 0.6, [GLYPH_LETTER]),
+        text("stick-label", h * 0.36, [GLYPH_STICK]),
+    ], round_kinds)
+    # The bumper: a shoulder shape rounded toward the top.
+    bw = s * 1.6
+    bumper = rounded_rect(s * 0.06, s * 0.2, bw - s * 0.12, s * 0.62, s * 0.22)
+    bumper_box = box("pad-bumper", bw, [art("bumper", [outline("b", bumper)], [GLYPH_BUMPER]),
+                                        text("bumper-label", h * 0.42, [GLYPH_BUMPER])], [GLYPH_BUMPER])
+    # The trigger: a rounded top over straight sides.
+    tw = s * 1.3
+    arc = [(tw / 2 + (tw / 2 - s * 0.1) * math.cos(math.pi + math.pi * i / 12),
+            s * 0.42 + s * 0.34 * math.sin(math.pi + math.pi * i / 12)) for i in range(13)]
+    trigger = [(s * 0.1, s * 0.92)] + arc + [(tw - s * 0.1, s * 0.92)]
+    trigger_box = box("pad-trigger", tw, [art("trigger", [outline("t", trigger)], [GLYPH_TRIGGER]),
+                                          text("trigger-label", h * 0.42, [GLYPH_TRIGGER])], [GLYPH_TRIGGER])
+    # The d-pad: the cross's outline with the bound arm lit.
+    a, e = s * 0.15, s * 0.46
+    plus = [(c - a, c - e), (c + a, c - e), (c + a, c - a), (c + e, c - a), (c + e, c + a), (c + a, c + a), (c + a, c + e),
+            (c - a, c + e), (c - a, c + a), (c - e, c + a), (c - e, c - a), (c - a, c - a)]
+    arms = {GLYPH_DPAD_UP: _rect(c - a, c - e, 2 * a, e - a), GLYPH_DPAD_DOWN: _rect(c - a, c + a, 2 * a, e - a),
+            GLYPH_DPAD_LEFT: _rect(c - e, c - a, e - a, 2 * a), GLYPH_DPAD_RIGHT: _rect(c + a, c - a, e - a, 2 * a)}
+    dpad_box = box("pad-dpad", s, [art("dpad", [outline("p", plus)], list(arms)),
+                                   *[art(f"arm{kind}", [solid("a", points)], [kind]) for kind, points in arms.items()]], list(arms))
+    # Menu and view: a pill holding three bars, or two overlapping squares.
+    pw = s * 1.25
+    pill = rounded_rect(s * 0.06, s * 0.18, pw - s * 0.12, s * 0.64, s * 0.32)
+    bars = [outline(f"l{i}", [(pw / 2 - s * 0.2, s * (0.38 + 0.12 * i)), (pw / 2 + s * 0.2, s * (0.38 + 0.12 * i))], sw * 0.8)
+            for i in range(3)]
+    squares = [outline("q0", _rect(pw / 2 - s * 0.2, s * 0.33, s * 0.24, s * 0.2) + [(pw / 2 - s * 0.2, s * 0.33)], sw * 0.8),
+               outline("q1", _rect(pw / 2 - s * 0.04, s * 0.45, s * 0.24, s * 0.2) + [(pw / 2 - s * 0.04, s * 0.45)], sw * 0.8)]
+    pill_box = box("pad-pill", pw, [art("pill", [outline("p", pill)], [GLYPH_MENU, GLYPH_VIEW]),
+                                    art("menu", bars, [GLYPH_MENU]), art("view", squares, [GLYPH_VIEW])], [GLYPH_MENU, GLYPH_VIEW])
+    # The touchpad and a paddle.
+    tpw = s * 1.6
+    touch_box = box("pad-touch", tpw, [art("touch", [outline("t", rounded_rect(s * 0.06, s * 0.2, tpw - s * 0.12, s * 0.6, s * 0.12)),
+                                                     _circle("dot", tpw / 2, s * 0.5, s * 0.07, fill=ui.solid(ink))], [GLYPH_TOUCHPAD])],
+                    [GLYPH_TOUCHPAD])
+    padw = s * 1.3
+    paddle_box = box("pad-paddle", padw, [art("paddle", [outline("p", rounded_rect(s * 0.06, s * 0.2, padw - s * 0.12, s * 0.6,
+                                                                                    s * 0.14))], [GLYPH_PADDLE]),
+                                          text("paddle-label", h * 0.4, [GLYPH_PADDLE])], [GLYPH_PADDLE])
+    # Another labelled button: a pill as wide as its label.
+    button = ui.group(f"{ident}-pad-button", {"position": ui.keyword("relative"), "display": ui.keyword("none"), "height": ui.length(s),
+                                              "padding-left": ui.length(round(s * 0.3, 3)), "padding-right": ui.length(round(s * 0.3, 3))},
+                      [vec(f"{ident}-button", [{"id": "p", "stroke": stroke(ink, sw, join="round"), "commands": [
+                          {"id": "a", "op": "move", "points": [[round(s * 0.3, 3), round(s * 0.18, 3)]]},
+                          {"id": "b", "op": "line", "points": [[{"fraction": 1, "dp": -round(s * 0.3, 3)}, round(s * 0.18, 3)]]},
+                          {"id": "c", "op": "line", "points": [[{"fraction": 1, "dp": -1}, round(s * 0.5, 3)]]},
+                          {"id": "d", "op": "line", "points": [[{"fraction": 1, "dp": -round(s * 0.3, 3)}, round(s * 0.82, 3)]]},
+                          {"id": "e", "op": "line", "points": [[round(s * 0.3, 3), round(s * 0.82, 3)]]},
+                          {"id": "f", "op": "line", "points": [[1, round(s * 0.5, 3)]]}, {"id": "g", "op": "close"}]}]),
+                       bound_label(doc, f"{ident}-button-label", key_expr, h * 0.42, ink, face="profont", line=h)])
+    doc.show(button["id"], op("==", glyph, GLYPH_BUTTON))
+    # The mouse: its body with the bound button lit, the wheel's arrow, or a
+    # side button's number.
+    mw = s * 0.8
+    mx, my, mbw, mbh = (mw - s * 0.56) / 2, s * 0.07, s * 0.56, s * 0.86
+    split = my + mbh * 0.42
+    mouse_kinds = [GLYPH_MOUSE_LEFT, GLYPH_MOUSE_RIGHT, GLYPH_MOUSE_MIDDLE, GLYPH_WHEEL_UP, GLYPH_WHEEL_DOWN, GLYPH_MOUSE_SIDE]
+    wheel = _rect(mw / 2 - s * 0.05, my + s * 0.12, s * 0.1, s * 0.16)
+    mouse_box = box("pad-mouse", mw, [
+        art("mouse", [outline("body", rounded_rect(mx, my, mbw, mbh, s * 0.26)),
+                      outline("split", [(mx, split), (mx + mbw, split)], sw * 0.8),
+                      outline("seam", [(mw / 2, my), (mw / 2, split)], sw * 0.8)], mouse_kinds),
+        art("mouse-left", [solid("l", [(mx + s * 0.08, split - s * 0.04), (mx + s * 0.08, my + s * 0.2), (mw / 2 - s * 0.06, my + s * 0.06),
+                                       (mw / 2 - s * 0.06, split - s * 0.04)])], [GLYPH_MOUSE_LEFT]),
+        art("mouse-right", [solid("r", [(mw - mx - s * 0.08, split - s * 0.04), (mw - mx - s * 0.08, my + s * 0.2),
+                                        (mw / 2 + s * 0.06, my + s * 0.06), (mw / 2 + s * 0.06, split - s * 0.04)])], [GLYPH_MOUSE_RIGHT]),
+        art("mouse-middle", [solid("m", wheel)], [GLYPH_MOUSE_MIDDLE, GLYPH_WHEEL_UP, GLYPH_WHEEL_DOWN]),
+        art("wheel-up", [solid("u", [(mw / 2, my + mbh * 0.55), (mw / 2 + s * 0.12, my + mbh * 0.72), (mw / 2 - s * 0.12, my + mbh * 0.72)])],
+            [GLYPH_WHEEL_UP]),
+        art("wheel-down", [solid("d", [(mw / 2, my + mbh * 0.9), (mw / 2 + s * 0.12, my + mbh * 0.73), (mw / 2 - s * 0.12, my + mbh * 0.73)])],
+            [GLYPH_WHEEL_DOWN]),
+        text("side-label", h * 0.34, [GLYPH_MOUSE_SIDE]),
+    ], mouse_kinds)
+    return ui.group(ident + "-glyph", {"position": ui.keyword("relative"), "display": ui.keyword("flex"),
+                                       "flex-direction": ui.keyword("row"), "align-items": ui.keyword("center"),
+                                       "height": ui.length(s), "margin-right": ui.length(u(gap))},
+                    [cap, round_box, bumper_box, trigger_box, dpad_box, pill_box, touch_box, paddle_box, button, mouse_box])
 
 
 def declare(doc: HudDocument, spec: dict) -> None:
@@ -420,16 +624,30 @@ def flag_paths(ident: str, colour: list, state: str, scale: float = 1.0) -> list
     return paths
 
 
-def flag_node(doc: HudDocument, ident: str, colour: list, state_expr, x: float, y: float) -> dict:
+def flag_node(doc: HudDocument, ident: str, colour: list, state_expr, x: float, y: float, swing: list | None = None) -> dict:
     """A flag at (x, y) u: at base, taken (pulsing 28 to 34 u once a second,
-    the stock pulse, under a "!") or dropped (under a "?")."""
+    the stock pulse, under a "!") or dropped (under a "?"). A `swing` color
+    (the one flag in its carrier's team color) washes over the taken flag
+    with the beat, there over 250 ms and back over 750 ms. Reduced motion
+    holds the taken flag at 34 u in the swing color (14.10)."""
     base = vec(ident + "-base", flag_paths("f", colour, "base"), {"display": ui.keyword("none")})
     doc.show(base["id"], op("==", state_expr, 0))
     taken = vec(ident + "-taken", flag_paths("f", colour, "taken"))
     dropped = vec(ident + "-dropped", flag_paths("f", colour, "dropped"), {"display": ui.keyword("none")})
     doc.show(dropped["id"], op("==", state_expr, 2))
-    pulse = full(ident + "-pulse", [taken], transform=ui.transform(), display=ui.keyword("none"))
-    doc.show(pulse["id"], op("==", state_expr, 1))
+    layers, washes = [taken], []
+    if swing is not None:
+        wash = vec(ident + "-wash", flag_paths("f", swing, "taken"), {"opacity": num(0)})
+        steady = vec(ident + "-wash-rest", flag_paths("f", swing, "taken"), {"display": ui.keyword("none")})
+        doc.show(steady["id"], S("oq4.reduced"))
+        layers += [wash, steady]
+        washes.append(tr(wash["id"], "opacity", [(0, num(0)), (250, num(1)), (1000, num(0))]))
+    pulse = full(ident + "-pulse", layers, transform=ui.transform())
+    # Reduced motion ends the beat at rest; this wrapper holds the peak instead.
+    peak = sel(S("oq4.reduced"), 1.2143, 1)
+    held = full(ident + "-held", [pulse], transform=ui.transform(), display=ui.keyword("none"))
+    doc.bind(held["id"] + ".reduced", held["id"], "transform", [0, 0, peak, peak, 0])
+    doc.show(held["id"], op("==", state_expr, 1))
     marks = []
     for name, key, value in (("bang", "#str_231225", 1), ("query", "#str_231226", 2)):
         node = text_at(doc, f"{ident}-{name}", None, 8.5, WHITE, center=9.5, baseline=9.5, width=12)
@@ -441,14 +659,14 @@ def flag_node(doc: HudDocument, ident: str, colour: list, state_expr, x: float, 
 
     def scaled(s):
         return transform_value((cx - u(9)) * (1 - s), (cy - u(9)) * (1 - s), s, s)
-    doc.timeline(ident + "-beat", 1000, [tr(ident + "-pulse", "transform", [(0, scaled(1)), (250, scaled(1.2143)), (1000, scaled(1))])],
-                 iterations=0)
+    doc.timeline(ident + "-beat", 1000, [tr(ident + "-pulse", "transform", [(0, scaled(1)), (250, scaled(1.2143)), (1000, scaled(1))]),
+                                         *washes], iterations=0)
     # The beat runs only while the flag is taken (the game sends oq4_flags on a change).
     step = when(op("==", state_expr, 1), [play(ident + "-beat")], [cancel(ident + "-beat")])
     doc.on("oq4_flags", step)
     doc.joins.append(step)
     return ui.group(ident, {**ui.absolute(left=u(x), top=u(y), width=u(18), height=u(18)), "display": ui.keyword("block")},
-                    [base, dropped, pulse, *marks])
+                    [base, dropped, held, *marks])
 
 
 def team_panels(doc: HudDocument) -> dict:
@@ -485,8 +703,16 @@ def team_panels(doc: HudDocument) -> dict:
                             extra={**ellipsis(64), "letter-spacing": ui.length(0.9)})
         team_name["properties"]["text"] = ui.text(name_key)
         score = text_at(doc, pid + "-score", op("numberText", S(score_key)), 17, WHITE, right=112, baseline=16.8, face="chain")
-        # Dead Zone: the score jumps toward the team's text color on each control tick and relaxes.
-        doc.bind(pid + "-score.color", pid + "-score", "color", lerp_colour(WHITE, rgb(text_colour), op("clamp", S(pulse_key), 0, 1)))
+        # Dead Zone: the score jumps toward the team's text color on each control
+        # tick and relaxes; reduced motion holds the team color for a second.
+        hold = doc.boolean(f"oq4.zoneHold{team}")
+        score["properties"]["opacity"] = num(1)
+        amount = sel(S("oq4.reduced"), sel(S(hold), 1, 0), op("clamp", S(pulse_key), 0, 1))
+        doc.bind(pid + "-score.color", pid + "-score", "color", lerp_colour(WHITE, rgb(text_colour), amount))
+        doc.timeline(pid + "-zone-hold", 1000, [tr(pid + "-score", "opacity", [(0, num(1)), (1000, num(1))])],
+                     complete=pid + "-zoneDone", essential=True)
+        doc.on(f"oq4_zonePulse{team}", {"op": "setState", "values": {hold: True}}, play(pid + "-zone-hold"))
+        doc.on(pid + "-zoneDone", {"op": "setState", "values": {hold: False}})
         limit = flex_row(pid + "-limit", [label(pid + "-slash", SLASH, 8, [1, 1, 1, 0.45], face="chain", line=8),
                                           bound_label(doc, pid + "-limitn", op("numberText", S("oq4_limit")), 8, [1, 1, 1, 0.45],
                                                       face="chain", line=8)],
@@ -504,7 +730,7 @@ def team_panels(doc: HudDocument) -> dict:
         doc.show(carrier["id"], AND(two_flag, op("==", S(f"oq4_flag{team}_state"), 1)))
         children += [flag, carrier]
         # One flag: the neutral flag rides the carrying team's panel.
-        neutral = flag_node(doc, pid + "-neutral", rgb(NOTE), S("oq4_flag2_state"), 134, 2.5)
+        neutral = flag_node(doc, pid + "-neutral", rgb(NOTE), S("oq4_flag2_state"), 134, 2.5, swing=rgb(colour))
         neutral["properties"]["display"] = ui.keyword("none")
         doc.show(neutral["id"], AND(one_flag, op("==", S("oq4_flag2_state"), 1), op("==", S("oq4_flag2_carrier_team"), team)))
         neutral_carrier = text_at(doc, pid + "-ncarrier", S("oq4_flag2_carrier"), 9, rgb(text_colour), x=156, baseline=14,
@@ -552,14 +778,9 @@ def team_panels(doc: HudDocument) -> dict:
     return group
 
 
-def timer(doc: HudDocument) -> dict:
-    """The timer plate (14.9) under the standing or panels: the stopwatch in
-    #FFFF8D and one readout per state in Chain: M:SS counting down; elapsed
-    time beside the infinity mark when untimed; WARM-UP with the ready count;
-    STARTS IN and the countdown; #FFBE23 in the last minute and #E46D56 with a
-    1 Hz pulse in the last ten seconds; SUDDEN DEATH with the infinity mark;
-    the overtime label with the time. The round modes add a ROUND plate with
-    the round clock."""
+def timer_row(doc: HudDocument, prefix: str) -> dict:
+    """The timer's plate and readouts (the timer), its node ids under
+    `prefix`, with its own last-ten-seconds pulse."""
     declare(doc, {"oq4_state": 0, "oq4_countdown": False, "oq4_timed": False, "oq4_clock_warn": 0, "oq4_clock": "",
                   "showready": False, "readytext": "", "overtime": False, "overtimetext": "", "showround": False,
                   "roundtext": "", "roundtime": "", "showroundtime": False, "infinity": False})
@@ -573,38 +794,51 @@ def timer(doc: HudDocument) -> dict:
     untimed = AND(live, NOT(S("oq4_timed")))
     last_ten = AND(live, NOT(S("overtime")), op("==", S("oq4_clock_warn"), 2))
     last_minute = AND(live, NOT(S("overtime")), op(">=", S("oq4_clock_warn"), 1))
-    watch = icon_box("timer-watch", "icon_stopwatch", 13, tint=rgb(NOTE), **{"margin-right": ui.length(u(4))})
-    infinity = icon_box("timer-inf", "icon_infinity", 12, tint=WHITE, **{"margin-right": ui.length(u(4)), "display": ui.keyword("none")})
-    doc.bind("timer-inf.display", "timer-inf", "display", sel(OR(untimed, sudden, review), "block", "none"))
+    watch = icon_box(f"{prefix}-watch", "icon_stopwatch", 13, tint=rgb(NOTE), **{"margin-right": ui.length(u(4))})
+    infinity = icon_box(f"{prefix}-inf", "icon_infinity", 12, tint=WHITE, **{"margin-right": ui.length(u(4)), "display": ui.keyword("none")})
+    doc.bind(f"{prefix}-inf.display", f"{prefix}-inf", "display", sel(OR(untimed, sudden, review), "block", "none"))
     labels = []
-    for ident, key, condition in (("timer-warm", "#str_231206", warmup), ("timer-starts", "#str_231207", countdown),
-                                  ("timer-sd", "#str_231208", sudden)):
+    for ident, key, condition in ((f"{prefix}-warm", "#str_231206", warmup), (f"{prefix}-starts", "#str_231207", countdown),
+                                  (f"{prefix}-sd", "#str_231208", sudden)):
         node = label(ident, key, 7.2, [1, 1, 1, 0.7], line=10, **{"letter-spacing": ui.length(0.75), "margin-right": ui.length(u(4)),
                                                                    "display": ui.keyword("none")})
         doc.show(ident, condition)
         labels.append(node)
-    overtime = bound_label(doc, "timer-ot", S("overtimetext"), 7.2, [1, 1, 1, 0.7], line=10,
+    overtime = bound_label(doc, f"{prefix}-ot", S("overtimetext"), 7.2, [1, 1, 1, 0.7], line=10,
                            **{"letter-spacing": ui.length(0.75), "margin-right": ui.length(u(4)), "display": ui.keyword("none")})
-    doc.show("timer-ot", AND(live, S("overtime")))
-    clock = bound_label(doc, "timer-clock", S("oq4_clock"), 12.5, WHITE, face="chain", line=13)
-    doc.bind("timer-clock.color", "timer-clock", "color",
+    doc.show(f"{prefix}-ot", AND(live, S("overtime")))
+    clock = bound_label(doc, f"{prefix}-clock", S("oq4_clock"), 12.5, WHITE, face="chain", line=13)
+    doc.bind(f"{prefix}-clock.color", f"{prefix}-clock", "color",
              colour_of([(countdown, rgb(VALUE)), (last_minute, rgb(VALUE)), (untimed, [1, 1, 1, 0.7])], WHITE))
-    doc.bind("timer-clock.display", "timer-clock", "display", sel(AND(OR(countdown, live), NOT(last_ten)), "block", "none"))
+    doc.bind(f"{prefix}-clock.display", f"{prefix}-clock", "display", sel(AND(OR(countdown, live), NOT(last_ten)), "block", "none"))
     # The last ten seconds: #E46D56, pulsing once a second (1 -> 0.45 -> 1, ease-out).
-    urgent = bound_label(doc, "timer-urgent", S("oq4_clock"), 12.5, rgb(ERR), face="chain", line=13,
+    urgent = bound_label(doc, f"{prefix}-urgent", S("oq4_clock"), 12.5, rgb(ERR), face="chain", line=13,
                          **{"opacity": num(1), "display": ui.keyword("none")})
-    doc.show("timer-urgent", last_ten)
-    ready = bound_label(doc, "timer-ready", S("readytext"), 9, WHITE, face="chain", line=10, **{"display": ui.keyword("none")})
-    doc.show("timer-ready", AND(warmup, S("showready")))
-    content = flex_row("timer-c", [plate_vec("timer-plate", 16), watch, infinity, *labels, overtime, clock, urgent, ready],
+    doc.show(f"{prefix}-urgent", last_ten)
+    ready = bound_label(doc, f"{prefix}-ready", S("readytext"), 9, WHITE, face="chain", line=10, **{"display": ui.keyword("none")})
+    doc.show(f"{prefix}-ready", AND(warmup, S("showready")))
+    content = flex_row(f"{prefix}-c", [plate_vec(f"{prefix}-plate", 16), watch, infinity, *labels, overtime, clock, urgent, ready],
                        **{"height": ui.length(u(16)), "padding-left": ui.length(u(4)), "padding-right": ui.length(u(8))})
     # The last ten seconds pulse once a second (opacity 1 -> 0.45 -> 1, ease-out).
-    doc.timeline("timer-pulse", 1000, [tr("timer-urgent", "opacity", [(0, num(1)), (300, num(0.45), [0.0, 0.0, 0.58, 1.0]),
+    doc.timeline(f"{prefix}-pulse", 1000, [tr(f"{prefix}-urgent", "opacity", [(0, num(1)), (300, num(0.45), [0.0, 0.0, 0.58, 1.0]),
                                                                        (1000, num(1))])], iterations=0)
     # The pulse runs only in the last ten seconds (the game sends oq4_clockWarn on a change).
-    step = when(op("==", S("oq4_clock_warn"), 2), [play("timer-pulse")], [cancel("timer-pulse")])
+    step = when(op("==", S("oq4_clock_warn"), 2), [play(f"{prefix}-pulse")], [cancel(f"{prefix}-pulse")])
     doc.on("oq4_clockWarn", step)
     doc.joins.append(step)
+    return content
+
+
+def timer(doc: HudDocument) -> dict:
+    """The timer plate (14.9) under the standing or panels: the stopwatch in
+    #FFFF8D and one readout per state in Chain: M:SS counting down; elapsed
+    time beside the infinity mark when untimed; WARM-UP with the ready count;
+    STARTS IN and the countdown; #FFBE23 in the last minute and #E46D56 with a
+    1 Hz pulse in the last ten seconds; SUDDEN DEATH with the infinity mark;
+    the overtime label with the time. The round modes add a ROUND plate with
+    the round clock. Tourney sets its own under the message bar (tourney)."""
+    content = timer_row(doc, "timer")
+    gametype = S("gametype")
     # Round modes: ROUND n with the round clock in #FFBE23 over its last stretch.
     round_plate = flex_row("round-c", [plate_vec("round-plate", 14),
                                        bound_label(doc, "round-text", S("roundtext"), 7.4, [1, 1, 1, 0.7], line=10,
@@ -619,8 +853,9 @@ def timer(doc: HudDocument) -> dict:
                                 "flex-direction": ui.keyword("column"), "align-items": ui.keyword("flex-start")},
                       [content, round_plate, *match_notes(doc)])
     team = AND(S("oq4_team_game"), op("!=", gametype, 2))
-    doc.bind("timer.top", "timer", "top", sel(op("==", gametype, 2), u(59),
-                                               sel(op("==", gametype, 8), u(107), sel(team, u(90), u(82)))))
+    doc.bind("timer.top", "timer", "top", sel(op("==", gametype, 8), u(107), sel(team, u(90), u(82))))
+    # Tourney sets its timer under the message bar (tourney).
+    doc.bind("timer.display", "timer", "display", sel(op("==", gametype, 2), "none", "flex"))
     return column
 
 
@@ -674,17 +909,32 @@ def center_column(doc: HudDocument) -> dict:
     count = bound_label(doc, "award-count", S("ig_award_num"), 18, WHITE, line=20, **{"margin-left": ui.length(u(4))})
     awards = flex_row("awards", medals + [count], **{"display": ui.keyword("none"), "opacity": num(1)})
     doc.bind("awards.display", "awards", "display", sel(AND(S("oq4.award"), op(">", S("ig_awards"), 0)), "flex", "none"))
+    # The lines under each notice ride a wrapper, so they can slide as it comes
+    # and goes instead of jumping.
+    def stack(ident, children):
+        return ui.group(ident, {"position": ui.keyword("relative"), "display": ui.keyword("flex"), "flex-direction": ui.keyword("column"),
+                                "align-items": ui.keyword("center"), "width": ui.length(100, "%"), "transform": ui.transform()},
+                        children)
     column = ui.group("center", {**ui.absolute(left=0, top=u(81), width=u(640)), "display": ui.keyword("flex"),
                                  "flex-direction": ui.keyword("column"), "align-items": ui.keyword("center")},
-                      [frag, main, warm, awards])
-    # Timing: 2000 ms hold, 500 ms fade; a persisting notice stays.
-    for name, persist in (("frag", "frag_notice_persist"), ("main", "main_notice_persist")):
+                      [frag, stack("center-b1", [main, stack("center-b2", [warm, awards])])])
+    # Timing: 2000 ms hold, 500 ms fade; a persisting notice stays. The lines
+    # below move down for a notice and close up after it with page.enter
+    # easing (220 ms, cubic 0.16 1 0.3 1); reduced motion reflows at once.
+    page_enter = [0.16, 1.0, 0.3, 1.0]
+    for name, persist, below, size in (("frag", "frag_notice_persist", "center-b1", 17.3), ("main", "main_notice_persist", "center-b2", 15.4)):
+        step = size * 1.35 + 3
+        doc.timeline(below + "-down", 220, [tr(below, "transform", [(0, transform_value(0, u(-step)), page_enter), (220, transform_value())])])
+        doc.timeline(below + "-up", 220, [tr(below, "transform", [(0, transform_value(0, u(step)), page_enter), (220, transform_value())])])
         doc.timeline(name + "-hold", 2500, [tr(name, "opacity", [(0, num(1)), (2000, num(1)), (2500, num(0))])],
                      complete=name + "Done", essential=True)
         doc.timeline(name + "-stay", 2, [tr(name, "opacity", [(0, num(1)), (2, num(1))])], essential=True)
-        doc.on(f"{name}_notice", {"op": "setState", "values": {f"oq4.{name}": True}},
+        text = op("!=", S(f"{name}_notice_text"), "")
+        shown = AND(S(f"oq4.{name}"), text)
+        doc.on(f"{name}_notice", when(AND(NOT(shown), text), [play(below + "-down")]),
+               {"op": "setState", "values": {f"oq4.{name}": True}},
                when(S(persist), [play(name + "-stay")], [play(name + "-hold")]))
-        doc.on(name + "Done", {"op": "setState", "values": {f"oq4.{name}": False}})
+        doc.on(name + "Done", when(shown, [play(below + "-up")]), {"op": "setState", "values": {f"oq4.{name}": False}})
     doc.timeline("award-hold", 3000, [tr("awards", "opacity", [(0, num(1)), (2500, num(1)), (3000, num(0))])],
                  complete="awardDone", essential=True)
     doc.on("giveIGA", {"op": "setState", "values": {"oq4.award": True}}, play("award-hold"))
@@ -791,10 +1041,15 @@ def voice(doc: HudDocument) -> list:
     """Talker plates above the chat box (14.9): YOU on the header-band plate
     with a microphone while you transmit, the talker's name with the speaker
     symbol, each with the transmission trace of their decoded audio."""
-    declare(doc, {"oq4.voiceSelf": False, "oq4.voiceOther": False, "audio_name": ""})
+    declare(doc, {"oq4.voiceSelf": False, "oq4.voiceOther": False, "audio_name": "", "oq4_audio_team": -1, "oq4_my_team": 0,
+                  "oq4_team_game": False})
     rows = []
     for ident, you in (("voice-self", True), ("voice-other", False)):
         peaks_prefix = "voice.self.peak" if you else "voice.other.peak"
+        # The trace in the talker's team text color, #FFFF8D outside team modes.
+        team = S("oq4_my_team") if you else S("oq4_audio_team")
+        trace_colour = colour_of([(AND(S("oq4_team_game"), op("==", team, 1)), rgb(STR_T, 0.9)),
+                                  (AND(S("oq4_team_game"), op("==", team, 0)), rgb(MAR_T, 0.9))], rgb(NOTE, 0.9))
         bars = []
         for k in range(40):
             key = f"{peaks_prefix}.{k}"
@@ -803,9 +1058,20 @@ def voice(doc: HudDocument) -> list:
                                              "height": ui.length(u(0.6)), "margin-right": ui.length(u(0.2)),
                                              "background-color": ui.colour(rgb(NOTE, 0.9))})
             doc.bind(f"{ident}-b{k}.h", f"{ident}-b{k}", "height", op("+", u(0.6), op("*", u(11), op("clamp", S(key), 0, 1))))
+            doc.bind(f"{ident}-b{k}.bg", f"{ident}-b{k}", "background-color", trace_colour)
             bars.append(bar)
         trace = flex_row(ident + "-trace", bars, **{"height": ui.length(u(12)), "width": ui.length(u(26)), "margin-right": ui.length(u(4))})
-        symbol = icon_box(ident + "-sym", "icon_speaker", 10, tint=WHITE if you else rgb(NOTE), **{"margin-right": ui.length(u(3))})
+        if you:
+            # Your own transmission: a microphone, its capsule in the cradle
+            # on a stem and foot, in the speaker symbol's 10 u box.
+            mic = vec(ident + "-sym-g", [
+                svg_path("capsule", "M3.6 1.8A1.4 1.4 0 0 1 6.4 1.8V5.4A1.4 1.4 0 0 1 3.6 5.4Z", fill=ui.solid(WHITE)),
+                svg_path("cradle", "M2 4.6A3 3 0 0 0 8 4.6M5 7.6V9.2M3 9.2H7",
+                         stroke=stroke(WHITE, u(0.9), join="round", cap="round"))])
+            symbol = ui.group(ident + "-sym", {"position": ui.keyword("relative"), "display": ui.keyword("block"), "width": ui.length(u(10)),
+                                               "height": ui.length(u(10)), "margin-right": ui.length(u(3))}, [mic])
+        else:
+            symbol = icon_box(ident + "-sym", "icon_speaker", 10, tint=rgb(NOTE), **{"margin-right": ui.length(u(3))})
         name = label(ident + "-name", "#str_231221", 9.6, WHITE, line=12) if you else \
             bound_label(doc, ident + "-name", S("audio_name"), 9.6, rgb(NOTE), line=12, **ellipsis(100))
         plate = plate_vec(ident + "-plate", 15, 0.30 if you else 0.5, BAND if you else "#000000")
@@ -1370,7 +1636,7 @@ def tourney(doc: HudDocument) -> tuple:
             settle = vec(cid + "-blue", [fitted_plate_path("b", u(30), r=u(1), fill=ui.solid(rgb(FINISHED, 1.0)))],
                          {"display": ui.keyword("none"), "opacity": num(0.4)})
             doc.show(settle["id"], S(key + ".done"))
-            doc.timeline(cid + "-settle", 1000, [tr(settle["id"], "opacity", [(0, num(1)), (1000, num(0.4))])])
+            doc.timeline(cid + "-settle", 500, [tr(settle["id"], "opacity", [(0, num(1)), (500, num(0.4))])])
             children.append(settle)
             for row in (1, 2):
                 y = 13 if row == 1 else 27
@@ -1418,6 +1684,21 @@ def tourney(doc: HudDocument) -> tuple:
                                            fill=ui.solid([0, 0, 0, 0.6]))]),
         text_at(doc, "tourney-bar-text", S("spectatetext0"), 10.6, WHITE, x=8, baseline=48, extra=ellipsis(400))])
     doc.show("tourney-bar", gametype)
+    # Under the bar, within the center screen: the timer and the ROUND and
+    # ARENA plate (the standing's timer gives way in Tourney).
+    declare(doc, {"oq4_tourney_round": "", "oq4_mb_sub": ""})
+    place = flex_row("tplace-c", [plate_vec("tplace-plate", 16),
+                                  bound_label(doc, "tplace-round", S("oq4_tourney_round"), 7.4, [1, 1, 1, 0.7], line=10,
+                                              **{"letter-spacing": ui.length(0.75)}),
+                                  bound_label(doc, "tplace-arena", S("oq4_mb_sub"), 7.4, [1, 1, 1, 0.7], line=10,
+                                              **{"letter-spacing": ui.length(0.75), "margin-left": ui.length(u(8))})],
+                     **{"height": ui.length(u(16)), "padding-left": ui.length(u(6)), "padding-right": ui.length(u(8)),
+                        "margin-left": ui.length(u(4))})
+    under = ui.group("tourney-under", {**ui.absolute(left=u(6), top=u(58)), "display": ui.keyword("none"),
+                                       "flex-direction": ui.keyword("row"), "align-items": ui.keyword("center")},
+                     [timer_row(doc, "ttimer"), place])
+    doc.bind("tourney-under.display", "tourney-under", "display", sel(gametype, "flex", "none"))
+    bar = full("tourney-top", [bar, under])
     # Round banners: the black bar slides 34 u down over 500 ms, holds and leaves.
     banner_titles = []
     for r in range(1, 5):
@@ -1717,13 +1998,13 @@ def mp_document() -> dict:
     doc.on("onInit", *doc.joins)
     # Competitive (ui_hudLayout 3) trades the standing or team panels, the
     # timer and the Tourney strip for the match bar and the team status.
-    remastered_top = full("tl-rem", [stand, teams, clock, bar])
+    remastered_top = full("tl-rem", [stand, teams, clock])
     doc.show("tl-rem", NOT(competitive()))
-    strip_slot = full("tc-strip", [strip])
+    strip_slot = full("tc-strip", [strip, bar])
     doc.show("tc-strip", NOT(competitive()))
     # Minimal (ui_hudLayout 2) keeps the held statistics, the vote, chat and
     # voice, the follow card, the respawn prompt and the Arena presentation.
-    root = full("mp-root", [
+    root = gameplay_root(doc, "mp-root", [
         beyond_minimal(doc, "tags-full", [tags]),
         anchor(doc, "tl", [beyond_minimal(doc, "tl-full", [remastered_top])]),
         anchor(doc, "tc", [beyond_minimal(doc, "tc-full", [strip_slot, column, banners]), matchbar]),

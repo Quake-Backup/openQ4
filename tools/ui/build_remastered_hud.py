@@ -17,7 +17,8 @@ import json
 from pathlib import Path
 
 import build_retained_screens as ui
-from remastered_hud_base import AND, NOT, S, HudDocument, anchor, beyond_minimal, join_events, layout_state, op, status_scale
+from remastered_hud_base import (AND, NOT, S, HudDocument, anchor, beyond_minimal, gameplay_root, join_events, layout_state,
+                                 op, status_scale)
 from remastered_hud_groups import (boss_bar, dev_readouts, hit_indicator, interactive_brackets, missile_chevron, notices,
                                    pickup_lines, powerups, transmission, weapon_strip)
 from remastered_hud_lint import lint
@@ -27,6 +28,7 @@ from remastered_hud_objectives import objectives_document
 from remastered_hud_scoreboard import scoreboard_document
 from remastered_hud_vehicle import airdef_document, ride_gauge, vehicle_document
 from remastered_hud_awakening import gev_document, mcc_document, ship_panel, speeder_document, turret_document
+from remastered_hud_medchange import medchange_document
 
 ROOT = Path(__file__).resolve().parents[2]
 OUT = ROOT / "content/baseoq4/pak0/guis/hud"
@@ -73,7 +75,7 @@ def on_foot_document(*, strogg: bool, awakening: bool) -> dict:
 
     # Minimal (ui_hudLayout 2) keeps the gauges, the ride's gauge, the
     # brackets, the save notice and the developer readouts a player turned on.
-    root = full("hud-root", [
+    root = gameplay_root(doc, "hud-root", [
         center_box("hud-world", [brackets]),
         anchor(doc, "bc", gauges + [ride, beyond_minimal(doc, "bc-full", [pickups, strip])], scale=status_scale(S("mp"))),
         anchor(doc, "tr", [beyond_minimal(doc, "tr-full", [radio]), speed, *ship]),
@@ -105,6 +107,7 @@ DOCUMENTS = {
     "remastered_mcc.q4ui": mcc_document,
     "remastered_speeder.q4ui": speeder_document,
     "remastered_gev.q4ui": gev_document,
+    "remastered_medchange.q4ui": medchange_document,
     "remastered_objectives.q4ui": lambda: objectives_document(strogg=False),
     "remastered_objectives_strogg.q4ui": lambda: objectives_document(strogg=True),
     "remastered_scoreboard.q4ui": scoreboard_document,

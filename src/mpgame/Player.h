@@ -653,6 +653,7 @@ public:
 
 	// Helper methods to retrieving dictionaries
 	void                    DebugWeaponWheel( const idCmdArgs &args );
+	void                    DebugQuickChat( const idCmdArgs &args );
 	void                    DebugStatusBar( const idCmdArgs &args );
 	float                   GetWeaponWheelBlend() const;
 	const idDeclEntityDef*	GetWeaponDef				( int weaponIndex );
@@ -1037,6 +1038,7 @@ private:
 	int						oldMouseX;
 	int						oldMouseY;
 #include "../game/gamesys/WeaponWheelState.h"
+#include "QuickChatState.h"
 #include "../game/gamesys/StatusBarState.h"
 
 	bool					tipUp;

@@ -90,6 +90,7 @@ the timer (`oq4_mb_sub`, `oq4_mb_ready`), the team status rows
 | `guis/vehicles/gev_hud.gui` | `remastered_gev.q4ui` | The Awakening's GEV (`vehicle_speeder`, which no map places), whose HUD names art that never shipped: the atlas's status cluster centered on the bottom edge (two plates at black 0.60; the #FF9E1A health bar draining from the top, where the stock divided the normalized health by 1000 and read empty; the hull from above turning with the view under the fixed turret; three shield stages as arcs that fade out in turn and the inner arcs pulsing #FF591A to #80591A once the shields fail; the weapon's glyph turned 60 degrees with the infinity mark or the rocket count over the charge bar), the transmission display, notices and the HUD prompt's Exit or Vehicle locked |
 | `guis/vehicles/hud.gui` | `remastered_vehicle.q4ui` | The walker's and hover tank's status bar (ARMOR and SHIELDS gauges, weapon panel, rocket count, charge bar), entry lines, hit flash, electrical warning, HUD prompt (Exit or Vehicle locked), transmission display, boss bar, notices |
 | `guis/vehicles/airdef_cannon.gui` | `remastered_airdef.q4ui` | The air-defence cannon: the retained nailgun lens held still (Gaussian focus beyond the aperture) with its two crescent load bars and amber reticle, the transmission display the stock lacks, the HUD prompt (Exit or Vehicle locked) in place of the centered exit line, and the save notice |
+| `guis/vehicles/medchange.gui` | `remastered_medchange.q4ui` | The Medical Labs implant activation (section 14.19), hidden until `activate`: the gold hex field on the centered 640x480 u screen (the 38 stock cells, lit one every 50 ms from 500 ms in the stock order and fading over 500 ms, twice over), continued through the side, top and bottom bands with phases from the same sequence; the four corner pieces at the view's corners; the processor readouts, segmented bars and lower rune field at the leading screen's bottom, the X/Y/Z readouts and upper rune field at the trailing screen's top, cycling the stock data; the falling rune data, the pink and color static and the orange edge glow over the view. Corner pieces and readouts fade from 4150 ms and the overlay hides at 4650 ms; each `activate` restarts it. `hurt` pulses a red edge glow from 0.6 over 1 s and `saveMessage` shows the save notice, on their own. Under reduced motion the cells hold at 0.10, the readouts still, without the falling data. The hex and corner rims, the edge glow's falloff and the static streaks were measured from the stock textures |
 | `guis/wristcomm.gui`, `guis/wristcomm_strogg.gui` | `remastered_objectives.q4ui`, `remastered_objectives_strogg.q4ui` | Objectives display (every objective, three at a time, a COMPLETED section), new-objective and objective-complete notices, OBJECTIVE FAILED |
 | `guis/scoreboard.gui` | `remastered_scoreboard.q4ui` | The held scoreboard as the multiplayer menus' card (section 14.18), as tall as its lists: the header with the server's name, your place and the clock, the match line with the mode, map and limits, the headings once, your team's panel, the other team's and the spectators' in the Players page's bands and rows (your marker, the speaker, friends, the dead, flag carriers and the ready check, BOT tags, DEATHS, ping bars), and the address under them, scrolling by whole rows past the card's height over the count of the rows below; Tourney's wider card sets the bracket chart under its match line (with the tournament count), above the players and spectators lists: open-plate arenas converging on a wider final in the centre, round titles, links that light as arenas are decided, your arena in aqua, decided arenas in blue with the winner's score in the value color and the champion's marker, EMPTY arenas |
 
@@ -113,8 +114,31 @@ with Exit, `p_radio::visible` with the transmission display, `desktop::hidden`
 with `hideHud`), and the peer replays the event at its join when the variable
 holds (`!` inverts the test). The generator refuses an event the document does
 not answer.
-Strings cross over with color escapes removed and `^ik` key escapes resolved
-to key names. A mod that ships its own stock-named GUI keeps it.
+Strings cross over with color escapes removed and `^ik` key escapes kept,
+and the retained state resolves those (`UserInterfaceRetained.cpp`): to the
+key's name, or, for a key state a document declares a `<key>.glyph` for, to
+the prompt glyph of section 13.5. A mod that ships its own stock-named GUI
+keeps it.
+
+**Prompt glyphs.** Every control a HUD prompt names (Exit, Boost, Close,
+Respawn, the follow card's keys and the quick-chat wheel's channel switch) is
+a `glyph_chip` (`tools/ui/remastered_hud_mp.py`). The engine resolves the key
+the binding names for the device used last (`KeysFromBinding`) into a kind in
+`<key>.glyph` and a label in the key state (`PromptGlyph`): a keyboard key is
+a keycap with its name; a controller button draws its family's vector glyph in
+the HUD's white, the family being the controller SDL reports (Xbox,
+PlayStation, Nintendo, otherwise generic), Steam Deck under the `steamdeck`
+platform profile, or the one `in_promptStyle` forces (0 the controller's own,
+1 Xbox, 2 PlayStation, 3 Nintendo, 4 Steam Deck, 5 generic). Face buttons
+show the label SDL reports for each position (A, B, X, Y, or the cross,
+circle, square and triangle), or the lit position in a generic family;
+bumpers, triggers and stick clicks are named LB/RB, LT/RT, LS/RS (Xbox),
+L1/R1, L2/R2, L3/R3 (PlayStation, Steam Deck, generic) or L/R, ZL/ZR, LS/RS
+(Nintendo); the d-pad lights its arm; menu and view draw their symbols
+(OPTIONS/CREATE and +/− on PlayStation and Nintendo); paddles are P1-P4, or
+R4/L4/R5/L5 on a Steam Deck; the mouse lights its bound button or the wheel's
+direction. `testPromptDevice controller|desktop` (cheat protected) sets the
+device the prompts name until the next real input, for captures.
 
 A document can ask the peer to read its layout back into its state for the
 next frame (`extensions.openq4.readbacks`), where bindings alone cannot know a
@@ -146,7 +170,9 @@ extra fields beside the stock ones; the stock GUIs ignore them.
   lead gap, limits, the clock and its warnings, flags, zone, alive counts, the
   vote tally, the followed player and the control keys. `oq4_flags`,
   `oq4_clockWarn` and `oq4_state` are announced as events, so looping motion
-  starts only when its state does.
+  starts only when its state does; so is the player HUD's carried flag
+  (`oq4_carriedFlag`, when it comes or goes, from `idPlayer::UpdateHudPowerUps`).
+  Each Dead Zone control tick sends `oq4_zonePulse0` or `1` for the scoring team.
 - Chat input (`PublishRemasteredChat`): while message mode is open,
   `oq4_chatting`, up to eight lines of untimed history in the chat slots
   (`oq4_chat_count`), and the entry from the message-mode GUI's edit control
@@ -279,6 +305,24 @@ walking every value:
 `openq4-ui-retained-screens-test --hud-bench <document>` reports event, state
 and frame costs for a document.
 
+## Alarms and reduced motion
+
+Every looping alarm follows section 14.10. Reduced motion
+(`ui_retainedReducedMotion`) jumps a moving track to its last key and fades an
+opacity track there within 80 ms, so each loop ends on its static cue: the
+low-health rim, the boss shield, missile and vehicle hull and shield warnings
+at full strength, the timer's last ten seconds steady #E46D56, the exit
+chevron still at 0.50 and the electric warning at 0.70 (the last two snap back
+to rest on their final millisecond, as their stock loops reset). Where the cue
+is a loop's peak, a wrapper holds the peak under reduced motion instead: the
+carried flag at 28 u (the stock beat, 22 to 28 u over 150 ms and back over
+500 ms), a taken flag at 34 u, and the one flag in its carrier's team color,
+which it otherwise swings to with each beat (there over 250 ms, back over
+750 ms). Dead Zone's score follows the game's relaxing pulse; under reduced
+motion each control tick holds the team's color for a second. A finished
+Tourney arena's blue settles from 1.00 to 0.40 over 500 ms. The hit indicator
+is essential and keeps its 500 ms fade.
+
 ## Validation
 
 - `openq4-ui-remastered-hud` loads every document through the real compiler and
@@ -302,7 +346,10 @@ and frame costs for a document.
   last. The GEV's model lacks every joint its def names (`eye`, `turret`,
   `gun_pivot`, `muzzle`): without an eye joint the game applies the hull's
   yaw twice, so `vehicle_rotate` reads the vehicle's own heading, and the
-  cannon's kickback flings it and ejects the driver), `mp` (with the
+  cannon's kickback flings it and ejects the driver), `medchange` (medlabs,
+  which starts with Kane on the medbed whose HUD is the implant overlay: the
+  test command sends `activate`, `hurt` and `saveMessage` as the map script
+  does, then under reduced motion and in Classic), `mp` (with the
   scoreboard and the respawn
   prompt after `kill 0`, then the chat input through `clientMessageMode`,
   `chatInput` and `chatCaret`), `mp-spectator` (in warm-up, so the match is not
@@ -316,8 +363,12 @@ and frame costs for a document.
   summary once bots reach a frag limit of one, or a Clan Arena duel's round
   ends, its SCOREBOARD and STATISTICS tabs opened through `openq4_guiAction`),
   `mp-scoreboard-scroll` and `mp-scoreboard-scroll-team` (22 and 20 players,
-  the held board at its top, three rows down and at its end), and the
-  `mp-pace`/`sp-pace` profiles. `--gate 0` runs a scenario with the stock GUIs
+  the held board at its top, three rows down and at its end), `mp-tourney`
+  (the bracket strip, message bar, timer and ROUND and ARENA plate),
+  `mp-quickchat` and `mp-quickchat-team` (the quick-chat wheel through
+  `testQuickChat`, a phrase sent on each channel), `mp-glyphs` (the prompts
+  under each controller family through `testPromptDevice` and
+  `in_promptStyle`), and the `mp-pace`/`sp-pace` profiles. `--gate 0` runs a scenario with the stock GUIs
   for comparison.
 
 ## Open work
@@ -325,3 +376,16 @@ and frame costs for a document.
 - The chat input's prompts name the keyboard's keys; controller and touch
   players' platform or on-screen keyboard (section 13.5) is not implemented.
 - The touch control that toggles the objectives display is not implemented.
+- Voice plates: the engine's voice capture and playback are stubbed out
+  (`idMultiplayerGame` never reports a talker or a transmission), so the plates
+  stay dormant, and section 14.9's one plate per talker needs the voice
+  backend's talker list.
+- Hit markers: section 14.7 specifies white ticks for a hit and
+  `status.error` for a kill over 150 ms; the shipped markers
+  (`src/mpgame/HitMarker.cpp`) are tiered, red for a hit and white for a kill,
+  over 180-420 ms. One of the two needs a decision.
+- Reduced flashing (section 13.10), which would cap the damage direction at
+  0.40, and subtitles (section 14.8) do not exist yet; nor does the Couch
+  viewing profile, so only Steam Deck (Handheld) starts the HUD at 125%.
+- The implant overlay (`FLOW-062`) awaits engine captures of the real
+  Medical Labs sequence at each aspect.

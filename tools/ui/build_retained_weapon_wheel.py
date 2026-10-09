@@ -227,17 +227,161 @@ def document(strogg=False, awakening=False):
     return doc.build(root,{'extensions':{'openq4':{'reference':'ui-visual-design.md 14.6 / 14.16','family':family,'slots':n,'input':'Player-owned radial selection; no pointer hit testing','placement':'ui_weaponWheelOffset percent of viewport width from center, default +27; fitted at narrow edges'}}})
 
 
+# The quick-chat wheel's phrases clockwise from the top (#str_231261-231268),
+# the channel words and the zoom control's verb.
+PHRASES = ['#str_2312' + str(61 + i) for i in range(8)]
+ALL_KEY, TEAM_KEY, CHANNEL_KEY = '#str_231254', '#str_231001', '#str_231256'
+# Your team's text color in multiplayer (14.6) and its selection light.
+TEAM_TEXT = [('#AAE355', '#616F26'), ('#FF8E00', '#6B3A08')]
+
+
+def held(node, prop, keys):
+    """A track that starts where it is authored: a play retargets the first
+    key to the property's current value, so a copy of that key 1 ms later
+    makes the authored start take effect at once."""
+    if len(keys) >= 2 and keys[1][0] > 1:
+        keys = [keys[0], (1, keys[0][1])] + list(keys[1:])
+    return ui.track(node, prop, keys)
+
+
+def hub_art(accent):
+    """The Marine hub: a black 0.55 disc inside the machinegun scope's double
+    ring, its 16 compass dots and the signal screen's scanlines."""
+    paths = [circle('disc', 86, [0, 0, 0, .55])] + [circle('ring' + str(r), r, ui.rgb(accent, .35), 1) for r in (80, 86)]
+    for k in range(16):
+        x, y = at(93, k * math.tau / 16)
+        paths.append(shape('dot' + str(k), [(x - 1, y - 1), (x + 1, y - 1), (x + 1, y + 1), (x - 1, y + 1)], ui.rgb(accent, .5)))
+    for k in range(-20, 21):
+        y = k * 3.6
+        half = math.sqrt(max(0, 78 * 78 - y * y))
+        paths.append(shape('scan' + str(k), [(280 - half, 280 + y), (280 + half, 280 + y)], ui.rgb(accent, .11), .7, closed=False))
+    return paths
+
+
+def chat_document():
+    """The quick-chat wheel (14.6 Quick chat, 13.5): the multiplayer weapon
+    wheel's ring, bezel, hub and selection with eight localized phrases in
+    Lowpixel 16 dp in place of the weapons. The hub names the channel, ALL in
+    #FFFF8D or TEAM in your team's text color; in a team game the zoom
+    control's key switches it. The selection ring, its light and the pointer
+    take your team's text color in a team game, the stock olive otherwise.
+    The game publishes the selection, channel, team, placement and blend."""
+    from remastered_hud_base import HudDocument
+    from remastered_hud_mp import glyph_chip
+    doc = HudDocument('openq4.quick-chat')
+    n = len(PHRASES)
+    accent, ring = '#B3D06E', '#B2CC80'
+    for key, kind, initial in [('blend', 'number', 0), ('offset', 'number', 0), ('fit', 'number', 1), ('selected', 'number', -1),
+                               ('team', 'number', -1), ('channel', 'number', 0), ('zoomKey', 'string', '')]:
+        doc.state[key] = {'type': kind, 'initial': initial}
+    doc.state['reduced'] = {'type': 'boolean', 'initial': False, 'cvar': 'ui_retainedReducedMotion'}
+    team = S('team')
+    selections = [('olive', op('<', team, 0), ring, '#616F26')]
+    selections += [(f'team{t}', op('==', team, t), edge, glow) for t, (edge, glow) in enumerate(TEAM_TEXT)]
+    wheel = []
+    wash = circle('wash', 280, [0, 0, 0, 1])
+    wash['fill'] = ui.linear((280, 280), (560, 280), [(0, [0, 0, 0, .35]), (.7, [0, 0, 0, .35]), (1, [0, 0, 0, 0])])
+    wash['fill']['type'] = 'radial'
+    wheel.append(art('wash', [wash]))
+    ticks = [shape('tick' + str(k), [at(247, k * math.pi / 60), at(252, k * math.pi / 60)], ui.rgb(accent, .18), .9, closed=False)
+             for k in range(120)]
+    ticks += [shape('boundary' + str(i), [at(242, (i + .5) * math.tau / n), at(253, (i + .5) * math.tau / n)], ui.rgb(accent, .5), 1.4,
+                    closed=False) for i in range(n)]
+    wheel.append(art('bezel', ticks))
+    opening, closing = [], []
+    for i, phrase in enumerate(PHRASES):
+        key = f'phrase{i}'
+        a = i * math.tau / n
+        sel = op('==', S('selected'), i)
+        nodes = [art(key + '-outline', [shape('outline', sector(i, n), ui.rgb(accent, .15), 1)]),
+                 art(key + '-plate', [shape('plate', sector(i, n), [0, 0, 0, .55])])]
+        for suffix, condition, edge, glow in selections:
+            ident = f'{key}-selected-{suffix}'
+            nodes.append(art(ident, [shape('back', sector(i, n, outer=240), [0, 0, 0, .72]),
+                                     shape('light', sector(i, n, outer=238), ui.rgb(glow, .35), blend='additive'),
+                                     shape('edge', sector(i, n, outer=240), ui.rgb(edge), 2.4)]))
+            doc.bind(ident, ident, 'opacity', choose(op('&&', sel, condition), 1, 0))
+        # The phrase across the segment's middle, on two lines when it needs them.
+        x, y = at(168, a)
+        text = ui.label(key + '-text', phrase, {'position': ui.keyword('relative'), 'display': ui.keyword('block'), 'width': ui.length(106),
+                                                **ui.typeface('lowpixel', 16, 19, ui.rgb('#DDEBC3')), 'text-align': ui.keyword('center'),
+                                                'white-space': ui.keyword('normal'), 'opacity': ui.number(1)})
+        doc.bind(key + '.text', key + '-text', 'opacity', choose(sel, 1, .6))
+        nodes.append(ui.group(key + '-label', {**ui.absolute(left=x - 56, top=y - 24, width=112, height=48), 'display': ui.keyword('flex'),
+                                               'flex-direction': ui.keyword('column'), 'justify-content': ui.keyword('center'),
+                                               'align-items': ui.keyword('center')}, [text]))
+        entry = ui.group(key + '-entry', dict(ui.FULL, opacity=ui.number(1), transform=ui.transform()), nodes)
+        wheel.append(entry)
+        delay = i * 8
+        opening.append(held(entry['id'], 'opacity', [(0, ui.number(0))] + ([(delay, ui.number(0))] if delay else []) +
+                            [(delay + 90, ui.number(1))]))
+        closing.append(held(entry['id'], 'opacity', [(0, ui.number(1)), (60, ui.number(0))]))
+    hub = ui.group('hub', dict(ui.FULL, transform=ui.transform()), [art('hub-art', hub_art(accent))])
+    # The channel: ALL, or TEAM in your team's text color.
+    channel = S('channel')
+    words = [('all', ALL_KEY, '#FFFF8D', op('==', channel, 0))]
+    words += [(f'team{t}', TEAM_KEY, edge, op('&&', op('==', channel, 1), op('==', team, t))) for t, (edge, _) in enumerate(TEAM_TEXT)]
+    for suffix, word, colour, shown in words:
+        ident = 'hub-' + suffix
+        hub['children'].append(ui.label(ident, word, {**ui.absolute(left=211, top=258, width=138, height=24),
+                                                      **ui.typeface('marine', 16, 20, ui.rgb(colour)), 'text-align': ui.keyword('center'),
+                                                      'opacity': ui.number(1), 'display': ui.keyword('none')}))
+        doc.bind(ident + '.show', ident, 'display', choose(shown, 'block', 'none'))
+    # In a team game the zoom control switches the channel: its keycap or the
+    # controller button's glyph (the HUD prompts' construction, 13.4), 16 dp.
+    chip = glyph_chip(doc, 'hub', S('zoomKey'), h=16 / 1.5, size=6.4, cut=8 / 3, pad=(8 / 3, 8 / 3), gap=10 / 3, min_width=16 / 1.5)
+    verb = ui.label('hub-switch', CHANNEL_KEY, {'position': ui.keyword('relative'), 'display': ui.keyword('block'),
+                                                 **ui.typeface('lowpixel', 12, 16, ui.rgb('#B0C891')), 'white-space': ui.keyword('nowrap')})
+    hint = ui.group('hub-hint', {**ui.absolute(left=200, top=288, width=160, height=16), 'display': ui.keyword('none'),
+                                 'flex-direction': ui.keyword('row'), 'justify-content': ui.keyword('center'),
+                                 'align-items': ui.keyword('center')}, [chip, verb])
+    doc.bind('hub.hint', 'hub-hint', 'display', choose(op('>=', team, 0), 'flex', 'none'))
+    hub['children'].append(hint)
+    wheel.append(hub)
+    # The pointer on the inner ring faces the selection.
+    for suffix, condition, edge, _ in [('olive', op('<', team, 0), '#FF8000', None)] + selections[1:]:
+        ident = 'pointer-' + suffix
+        wheel.append(art(ident, [shape('arrow', [(274, 207), (280, 198), (286, 207)], ui.rgb(edge))], transform=ui.transform()))
+        doc.bind(ident + '.rotation', ident, 'transform', [0, 0, 1, 1, op('*', op('max', S('selected'), 0), 360 / n)])
+        doc.bind(ident + '.show', ident, 'opacity', choose(op('&&', op('>=', S('selected'), 0), condition), 1, 0))
+    opening.append(held('hub', 'transform', [(0, ui.transform(sy=.02)), (150, ui.transform(), ui.EASE_OUT)]))
+    closing.append(held('hub', 'transform', [(0, ui.transform()), (150, ui.transform(sy=.02))]))
+    doc.timelines.add('open', (n - 1) * 8 + 150, opening)
+    doc.timelines.add('close', 150, closing)
+    for event in ('open', 'close'):
+        doc.events[event] = [{'op': 'playTimeline', 'timeline': event}]
+    # A new channel re-tunes the hub's word.
+    doc.timelines.add('channel', 200, [held(ident, 'opacity', [(0, ui.number(.15)), (120, ui.number(1))])
+                                       for ident in ('hub-all', 'hub-team0', 'hub-team1')])
+    doc.events['channel'] = [{'op': 'playTimeline', 'timeline': 'channel'}]
+    props = {**ui.absolute(width=560, height=560), 'left': ui.length(50, '%'), 'top': ui.length(50, '%'), 'margin-left': ui.length(-280),
+             'margin-top': ui.length(-280), 'transform': ui.transform()}
+    root = ui.group('wheel-root', dict(ui.FULL, opacity=ui.number(0)), [ui.group('wheel-center', props, wheel)])
+    doc.bind('root.blend', 'wheel-root', 'opacity', S('blend'))
+    doc.bind('wheel.placement', 'wheel-center', 'transform', [S('offset'), 0, S('fit'), S('fit'), 0])
+    return doc.build(root, {'extensions': {'openq4': {'reference': 'ui-visual-design.md 14.6 Quick chat / 13.5', 'phrases': n,
+                                                      'input': 'Player-owned radial selection; no pointer hit testing',
+                                                      'placement': 'ui_weaponWheelOffset, as the weapon wheel'}}})
+
+
+def write(path, document, check):
+    text = '// Generated by tools/ui/build_retained_weapon_wheel.py; editable vector art.\n' + json.dumps(document, ensure_ascii=False, indent=2) + '\n'
+    text = re.sub(r'\[\n\s+(-?\d+(?:\.\d+)?),\n\s+(-?\d+(?:\.\d+)?)\n\s+\]', r'[\1, \2]', text)
+    if check:
+        assert path.read_text(encoding='utf-8') == text, path
+    else:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding='utf-8', newline='\n')
+
+
 def main():
     parser=argparse.ArgumentParser(description=__doc__);parser.add_argument('--check',action='store_true');args=parser.parse_args()
     for strogg in (False,True):
         for awakening in (False,True):
             name=('strogg' if strogg else 'marine')+('_awakening' if awakening else '')
             path=ROOT/'content/baseoq4/pak0/guis/hud'/('weapon_wheel_'+name+'.q4ui')
-            text='// Generated by tools/ui/build_retained_weapon_wheel.py; editable vector art.\n'+json.dumps(document(strogg,awakening),ensure_ascii=False,indent=2)+'\n'
-            text=re.sub(r'\[\n\s+(-?\d+(?:\.\d+)?),\n\s+(-?\d+(?:\.\d+)?)\n\s+\]',r'[\1, \2]',text)
-            if args.check:
-                assert path.read_text(encoding='utf-8')==text, path
-            else: path.parent.mkdir(parents=True,exist_ok=True);path.write_text(text,encoding='utf-8',newline='\n')
+            write(path,document(strogg,awakening),args.check)
+    write(ROOT/'content/baseoq4/pak0/guis/hud/quick_chat.q4ui',chat_document(),args.check)
     print('Native weapon wheel documents are current')
 
 

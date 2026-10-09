@@ -54,7 +54,8 @@ struct idKeyInput {
     static void ClearStates() { std::memset(held,0,sizeof(held)); }
 };
 namespace idMath { int Abs(int x) { return std::abs(x); } int ClampChar(int x) { return std::clamp(x,-128,127); } }
-constexpr int UB_NONE=0, UB_WEAPONWHEEL=8, UB_IMPULSE0=20, UB_IMPULSE127=147, UB_MAX_BUTTONS=160, UCF_IMPULSE_SEQUENCE=1;
+constexpr int UB_NONE=0, UB_WEAPONWHEEL=8, UB_QUICKCHAT=9, UB_IMPULSE0=20, UB_IMPULSE14=UB_IMPULSE0+14, UB_IMPULSE15=UB_IMPULSE0+15,
+    UB_IMPULSE127=147, UB_MAX_BUTTONS=160, UCF_IMPULSE_SEQUENCE=1;
 constexpr int AXIS_SIDE=0, AXIS_FORWARD=1, AXIS_UP=2, AXIS_ROLL=3, AXIS_YAW=4, AXIS_PITCH=5, MAX_JOYSTICK_AXIS=6;
 int physicalAxes[MAX_JOYSTICK_AXIS]={};
 bool Sys_GetJoystickAxisState(int axis, int& value) { value=physicalAxes[axis]; return true; }
@@ -74,6 +75,9 @@ struct idUsercmdGenLocal {
     void ResetMouseFilter() { ++filtersReset; }
     bool nativeUnknownKeyBlocked[K_LAST_KEY]={};bool nativeSourceExhausted=false;
     struct NativeHold{bool down=false;int key=0;} nativeHeldSources[512];
+    // The held scoreboard's scrolling (14.14): scrolled rows.
+    bool scoreboardScrolls=false; int scoreboardStickDirection=0, scoreboardStickRepeat=0, scrolled=0;
+    bool ScoreboardScrolls() { return scoreboardScrolls; } void ScrollScoreboard(int rows) { scrolled+=rows; }
     bool NativeKeyBlocked(int) const noexcept;
     bool Inhibited(); void Clear(); void Key(int,bool); void SetButtonAction(int,bool);
     void SetUsercmdButton(int,bool); void Joystick(); void RetainedInputChanged();
@@ -204,6 +208,14 @@ int main() {
     idKeyInput::held[K_ENTER]=false;retainedOpen=false;usercmd.RetainedInputChanged();
     usercmd.Key(K_ENTER,true);assert(usercmd.buttonState[2]==1);
     usercmd.Clear();
+    // While the held scoreboard scrolls, the weapon-cycle impulses scroll it and
+    // never reach the game as a weapon change; otherwise they are impulses.
+    usercmd.scoreboardScrolls=true; usercmd.cmd.impulse=0; usercmd.cmd.flags=0;
+    for(int action:{UB_IMPULSE14,UB_IMPULSE15,UB_IMPULSE15}) { usercmd.SetButtonAction(action,true); usercmd.SetButtonAction(action,false); }
+    assert(usercmd.scrolled==-1 && usercmd.cmd.impulse==0 && usercmd.cmd.flags==0);
+    usercmd.scoreboardScrolls=false; usercmd.SetButtonAction(UB_IMPULSE14,true); usercmd.SetButtonAction(UB_IMPULSE14,false);
+    assert(usercmd.scrolled==-1 && usercmd.cmd.impulse==14 && usercmd.cmd.flags==1);
+    usercmd.Clear(); usercmd.cmd.impulse=0; usercmd.cmd.flags=0;
     // Exercise the production engine transport/clock dispatcher against a
     // counted runtime sink. The native retained suite separately checks that
     // sink's real layout, hit testing, feedback and action behavior.

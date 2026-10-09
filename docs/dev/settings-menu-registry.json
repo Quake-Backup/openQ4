@@ -510,6 +510,29 @@
       "accessibility": "Focusable bindDef row that captures the next key or button for this command."
     },
     {
+      "id": "controls.weapons.weap-quickchat",
+      "pane": "Controls",
+      "section": "Weapons",
+      "path": "Settings > Controls > Weapons > Quick Chat",
+      "source": "controls",
+      "container": "p_set_ctrls_weap",
+      "widgets": [
+        "set_ctrls_weap_quickchat_key",
+        "set_ctrls_weap_quickchat"
+      ],
+      "widget_type": "bind",
+      "label_key": "#str_231269",
+      "target_type": "bind",
+      "target": "_quickChat",
+      "default": "v;JOY10",
+      "default_keys": [
+        "v",
+        "JOY10"
+      ],
+      "restart_required": false,
+      "accessibility": "Focusable bindDef row that captures the next key or button for this command."
+    },
+    {
       "id": "controls.attack_look.attk-attack",
       "pane": "Controls",
       "section": "Attack/Look",
@@ -685,9 +708,8 @@
       "label_key": "#str_200121",
       "target_type": "bind",
       "target": "centerview",
-      "default": "JOY10;JOY14;END",
+      "default": "JOY14;END",
       "default_keys": [
-        "JOY10",
         "JOY14",
         "END"
       ],
@@ -3394,6 +3416,109 @@
       "target": "g_objectivesToggle",
       "default": "0",
       "accessibility": "Focusable choiceDef row. No shows the objectives display while the scores button is held; Yes opens and closes it with each press and adds a Close prompt."
+    },
+    {
+      "id": "game.hudopacity",
+      "pane": "Game Options",
+      "section": "HUD",
+      "source": "game",
+      "target_type": "cvar",
+      "restart_required": false,
+      "path": "Settings > Game Options > HUD > HUD Opacity",
+      "container": "set_game_hudopacity",
+      "widgets": [
+        "set_game_hudopacity_slider_bar",
+        "set_game_hudopacity_value"
+      ],
+      "edit_fields": [
+        {
+          "name": "set_game_hudopacity_value",
+          "maxchars": 4
+        }
+      ],
+      "widget_type": "slider_edit",
+      "label_key": "#str_231270",
+      "target": "ui_hudOpacity",
+      "default": "1",
+      "ui_range": {
+        "low": "0.25",
+        "high": "1",
+        "step": "0.05"
+      },
+      "cvar_range": {
+        "low": "0.25",
+        "high": "1"
+      },
+      "accessibility": "Slider with paired edit field. Fades the Remastered and Minimal HUD between 25% and fully opaque."
+    },
+    {
+      "id": "game.huddamagedir",
+      "pane": "Game Options",
+      "section": "HUD",
+      "source": "game",
+      "target_type": "cvar",
+      "restart_required": false,
+      "path": "Settings > Game Options > HUD > Damage Direction",
+      "container": "set_game_huddamagedir",
+      "widgets": [
+        "set_game_huddamagedir_value"
+      ],
+      "widget_type": "choice",
+      "label_key": "#str_231271",
+      "choices_key": "#str_200059",
+      "values": [
+        "0",
+        "1"
+      ],
+      "target": "ui_hudDamageDirection",
+      "default": "1",
+      "accessibility": "Focusable choiceDef row. No hides the damage direction indicator in the Remastered and Minimal HUD."
+    },
+    {
+      "id": "game.hudpickups",
+      "pane": "Game Options",
+      "section": "HUD",
+      "source": "game",
+      "target_type": "cvar",
+      "restart_required": false,
+      "path": "Settings > Game Options > HUD > Pickup Messages",
+      "container": "set_game_hudpickups",
+      "widgets": [
+        "set_game_hudpickups_value"
+      ],
+      "widget_type": "choice",
+      "label_key": "#str_231272",
+      "choices_key": "#str_200059",
+      "values": [
+        "0",
+        "1"
+      ],
+      "target": "ui_hudPickups",
+      "default": "1",
+      "accessibility": "Focusable choiceDef row. No hides the pickup messages in the Remastered and Minimal HUD."
+    },
+    {
+      "id": "game.hudstrip",
+      "pane": "Game Options",
+      "section": "HUD",
+      "source": "game",
+      "target_type": "cvar",
+      "restart_required": false,
+      "path": "Settings > Game Options > HUD > Weapon Strip",
+      "container": "set_game_hudstrip",
+      "widgets": [
+        "set_game_hudstrip_value"
+      ],
+      "widget_type": "choice",
+      "label_key": "#str_231273",
+      "choices_key": "#str_200059",
+      "values": [
+        "0",
+        "1"
+      ],
+      "target": "ui_hudWeaponStrip",
+      "default": "1",
+      "accessibility": "Focusable choiceDef row. No keeps the weapon strip hidden on a weapon change in the Remastered and Minimal HUD."
     },
     {
       "id": "game.auto_skip_cinematics",

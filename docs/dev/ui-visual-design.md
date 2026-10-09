@@ -2161,6 +2161,16 @@ Lowpixel 16 dp instead of icons. The center names the channel, All or Team,
 and releasing sends the phrase. On the Strogg wheel the phrases translate as
 list rows when it opens.
 
+Multiplayer holds it open on its own control, D-pad Down and V by default,
+alive, dead or spectating. It opens on Team in a team game and on All
+otherwise; in a team game the zoom control switches the channel, and the hub
+shows that control's key and Channel under ALL in #FFFF8D or TEAM in your
+team's text color. The phrases, clockwise from the top: Attack!, Defend!,
+Need backup!, Enemy incoming!, On my way!, Thanks!, Nice shot! and Good
+game!, sent in the sender's language. Unselected phrases read at 0.60, the
+selection at full alpha in the selection construction above. Releasing
+inside the dead zone sends nothing.
+
 **Strogg HUD.** On the Strogg HUD the wheel takes the Strogg construction, not
 a recolored Marine ring.
 
@@ -3832,3 +3842,11 @@ card of section 14.18, so every multiplayer screen shares one construction
 | Tourney | The stock's closed outline tree | A bracket chart of open-plate arenas converging on the final, with lit links and your, followed and decided arenas | Product owner's review; `scoreboard.gui` events |
 | Match summary | The stock summary with openQ4's fixes | The card with SUMMARY (result band, standings with best weapons, chat with a typed entry), STATISTICS (with match awards) and SCOREBOARD | Product owner's review; `summary.gui` |
 | Your row | The marker in the Players page's olive | The orange ◥ in every list | Section 14.14 |
+
+### Version 1.21: quick chat
+
+Section 14.6's quick-chat wheel gains its control, its phrases and how its
+channel switches: D-pad Down and V hold it open in multiplayer, alive, dead or
+spectating; it opens on Team in a team game, where the zoom control switches
+the channel and the hub shows that control's key; releasing inside the dead
+zone sends nothing.

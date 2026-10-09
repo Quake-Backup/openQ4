@@ -45,6 +45,7 @@ Tuning and haptics:
 - The Steam Deck profile enables native SDL gyro aiming with a conservative `in_gyroSensitivity 0.20`; raise or lower that cvar if gyro aim feels slow or fast.
 - `in_touchpadMode 1` routes gamepad touchpad motion to menu/console cursor movement. Use `in_touchpadMode 2` for touchpad mouse-look, `0` to disable touchpad motion, or `3` to leave touchpad motion off while keeping touchpad button binds.
 - `in_touchscreen 1` routes direct touchscreen taps and drags to menus, console, and loading-continue input when SDL delivers native touch events.
+- The Steam Deck profile starts the HUD at 125% (`ui_hudScale 1.25`) so its readouts stay legible on the handheld screen; change it under `Settings -> Game Options -> HUD`.
 - The in-game menu exposes controller controls under `Settings -> Game Options -> Controller`, including stick layout, radial dead-zone, look sensitivity, look curve, invert-look, trigger threshold, rumble tuning, gyro, touchpad mode, touchscreen input, and low-battery rumble caps.
 - For the full input settings guide, see [input-settings.md](input-settings.md).
 

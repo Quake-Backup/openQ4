@@ -52,9 +52,20 @@ struct idCmdArgs {
 template<class T> T Min(T a,T b) { return (std::min)(a,b); }
 struct idVec2 { idVec2(float=0,float=0) {} } vec2_origin;
 enum { SE_KEY=1,SE_MOUSE,K_TAB=10,K_SHIFT,K_UPARROW,K_DOWNARROW,K_LEFTARROW,K_RIGHTARROW,
-       K_ENTER,K_KP_ENTER,K_SPACE,K_ESCAPE,K_MOUSE1,K_JOY1,K_JOY2,K_JOY3,K_JOY4,K_JOY7,K_JOY8,K_JOY9,K_JOY10,K_JOY11,K_JOY12,K_JOY15,K_JOY16,
+       K_ENTER,K_KP_ENTER,K_SPACE,K_ESCAPE,K_MOUSE1,K_MOUSE2,K_MOUSE3,K_MOUSE4,K_MOUSE5,K_MOUSE6,K_MOUSE7,K_MOUSE8,
+       K_JOY1,K_JOY2,K_JOY3,K_JOY4,K_JOY7,K_JOY8,K_JOY9,K_JOY10,K_JOY11,K_JOY12,K_JOY15,K_JOY16,
        K_HOME,K_END,K_PGUP,K_PGDN,K_MWHEELUP,K_MWHEELDOWN,K_CTRL,K_ALT,K_RIGHT_ALT,K_BACKSPACE,K_DEL,K_INS,K_LAST_KEY=512 };
-struct idKeyInput { static inline bool shift=false; static bool IsDown(int key) { return key==K_SHIFT && shift; } };
+struct idKeyInput {
+    static inline bool shift=false; static bool IsDown(int key) { return key==K_SHIFT && shift; }
+    // Prompt glyphs name keys (UserInterfaceRetained.cpp's KeyEscapeNames).
+    static const char* KeyNumToString(int key,bool) { static std::string name; name="KEY"+std::to_string(key); return name.c_str(); }
+};
+// The HUD's presentation readbacks format numbers; prompt glyphs ask SDL for
+// the controller's family, which no controller here reports (generic).
+inline const char* va(const char* format,...) {
+    static char text[1024]; va_list args; va_start(args,format); std::vsnprintf(text,sizeof(text),format,args); va_end(args); return text;
+}
+inline int Sys_SDL_GamepadGlyphFamily(int faceLabels[4]) { for (int i=0;i<4;++i) faceLabels[i]=0; return 0; }
 class idFile {
 public:
     std::string bytes;

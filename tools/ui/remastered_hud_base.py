@@ -383,6 +383,18 @@ def layout_state(doc: HudDocument) -> None:
     doc.cvar("oq4.opaque", "ui_retainedOpaqueBacking")
     # 1 Remastered, 2 Minimal (section 13.9); Classic (0) never loads a document.
     doc.cvar("hud.layout", "ui_hudLayout", "number", 1)
+    # The HUD settings (section 13.9): opacity and the optional groups.
+    doc.cvar("hud.opacity", "ui_hudOpacity", "number", 1)
+    doc.cvar("hud.damageDir", "ui_hudDamageDirection", "boolean", True)
+    doc.cvar("hud.pickups", "ui_hudPickups", "boolean", True)
+    doc.cvar("hud.strip", "ui_hudWeaponStrip", "boolean", True)
+
+
+def gameplay_root(doc: HudDocument, ident: str, children: list) -> dict:
+    """A gameplay HUD's root, faded by the HUD opacity setting (13.9)."""
+    node = ui.group(ident, {**ui.FULL, "display": ui.keyword("block"), "opacity": num(1)}, children)
+    doc.bind(ident + ".opacity", ident, "opacity", op("clamp", S("hud.opacity"), 0.25, 1))
+    return node
 
 
 def status_scale(mp) -> dict:

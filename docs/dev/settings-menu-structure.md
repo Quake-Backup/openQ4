@@ -112,6 +112,7 @@ The numbered `set_b_controls_move_1..13` windows are row hover/action surfaces f
 | Dark Matter Gun | `set_ctrls_weap_dmg_key` | `_impulse9` |
 | Napalm Launcher | `set_ctrls_weap_napalmlauncher_key` | `_impulse10` |
 | Buy Menu | `set_ctrls_weap_buymenu_key` | `buymenu` |
+| Quick Chat | `set_ctrls_weap_quickchat_key` | `_quickChat` |
 
 ### Attack/Look
 
@@ -220,6 +221,10 @@ The Game Options pane is `p_settings_game` and is included from `content/baseoq4
 | HUD Width | `choiceDef` | `set_game_hudwidth_value` | `ui_hudWidth` | `0 16:9`, `1 21:9`, `2 Full` | How far edge HUD groups spread on wide screens. |
 | Safe Area Inset | `sliderDef` + `editDef` | `set_game_hudinset_slider_bar`, `set_game_hudinset_value` | `ui_hudSafeInset` | `0..10` percent, step `0.5` | Moves the HUD inward from every edge. |
 | Toggle Objectives | `choiceDef` | `set_game_objectivestoggle_value` | `g_objectivesToggle` | `0 No`, `1 Yes` | No shows the objectives display while the scores button is held (stock); Yes opens and closes it with each press, as the Xbox 360 edition did, and the Remastered display adds a Close prompt. |
+| HUD Opacity | `sliderDef` + `editDef` | `set_game_hudopacity_slider_bar`, `set_game_hudopacity_value` | `ui_hudOpacity` | `0.25..1`, step `0.05` | Fades the Remastered and Minimal HUD; Classic keeps the stock HUD. Edit field `maxchars 4`. |
+| Damage Direction | `choiceDef` | `set_game_huddamagedir_value` | `ui_hudDamageDirection` | `0 No`, `1 Yes` | No hides the damage direction indicator in the Remastered and Minimal HUD. |
+| Pickup Messages | `choiceDef` | `set_game_hudpickups_value` | `ui_hudPickups` | `0 No`, `1 Yes` | No hides the pickup messages in the Remastered and Minimal HUD. |
+| Weapon Strip | `choiceDef` | `set_game_hudstrip_value` | `ui_hudWeaponStrip` | `0 No`, `1 Yes` | No keeps the weapon strip hidden on a weapon change in the Remastered and Minimal HUD. |
 
 ### Corpse, Language, Console
 

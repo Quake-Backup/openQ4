@@ -483,6 +483,7 @@ nextWeaponCombo_t weaponComboChart[12] = {
 
 #include "../game/gamesys/WeaponWheelLegacy.inl"
 #include "../game/gamesys/WeaponWheel.inl"
+#include "QuickChat.inl"
 #include "../game/gamesys/RetainedStatusBar.inl"
 
 const idVec4 marineHitscanTint( 0.69f, 1.0f, 0.4f, 1.0f );
@@ -1407,6 +1408,7 @@ idPlayer::idPlayer
 */
 idPlayer::idPlayer() {
 	InitWeaponWheel();
+	InitQuickChat();
 	InitStatusBar();
 	memset( &usercmd, 0, sizeof( usercmd ) );
 	vrButtonCrouch = false;
@@ -1921,6 +1923,7 @@ idPlayer::Init
 */
 void idPlayer::Init( void ) {
 	ResetWeaponWheel( true );
+	ResetQuickChat();
 	const char			*value;
 	const idDict		*userInfo = GetUserInfo();
 
@@ -2560,6 +2563,7 @@ Release any resources used by the player.
 */
 idPlayer::~idPlayer() {
 	FreeWeaponWheelGui();
+	FreeQuickChatGui();
 	FreeStatusBar();
 	if( gameLocal.mpGame.GetGameState() ) {
 		gameLocal.mpGame.GetGameState()->ClientDisconnect( this );
@@ -3225,6 +3229,7 @@ void idPlayer::Restore( idRestoreGame *savefile ) {
 	declManager->FindType( DECL_ENTITYDEF, "dmg_shellshock_nohl", false, false );
 // RAVEN END
 	ResetWeaponWheel( true );
+	ResetQuickChat();
 }
 
 /*
@@ -4411,6 +4416,8 @@ void idPlayer::UpdateHudPowerUps( idUserInterface *_hud ) {
 	
 	int i, index;
 
+	// openQ4: what the last update showed (the stock script below clears it).
+	const bool carried = _hud->GetStateInt( "powerup_flag_visible" ) != 0;
 	_hud->HandleNamedEvent( "clearPowerups" );
 
 	bool flag = false;
@@ -4447,6 +4454,10 @@ void idPlayer::UpdateHudPowerUps( idUserInterface *_hud ) {
 	}
 	if ( !flag ) {
 		_hud->SetStateInt( "powerup_flag_visible", 0 );
+	}
+	// The Remastered carried flag beats only while it shows.
+	if ( flag != carried ) {
+		_hud->HandleNamedEvent( "oq4_carriedFlag" );
 	}
 }
 
@@ -4946,6 +4957,10 @@ void idPlayer::DrawHUD( idUserInterface *_hud ) {
 		}
 	}
 	DrawWeaponWheel();
+	// The local player's quick-chat wheel, also while following another player.
+	if ( gameLocal.GetLocalPlayer() ) {
+		gameLocal.GetLocalPlayer()->DrawQuickChat();
+	}
 }
 
 /*
@@ -7199,7 +7214,7 @@ idPlayer::Weapon_Combat
 ===============
 */
 void idPlayer::Weapon_Combat( void ) {
-	if ( weaponWheelActive || ( usercmd.buttons & BUTTON_WEAPONWHEEL ) != 0 ) {
+	if ( weaponWheelActive || ( usercmd.buttons & ( BUTTON_WEAPONWHEEL | BUTTON_QUICKCHAT ) ) != 0 ) {
 		pfl.weaponFired = false; pfl.attackHeld = false;
 		if ( weapon ) weapon->EndAttack();
 		return;
@@ -8991,7 +9006,7 @@ idPlayer::UpdateViewAngles
 ================
 */
 void idPlayer::UpdateViewAngles( void ) {
-	if ( ( weaponWheelActive || ( usercmd.buttons & BUTTON_WEAPONWHEEL ) != 0 ) && !spectating && health > 0 &&
+	if ( ( weaponWheelActive || ( usercmd.buttons & ( BUTTON_WEAPONWHEEL | BUTTON_QUICKCHAT ) ) != 0 ) && !spectating && health > 0 &&
 		 !( vrSystem != NULL && vrSystem->IsActive() && gameLocal.GetLocalPlayer() == this ) ) {
 		UpdateDeltaViewAngles( viewAngles );
 		return;
@@ -10243,6 +10258,7 @@ idPlayer::HandleESC
 */
 bool idPlayer::HandleESC( void ) {
 	ResetWeaponWheel( true );
+	ResetQuickChat();
 
 // jdischler: Straight from the top, cinematic skipping on xenon is OFFICIALLY OUT.  Too many problems with it and not enough time to properly address them.
 #ifndef _XENON
@@ -11123,6 +11139,7 @@ void idPlayer::Think( void ) {
 	buttonMask &= usercmd.buttons;
 	usercmd.buttons &= ~buttonMask;
 	ApplyWeaponWheelInputMask();
+	ApplyQuickChatInputMask();
 
 	// openQ4: attack lockout.  Quake Live freezes weapons while a round is
 	// being set up or has just been decided; this is the equivalent of its
@@ -11182,6 +11199,7 @@ void idPlayer::Think( void ) {
 	}
 	
 	if ( gameLocal.isNewFrame ) UpdateWeaponWheel();
+	if ( gameLocal.isNewFrame ) UpdateQuickChat();
 
 	// zooming
 	bool zoom = (usercmd.buttons & BUTTON_ZOOM) && CanZoom();
@@ -14239,6 +14257,7 @@ void idPlayer::LocalClientPredictionThink( void ) {
 	buttonMask &= usercmd.buttons;
 	usercmd.buttons &= ~buttonMask;
 	ApplyWeaponWheelInputMask();
+	ApplyQuickChatInputMask();
 
 	// Spectators use attack to cycle cameras, including the offline demo viewer.
 	// Their inactive weapon state must not consume that camera command.
@@ -14269,6 +14288,7 @@ void idPlayer::LocalClientPredictionThink( void ) {
 	scoreBoardOpen = ( ( usercmd.buttons & BUTTON_SCORES ) != 0 || forceScoreBoard );
 
 	if ( gameLocal.isNewFrame ) UpdateWeaponWheel();
+	if ( gameLocal.isNewFrame ) UpdateQuickChat();
 
 	// zooming
 	bool zoom = (usercmd.buttons & BUTTON_ZOOM) && CanZoom();
@@ -14483,6 +14503,7 @@ void idPlayer::NonLocalClientPredictionThink( void ) {
 	buttonMask &= usercmd.buttons;
 	usercmd.buttons &= ~buttonMask;
 	ApplyWeaponWheelInputMask();
+	ApplyQuickChatInputMask();
 
 	//jshepard: added this to make sure clients can see other clients and the host switching weapons
 	if ( !spectating && idealWeapon != currentWeapon )	{
@@ -14512,6 +14533,7 @@ void idPlayer::NonLocalClientPredictionThink( void ) {
 	scoreBoardOpen = ( ( usercmd.buttons & BUTTON_SCORES ) != 0 || forceScoreBoard );
 
 	if ( gameLocal.isNewFrame ) UpdateWeaponWheel();
+	if ( gameLocal.isNewFrame ) UpdateQuickChat();
 
 	// zooming
 	bool zoom = (usercmd.buttons & BUTTON_ZOOM) && CanZoom();

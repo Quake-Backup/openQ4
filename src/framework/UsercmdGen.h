@@ -60,6 +60,9 @@ const int BUTTON_WEAPONWHEEL = BIT(9);
 // openQ4 VR: the tracked head crouched (vr_physicalCrouch). It crouches the
 // body like a held crouch, and tells the game the view must not drop again.
 const int BUTTON_VRCROUCH = BIT(10);
+// openQ4: the multiplayer quick-chat wheel is held open (_quickChat). Like the
+// weapon wheel it freezes the view and the weapon on both ends of the wire.
+const int BUTTON_QUICKCHAT = BIT(11);
 // RAVEN END
 
 // usercmd_t->impulse commands

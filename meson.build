@@ -918,6 +918,9 @@ if build_engine or get_option('build_native_tests')
     # The match summary card (ui-visual-design.md 14.14).
     test('openq4-ui-retained-summary', openq4_ui_retained_screens_test,
       args: ['--summary', meson.project_source_root() / 'content/baseoq4/pak0/guis/menu/mp_summary.q4ui'], timeout: 240)
+    # The multiplayer quick-chat wheel (ui-visual-design.md 14.6).
+    test('openq4-ui-quick-chat', openq4_ui_retained_screens_test,
+      args: ['--quick-chat', meson.project_source_root() / 'content/baseoq4/pak0/guis/hud/quick_chat.q4ui'], timeout: 120)
     test('openq4-ui-status-bar', openq4_ui_retained_screens_test,
       args: [meson.project_source_root() / 'content/baseoq4/pak0/guis/hud/status_bar_marine.q4ui',
              meson.project_source_root() / 'content/baseoq4/pak0/guis/hud/status_bar_strogg.q4ui'], timeout: 240)
@@ -937,6 +940,7 @@ if build_engine or get_option('build_native_tests')
              meson.project_source_root() / 'content/baseoq4/pak0/guis/hud/remastered_mcc.q4ui',
              meson.project_source_root() / 'content/baseoq4/pak0/guis/hud/remastered_speeder.q4ui',
              meson.project_source_root() / 'content/baseoq4/pak0/guis/hud/remastered_gev.q4ui',
+             meson.project_source_root() / 'content/baseoq4/pak0/guis/hud/remastered_medchange.q4ui',
              meson.project_source_root() / 'content/baseoq4/pak0/guis/hud/remastered_objectives.q4ui',
              meson.project_source_root() / 'content/baseoq4/pak0/guis/hud/remastered_objectives_strogg.q4ui',
              meson.project_source_root() / 'content/baseoq4/pak0/guis/hud/remastered_scoreboard.q4ui'], timeout: 240)

@@ -138,13 +138,15 @@ struct idUserInterface {
 };
 @MENU_OPTION@
 enum {PITCH,YAW,ROLL,AXIS_ROLL=0,AXIS_SIDE,AXIS_FORWARD,AXIS_YAW,AXIS_PITCH,AXIS_UP,UB_STRAFE};
-constexpr int BUTTON_WEAPONWHEEL=512;
+constexpr int BUTTON_WEAPONWHEEL=512,BUTTON_QUICKCHAT=2048;
+static int Sys_Milliseconds(){return 0;}
 constexpr float JOYSTICK_AXIS_LOOK_SCALE=1.0f/127.0f;
 float SHORT2ANGLE(short s){return (unsigned short)s*(360.0f/65536.0f);}
 short ANGLE2SHORT(float a){return static_cast<short>(static_cast<int>(a*65536.0f/360.0f)&65535);}
 struct idAngles {float values[3]{};float& operator[](int i){return values[i];}const float& operator[](int i)const{return values[i];}};
 struct Vec2 {float x=0,y=0;float Length()const{return std::hypot(x,y);}void operator*=(float s){x*=s;y*=s;}};
 struct Usercmd {int buttons=0,mx=0,my=0,rightmove=0,forwardmove=0,upmove=0;short angles[3]{};};
+using usercmd_t=Usercmd;using idVec2=Vec2;
 struct idPlayer {
     Usercmd usercmd;int weaponWheelLastMouseX=0,weaponWheelLastMouseY=0;
     idAngles weaponWheelLastCmdAngles;Vec2 weaponWheelCursor;
@@ -154,8 +156,11 @@ constexpr float WEAPON_WHEEL_MOUSE_SENSITIVITY=.70f,WEAPON_WHEEL_CURSOR_RADIUS=1
 @WHEEL@
 struct idUsercmdGenLocal {
     int joystickAxis[6]{};Usercmd cmd;idAngles viewangles;bool run=false,strafe=false;float zoom=1;
+    // The held scoreboard's stick scrolling (14.14): scrolled rows, never pitch.
+    bool scoreboardScrolls=false;int scoreboardStickDirection=0,scoreboardStickRepeat=0,scrolled=0;
     bool IsRunButtonActive(){return run;}bool ButtonState(int){return strafe;}
     float GetZoomLookSensitivityScale(){return zoom;}void JoystickMove();
+    bool ScoreboardScrolls(){return scoreboardScrolls;}void ScrollScoreboard(int rows){scrolled+=rows;}
 };
 @JOYSTICK@
 int main() {
@@ -224,6 +229,21 @@ int main() {
         gen.joystickAxis[AXIS_ROLL]=1;gen.joystickAxis[AXIS_SIDE]=127;common->seconds=1.0f/60;
         gen.JoystickMove();assert(std::fabs(gen.viewangles[YAW]+140.0f*.5f/60)<.001f);
     }
+    // The quick-chat wheel steers like the weapon wheel: no slow aim, zoom or run.
+    {
+        vars.values["in_joystickLookSensitivity"]="0.1";idUsercmdGenLocal gen;gen.cmd.buttons=BUTTON_QUICKCHAT;
+        gen.joystickAxis[AXIS_ROLL]=1;gen.joystickAxis[AXIS_SIDE]=127;gen.zoom=.1f;gen.run=true;common->seconds=1.0f/60;
+        gen.JoystickMove();assert(std::fabs(gen.viewangles[YAW]+140.0f/60)<.001f);
+    }
+    // While the held scoreboard scrolls, a push past half the stick's travel
+    // scrolls a row and the view's pitch stays put; the first repeat waits.
+    {
+        idUsercmdGenLocal gen;gen.scoreboardScrolls=true;gen.joystickAxis[AXIS_ROLL]=1;gen.joystickAxis[AXIS_FORWARD]=100;
+        gen.JoystickMove();assert(gen.scrolled==1 && gen.viewangles[PITCH]==0);
+        gen.JoystickMove();assert(gen.scrolled==1);
+        gen.joystickAxis[AXIS_FORWARD]=0;gen.JoystickMove();gen.joystickAxis[AXIS_FORWARD]=-100;
+        gen.JoystickMove();assert(gen.scrolled==0 && gen.viewangles[PITCH]==0);
+    }
     puts("turbo reload/ammo/shotgun, new-game Off/On handoff, wheel speed/direction/tic-rate: PASS");
 }
 '''
@@ -260,7 +280,8 @@ def main():
         "ROCKET_GUARD": f"int RocketReload(const stateParms_t&) {{ {rocket_guard} return -1; }}",
         "HANDOFF": function(session, "static void Session_openQ4StartSingleplayer_f("),
         "MENU_OPTION": function(read(ROOT / "src/framework/Session_menu.cpp"), "static int MainMenuGetNewGameOption("),
-        "WHEEL": function(player, "void idPlayer::UpdateWeaponWheelCursor("),
+        "WHEEL": function(player, "static void WeaponWheelAdvanceCursor(") + "\n" +
+                 function(player, "void idPlayer::UpdateWeaponWheelCursor("),
         "JOYSTICK": function(read(ROOT / "src/framework/UsercmdGen.cpp"), "void idUsercmdGenLocal::JoystickMove("),
     }
     source = HARNESS

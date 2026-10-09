@@ -84,6 +84,8 @@ def validate_profile_defaults() -> None:
         'seta com_steamDeckFrameCap "0"',
         'seta in_joystickLowBatteryRumbleThreshold "20"',
         'seta in_joystickLowBatteryRumbleScale "0.75"',
+        # Handheld starts the HUD at 125% (ui-visual-design.md 13.9).
+        'seta ui_hudScale "1.25"',
     ):
         require(profile, token, "Steam Deck platform profile")
 

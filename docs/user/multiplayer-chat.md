@@ -69,5 +69,20 @@ also retain more text, up to 32 KB.
 For console binds, `chatHistory up`, `down`, `top` and `bottom` browse an open
 panel. `chatHistory status` reports counts and position without printing messages.
 
+## Quick chat
+
+Hold **Quick Chat** for a wheel of eight phrases: *Attack!*, *Defend!*,
+*Need backup!*, *Enemy incoming!*, *On my way!*, *Thanks!*, *Nice shot!* and
+*Good game!*. Push the right stick or move the mouse toward a phrase and
+release to send it; releasing without pointing at one sends nothing. In a team
+game the wheel sends to your team, and pressing zoom while it is open switches
+to everyone and back; the wheel's centre names the channel. The phrase goes
+out in your language. The wheel works alive, dead or spectating, and is part
+of the new interface (it is absent with `ui_retained 0`).
+
+New configurations bind Quick Chat to **D-pad Down** on a controller and **V**
+on the keyboard; otherwise bind it under Settings > Controls > Weapons. Its
+console action is `_quickChat`.
+
 The interaction design draws on [Q2REX](https://github.com/themuffinator/Q2REX),
 adapted to openQ4 without its engine, UI dependencies, fonts or artwork.

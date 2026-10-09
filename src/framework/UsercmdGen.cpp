@@ -115,6 +115,7 @@ typedef enum {
 	UB_SHOWSCORES,
 	UB_MLOOK,
 	UB_WEAPONWHEEL,
+	UB_QUICKCHAT,
 
 	UB_IMPULSE0,
 	UB_IMPULSE1,
@@ -209,6 +210,7 @@ userCmdString_t	userCmdStrings[] = {
 	{ "_showScores",	UB_SHOWSCORES },
 	{ "_mlook",			UB_MLOOK },
 	{ "_weaponWheel",	UB_WEAPONWHEEL },
+	{ "_quickChat",		UB_QUICKCHAT },
 	{ "_altattack",		UB_ZOOM },		// the Awakening's name for zoom / alternate fire
 	{ "_ingameStats",	UB_BUTTON5 },
 	{ "_voiceChat",		UB_BUTTON6 },
@@ -1144,7 +1146,7 @@ void idUsercmdGenLocal::JoystickMove( void ) {
 		joystickLookSensitivity = 1.0f;
 	}
 	joystickLookSensitivity = idMath::ClampFloat( 0.1f, 4.0f, joystickLookSensitivity ) * GetZoomLookSensitivityScale();
-	const bool weaponWheel = ( cmd.buttons & BUTTON_WEAPONWHEEL ) != 0;
+	const bool weaponWheel = ( cmd.buttons & ( BUTTON_WEAPONWHEEL | BUTTON_QUICKCHAT ) ) != 0;
 	if ( weaponWheel ) {
 		// Wheel navigation has its own sensitivity and must not inherit slow
 		// aiming, zoom or run modifiers. These deltas use the unscaled input tic.
@@ -1199,8 +1201,9 @@ void idUsercmdGenLocal::CmdButtons( void ) {
 		cmd.buttons |= BUTTON_RUN;
 	}
 
-	// check the zoom button
-	if ( toggled_zoom.on ) {
+	// check the zoom button; while the quick-chat wheel is held, zoom switches
+	// its channel, so the press passes through as it is
+	if ( ButtonState( UB_QUICKCHAT ) ? ButtonState( UB_ZOOM ) != 0 : toggled_zoom.on ) {
 		cmd.buttons |= BUTTON_ZOOM;
 	}
 
@@ -1222,6 +1225,10 @@ void idUsercmdGenLocal::CmdButtons( void ) {
 
 	if ( ButtonState( UB_WEAPONWHEEL ) ) {
 		cmd.buttons |= BUTTON_WEAPONWHEEL;
+	}
+
+	if ( ButtonState( UB_QUICKCHAT ) ) {
+		cmd.buttons |= BUTTON_QUICKCHAT;
 	}
 }
 
@@ -1265,7 +1272,9 @@ void idUsercmdGenLocal::MakeCurrent( void ) {
 		// update toggled key states
 		toggled_crouch.SetKeyState( ButtonState( UB_DOWN ), in_toggleCrouch.GetBool() );
 		toggled_run.SetKeyState( ButtonState( UB_SPEED ), ShouldToggleRun() );
-		toggled_zoom.SetKeyState( ButtonState( UB_ZOOM ), in_toggleZoom.GetBool() );
+		if ( !ButtonState( UB_QUICKCHAT ) ) {
+			toggled_zoom.SetKeyState( ButtonState( UB_ZOOM ), in_toggleZoom.GetBool() );
+		}
 
 		// keyboard angle adjustment
 		AdjustAngles();
@@ -1501,7 +1510,7 @@ the inputs currently holding the action down.
 */
 void idUsercmdGenLocal::SetButtonAction( int action, bool down ) {
 	if ( down ) {
-		if ( action == UB_WEAPONWHEEL || IsWeaponSelectionImpulse( action ) ) {
+		if ( action == UB_WEAPONWHEEL || action == UB_QUICKCHAT || IsWeaponSelectionImpulse( action ) ) {
 			toggled_zoom.Clear();
 		}
 

@@ -187,6 +187,25 @@ def gev():
     ]
 
 
+def medchange():
+    """Medical Labs' implant activation (guis/vehicles/medchange.gui, 14.19):
+    the level starts with Kane strapped to the medbed, whose HUD is the
+    overlay, so the test command sends the events the map script sends
+    (activate as the nanocyte flash fades, hurt with each scream) and the
+    save notice; then reduced motion and Classic."""
+    gui = 'guis/vehicles/medchange.gui'
+    return [
+        'set g_autoExecAfterMapLoad ""', 'waitMsec 5000', shot('med-rest'),
+        *hud(gui, 'event activate'), 'waitMsec 550', shot('med-0550'), 'waitMsec 1050', shot('med-1600'),
+        'waitMsec 1000', shot('med-2600'), 'waitMsec 1650', shot('med-4250'), 'waitMsec 600', shot('med-done'),
+        *hud(gui, 'event hurt'), 'waitMsec 300', shot('med-hurt'),
+        *hud(gui, 'event saveMessage'), 'waitMsec 500', shot('med-saved'), 'waitMsec 2800',
+        'set ui_retainedReducedMotion 1', *hud(gui, 'event activate'), 'waitMsec 1500', shot('med-reduced'),
+        'waitMsec 3500', 'set ui_retainedReducedMotion 0',
+        'set ui_hudLayout 0', *hud(gui, 'event activate'), 'waitMsec 1500', shot('med-classic'), 'set ui_hudLayout 1',
+    ]
+
+
 def objectives(gui):
     """The objectives display through the held scores button (the game
     publishes the list), then the notices and a failure through the stock
@@ -216,6 +235,38 @@ def objectives_toggle():
         'set ui_hudLayout 0', 'openq4_testInput 150 scores', 'waitMsec 1000', shot('obj-toggle-classic'),
         'openq4_testInput 150 scores', 'waitMsec 300', 'set ui_hudLayout 1', 'set g_objectivesToggle 0',
     ]
+
+
+def quick_chat_stages(team):
+    """The quick-chat wheel (guis/hud/quick_chat.q4ui): opened and a phrase
+    picked through testQuickChat; in Team DM it opens on TEAM and switches to
+    ALL. Releasing sends the phrase, which the chat lines then show; reduced
+    motion and Minimal keep the wheel."""
+    tag = 'quickchat-team' if team else 'quickchat'
+    steps = ['set g_autoExecAfterMapLoad ""', 'waitMsec 2500', 'addbot', 'addbot', 'waitMsec 3000',
+             'testQuickChat open', 'waitMsec 400', shot(f'{tag}-open'), 'testQuickChat slot 2', 'waitMsec 300', shot(f'{tag}-slot')]
+    if team:
+        steps += ['testQuickChat channel', 'waitMsec 300', shot(f'{tag}-all'), 'testQuickChat channel']
+    steps += ['testQuickChat slot 7', 'waitMsec 200', 'testQuickChat release', 'waitMsec 700', shot(f'{tag}-sent'),
+              'set ui_retainedReducedMotion 1', 'testQuickChat open', 'testQuickChat slot 5', 'waitMsec 150', shot(f'{tag}-reduced'),
+              'testQuickChat cancel', 'set ui_retainedReducedMotion 0',
+              'set ui_hudLayout 2', 'testQuickChat open', 'testQuickChat slot 0', 'waitMsec 400', shot(f'{tag}-minimal'),
+              'testQuickChat cancel', 'set ui_hudLayout 1']
+    return steps
+
+
+def glyph_stages():
+    """Controller prompts (13.5): testPromptDevice names the controller and
+    in_promptStyle forces each glyph family. The respawn prompt names the
+    attack control (RT) and the quick-chat wheel's hub the zoom control (LT);
+    the keyboard's keycaps return last."""
+    steps = ['set g_autoExecAfterMapLoad ""', 'waitMsec 2500', 'addbot', 'addbot', 'waitMsec 2500', 'kill 0', 'waitMsec 3600']
+    for style, name in ((1, 'xbox'), (2, 'playstation'), (3, 'nintendo'), (4, 'deck'), (5, 'generic')):
+        steps += [f'set in_promptStyle {style}', 'testPromptDevice controller', 'waitMsec 300', shot(f'glyph-respawn-{name}')]
+    steps += ['set in_promptStyle 1', 'testPromptDevice controller', 'testQuickChat open', 'testQuickChat slot 0', 'waitMsec 400',
+              shot('glyph-quickchat-xbox'), 'set in_promptStyle 2', 'waitMsec 300', shot('glyph-quickchat-playstation'),
+              'testQuickChat cancel', 'set in_promptStyle 0', 'testPromptDevice desktop', 'waitMsec 300', shot('glyph-respawn-keyboard')]
+    return steps
 
 
 def summary_stages(name, play):
@@ -285,6 +336,7 @@ SCENARIOS = {
     'mcc': ('game/m06_mcc_invasion', mcc_cannon()),
     'speeder': ('game/m07_race1', speeder()),
     'gev': ('game/m09_valkaryne', gev()),
+    'medchange': ('game/medlabs', medchange()),
     'strogg': ('game/recomp', on_foot('guis/hud_strogg.gui')),
     'mp': ('mp:mp/q4dm1', [
         'set g_autoExecAfterMapLoad ""', 'waitMsec 2500', shot('mp-base'),
@@ -388,6 +440,14 @@ SCENARIOS = {
     'mp-summary': ('mp:mp/q4dm1', summary_stages('dm', ['addbot', 'addbot', 'addbot', 'waitMsec 120000'])),
     'mp-summary-team': ('mp:mp/q4dm1', summary_stages('team', ['addbot', 'addbot', 'addbot', 'waitMsec 150000'])),
     'mp-summary-ca': ('mp:mp/q4dm1', summary_stages('ca', ['addbot', 'waitMsec 20000', 'kill 0', 'waitMsec 15000'])),
+    # The quick-chat wheel (14.6) without input: testQuickChat opens it, picks a
+    # phrase, switches the channel and releases, which sends the phrase; in
+    # Team DM (mp-quickchat-team) and deathmatch (mp-quickchat).
+    'mp-quickchat': ('mp:mp/q4dm1', quick_chat_stages(False)),
+    'mp-quickchat-team': ('mp:mp/q4dm1', quick_chat_stages(True)),
+    # Controller prompts (13.5) in Team DM: each glyph family on the respawn prompt
+    # and the quick-chat wheel's channel switch.
+    'mp-glyphs': ('mp:mp/q4dm1', glyph_stages()),
     # The held scoreboard past its height (14.14): 22 players in deathmatch and
     # 20 in Team DM at the smallest pitch, scrolled by scoreboardScroll, the
     # command the weapon-cycle controls and the right stick send while it is
@@ -427,6 +487,8 @@ def main() -> int:
             capture.SCENARIO_CVARS[scenario]['si_gameType'] = 'CTF'
         if scenario.startswith('mp-summary'):
             capture.SCENARIO_CVARS[scenario].update({'si_fragLimit': '1', 'si_roundLimit': '1', 'g_gameReviewPause': '600'})
+        if scenario in ('mp-quickchat-team', 'mp-glyphs'):
+            capture.SCENARIO_CVARS[scenario]['si_gameType'] = 'Team DM'
         if scenario == 'mp-summary-team':
             capture.SCENARIO_CVARS[scenario]['si_gameType'] = 'Team DM'
         if scenario == 'mp-summary-ca':

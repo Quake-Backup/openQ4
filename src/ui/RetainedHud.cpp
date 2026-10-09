@@ -152,6 +152,13 @@ idCVar ui_hudLayout("ui_hudLayout","1",CVAR_GUI|CVAR_INTEGER|CVAR_ARCHIVE,
 	"team status and network quality; elsewhere Remastered)",0,3);
 idCVar ui_hudWidth("ui_hudWidth","1",CVAR_GUI|CVAR_INTEGER|CVAR_ARCHIVE,
 	"how far edge HUD groups spread on wide views: 0 16:9, 1 21:9, 2 the full view",0,2);
+// The HUD settings of section 13.9 the Remastered and Minimal layouts read
+// (Classic keeps the stock HUD).
+idCVar ui_hudOpacity("ui_hudOpacity","1",CVAR_GUI|CVAR_FLOAT|CVAR_ARCHIVE,"Remastered HUD opacity",0.25f,1.0f);
+idCVar ui_hudDamageDirection("ui_hudDamageDirection","1",CVAR_GUI|CVAR_BOOL|CVAR_ARCHIVE,
+	"Remastered HUD: show the damage direction indicator");
+idCVar ui_hudPickups("ui_hudPickups","1",CVAR_GUI|CVAR_BOOL|CVAR_ARCHIVE,"Remastered HUD: show pickup messages");
+idCVar ui_hudWeaponStrip("ui_hudWeaponStrip","1",CVAR_GUI|CVAR_BOOL|CVAR_ARCHIVE,"Remastered HUD: show the weapon strip on a weapon change");
 
 namespace {
 struct RemasteredRoute { const char* source; const char* document; };
@@ -175,6 +182,8 @@ constexpr RemasteredRoute RemasteredRoutes[]={
 	{"guis/vehicles/speederplayerhud.gui","guis/hud/remastered_speeder.q4ui"},
 	// The Awakening's GEV, drawn from scratch since its art never shipped (14.12).
 	{"guis/vehicles/gev_hud.gui","guis/hud/remastered_gev.q4ui"},
+	// Medical Labs' implant activation at the end of stroggification (14.19).
+	{"guis/vehicles/medchange.gui","guis/hud/remastered_medchange.q4ui"},
 	// The objectives display and its notices (14.11).
 	{"guis/wristcomm.gui","guis/hud/remastered_objectives.q4ui"},
 	{"guis/wristcomm_strogg.gui","guis/hud/remastered_objectives_strogg.q4ui"},
@@ -276,21 +285,16 @@ struct idRemasteredHud::Impl {
 		return name;
 	}
 	// HUD text reaches the stock GUI with its color and icon escapes. A key
-	// escape (^ikHH or ^iKHH, HH the bound key's number in hex) becomes the
-	// key's name for the document's prompts; every other escape goes.
+	// escape (^ikHH or ^iKHH, HH the bound key's number in hex) reaches the
+	// document whole: the retained state names the key, or gives a prompt's
+	// chip its glyph (UserInterfaceRetained.cpp). Every other escape goes.
 	static idStr PlainText(const char* value) {
-		const auto isHex=[](char c) { return (c>='0' && c<='9') || ((c|0x20)>='a' && (c|0x20)<='f'); };
-		const auto hex=[](char c) { return c<='9' ? c-'0' : (c|0x20)-'a'+10; };
-		idStr text;
-		for (const char* p=value; *p; ) {
-			if (p[0]=='^' && p[1]=='i' && (p[2]=='k' || p[2]=='K') && isHex(p[3]) && isHex(p[4])) {
-				text+=idKeyInput::KeyNumToString(hex(p[3])*16+hex(p[4]),true);
-				p+=5;
-			} else {
-				text+=*p++;
-			}
-		}
+		idStr text=value;
+		text.Replace("^ik","\x01k");
+		text.Replace("^iK","\x01K");
 		text.RemoveEscapes();
+		text.Replace("\x01k","^ik");
+		text.Replace("\x01K","^iK");
 		return text;
 	}
 	void Forward(const char* name,const char* value) {

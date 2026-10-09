@@ -163,6 +163,11 @@ public:
     void SetStateFloat(const char *varName, const float value);
     idDict state;
     idStr source;
+    // The Remastered HUD peer (src/ui/RetainedHud.cpp) receives each stored value.
+    struct Peer {
+        std::string key, value;
+        void ForwardState(const char *name, const char *stored) { key = name; value = stored; }
+    } peer, *remastered = &peer;
 };
 '''
 
@@ -204,6 +209,7 @@ int main() {
     Check(Stored(gui, "chat_line", "incoming"), "a value pointing into the replaced string is stored intact");
     gui.SetStateString("chat_line", gui.state.GetString("chat_line"));
     Check(TakeLog().empty() && Stored(gui, "chat_line", "incoming"), "storing the current value again is not logged");
+    Check(gui.peer.key == "chat_line" && gui.peer.value == "incoming", "the HUD peer receives the stored value");
 
     // The typed setters read their old value as a number before the store.
     gui.state.Set("player_score", "7");
@@ -217,8 +223,11 @@ int main() {
     Check(TakeLog() == "GUI: state notice_alpha = 0.5000 (was 0.2500) gui=guis/mphud.gui\n", "SetStateFloat logs the replaced float");
     Check(Stored(gui, "player_score", "12") && Stored(gui, "flag_taken", "0") && Stored(gui, "notice_alpha", "0.500000"),
         "the typed setters store their values");
+    Check(gui.peer.key == "notice_alpha" && gui.peer.value == "0.500000", "the HUD peer receives the typed setters' stored text");
 
-    // Below level 4 the string setter only stores.
+    // Below level 4 the string setter only stores. A HUD peer reads the stored
+    // value back to forward it; without one nothing reads the dictionary.
+    gui.remastered = nullptr;
     gui_debugScript.value = 3;
     const int lookups = gui.state.lookups;
     gui.SetStateString("main_notice_text", "YOUR TEAM HAS THE FLAG");
