@@ -78,6 +78,8 @@ openQ4 checks that your Quake 4 installation has legitimate, unmodified game dat
 
 `fs_validateOfficialPaks 1` (the default, set at startup) enables these checks. The [official PK4 checksum reference](docs/dev/official-pk4-checksums.md) lists the expected files.
 
+openQ4 also checks its own `baseoq4/pak0.pk4` and `pak1.pk4` against checksums built into the executable, and refuses to start if either is missing or modified. A pack that passed is remembered in `generated/packs/verified.txt` under the save path and read again only after the file changes, so later launches skip reading the 800 MB `pak1.pk4`. `+set fs_cacheVerifiedPaks 0` checks both packs at every launch. See [Runtime Pack Verification](docs/dev/runtime-pack-verification.md).
+
 ---
 
 ## Console Settings

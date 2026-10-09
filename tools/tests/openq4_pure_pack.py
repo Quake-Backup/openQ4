@@ -9,6 +9,7 @@ import shutil
 import struct
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from types import ModuleType
 
@@ -1208,6 +1209,592 @@ def validate_build_pak0_contract() -> None:
         shutil.rmtree(work, ignore_errors=True)
 
 
+VERIFIED_PACK_SUPPORT = r'''
+#include <cctype>
+#include <cerrno>
+#include <cstdarg>
+#include <cstddef>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <map>
+#include <stdint.h>
+#include <string>
+#include <vector>
+
+#define OPENQ4_GAMEDIR "baseoq4"
+#define OPENQ4_PAK0_MD5 "00112233445566778899aabbccddeeff"
+#define OPENQ4_PAK1_MD5 "ffeeddccbbaa99887766554433221100"
+
+class idStr {
+public:
+	idStr() {}
+	idStr( const char *text ) : s( text ? text : "" ) {}
+	idStr &operator+=( const char *text ) { s += text; return *this; }
+	const char *c_str() const { return s.c_str(); }
+	int Length() const { return static_cast<int>( s.size() ); }
+	void Clear() { s.clear(); }
+	static int Length( const char *text ) { return static_cast<int>( strlen( text ) ); }
+	static int Icmp( const char *a, const char *b ) {
+		for ( ;; ++a, ++b ) {
+			const int ca = tolower( static_cast<unsigned char>( *a ) );
+			const int cb = tolower( static_cast<unsigned char>( *b ) );
+			if ( ca != cb || ca == 0 ) { return ca - cb; }
+		}
+	}
+	static int Cmpn( const char *a, const char *b, int n ) {
+		for ( int i = 0; i < n; ++i ) {
+			if ( a[ i ] != b[ i ] || a[ i ] == '\0' ) {
+				return static_cast<unsigned char>( a[ i ] ) - static_cast<unsigned char>( b[ i ] );
+			}
+		}
+		return 0;
+	}
+	static int snPrintf( char *dest, int size, const char *fmt, ... ) {
+		va_list args;
+		va_start( args, fmt );
+		const int written = vsnprintf( dest, static_cast<size_t>( size ), fmt, args );
+		va_end( args );
+		return written;
+	}
+	std::string s;
+};
+
+static const char *va( const char *fmt, ... ) {
+	static char buffer[ 4096 ];
+	va_list args;
+	va_start( args, fmt );
+	vsnprintf( buffer, sizeof( buffer ), fmt, args );
+	va_end( args );
+	return buffer;
+}
+
+struct idCommonStub {
+	std::string log;
+	void Printf( const char *fmt, ... ) {
+		char buffer[ 4096 ];
+		va_list args;
+		va_start( args, fmt );
+		vsnprintf( buffer, sizeof( buffer ), fmt, args );
+		va_end( args );
+		log += buffer;
+	}
+};
+static idCommonStub commonStub;
+static idCommonStub *common = &commonStub;
+
+static int Sys_Milliseconds( void ) {
+	static int now = 0;
+	return now += 7;
+}
+
+struct pack_t {
+	idStr	pakFilename;
+	int		checksum;
+	int		numfiles;
+};
+'''
+
+VERIFIED_PACK_DISK = r'''
+// What each pack path holds on the scripted disk. The zip checksum and entry
+// count of an identity come from the loaded pack, as in the engine.
+struct diskPak_t {
+	openQ4PakStamp_t	stamp;
+	std::string			md5;
+	bool				stampable;
+	bool				readable;
+	bool				changesWhileHashed;
+};
+static std::map<std::string, diskPak_t> disk;
+static int hashCalls = 0;
+
+static bool FS_StampOpenQ4Pak( const pack_t *pack, openQ4PakStamp_t &stamp ) {
+	const diskPak_t &entry = disk.at( pack->pakFilename.c_str() );
+	if ( !entry.stampable ) {
+		return false;
+	}
+	stamp = entry.stamp;
+	stamp.zipChecksum = static_cast<uint32_t>( pack->checksum );
+	stamp.zipFiles = static_cast<uint32_t>( pack->numfiles );
+	return true;
+}
+
+static bool MD5_FileChecksum( const char *path, char digestHex[33] ) {
+	hashCalls++;
+	diskPak_t &entry = disk.at( path );
+	if ( !entry.readable ) {
+		digestHex[ 0 ] = '\0';
+		return false;
+	}
+	if ( entry.changesWhileHashed ) {
+		entry.stamp.modified++;
+		entry.stamp.changed++;
+	}
+	memcpy( digestHex, entry.md5.c_str(), 33 );
+	return true;
+}
+
+struct idCVarStub {
+	std::string value;
+	const char *GetString() const { return value.c_str(); }
+	bool GetBool() const { return atoi( value.c_str() ) != 0; }
+};
+
+class idFileSystemLocal {
+public:
+	bool			ValidateOpenQ4Paks( idStr &errors );
+	void			ReadVerifiedOpenQ4Paks( std::vector<verifiedOpenQ4Pak_t> &records ) {
+		recordReads++;
+		records.clear();
+		if ( recordText.size() <= static_cast<size_t>( FS_VERIFIED_PAKS_MAX_BYTES ) ) {
+			FS_ParseVerifiedPaks( recordText.c_str(), records );
+		}
+	}
+	bool			WriteVerifiedOpenQ4Paks( const std::vector<verifiedOpenQ4Pak_t> &records ) {
+		recordWrites++;
+		if ( !recordWritable ) {
+			return false;
+		}
+		FS_FormatVerifiedPaks( records, recordText );
+		return true;
+	}
+	pack_t *		FindGamePackByName( const char *name, const char *gameDir ) {
+		for ( pack_t &pack : packs ) {
+			const std::string path = pack.pakFilename.c_str();
+			const std::string suffix = std::string( "/" ) + gameDir + "/" + name;
+			if ( path.size() >= suffix.size() && path.compare( path.size() - suffix.size(), suffix.size(), suffix ) == 0 ) {
+				return &pack;
+			}
+		}
+		return NULL;
+	}
+	bool			UsesOpenQ4RuntimeUnderlay( void ) const { return underlay; }
+	const char *	RelativePathToOSPath( const char *relativePath, const char *basePath ) {
+		osPath = std::string( "/" ) + basePath + "/baseoq4/" + relativePath;
+		return osPath.c_str();
+	}
+
+	idCVarStub			fs_game{ "baseoq4" };
+	idCVarStub			fs_game_base{ "" };
+	idCVarStub			fs_cacheVerifiedPaks{ "1" };
+	bool				underlay = false;
+	bool				recordWritable = true;
+	std::string			recordText;
+	int					recordReads = 0;
+	int					recordWrites = 0;
+	std::string			osPath;
+	std::vector<pack_t>	packs;
+};
+'''
+
+VERIFIED_PACK_MAIN = r'''
+static int failures = 0;
+#define CHECK( condition, message ) \
+	do { if ( !( condition ) ) { fprintf( stderr, "FAIL line %d: %s\n", __LINE__, message ); failures++; } } while ( 0 )
+
+static const char *PAK1 = "/install/baseoq4/pak1.pk4";
+static const char *EDITED_MD5 = "0123456789abcdef0123456789abcdef";
+
+static openQ4PakStamp_t Stamp( uint64_t size, uint64_t modified, uint64_t changed, uint64_t fileId ) {
+	openQ4PakStamp_t stamp;
+	memset( &stamp, 0, sizeof( stamp ) );
+	stamp.size = size;
+	stamp.modified = modified;
+	stamp.changed = changed;
+	stamp.volume = 0x5eed;
+	stamp.fileId = fileId;
+	return stamp;
+}
+
+static void Install( idFileSystemLocal &fs, const char *root ) {
+	const std::string pak0 = std::string( root ) + "/baseoq4/pak0.pk4";
+	const std::string pak1 = std::string( root ) + "/baseoq4/pak1.pk4";
+	disk[ pak0 ] = diskPak_t{ Stamp( 8802959, 1000, 1001, 11 ), OPENQ4_PAK0_MD5, true, true, false };
+	disk[ pak1 ] = diskPak_t{ Stamp( 797821313, 2000, 2001, 22 ), OPENQ4_PAK1_MD5, true, true, false };
+	fs.packs.clear();
+	fs.packs.push_back( pack_t{ idStr( pak0.c_str() ), 0x7d04783a, 337 } );
+	fs.packs.push_back( pack_t{ idStr( pak1.c_str() ), static_cast<int>( 0xf1d23717u ), 6726 } );
+}
+
+struct run_t {
+	bool		passed;
+	std::string	errors;
+	int			hashes;
+	int			reads;
+	int			writes;
+	std::string	log;
+};
+
+static run_t Run( idFileSystemLocal &fs ) {
+	hashCalls = 0;
+	commonStub.log.clear();
+	const int readsBefore = fs.recordReads;
+	const int writesBefore = fs.recordWrites;
+	idStr errors( "left over" );
+	run_t run;
+	run.passed = fs.ValidateOpenQ4Paks( errors );
+	run.errors = errors.c_str();
+	run.hashes = hashCalls;
+	run.reads = fs.recordReads - readsBefore;
+	run.writes = fs.recordWrites - writesBefore;
+	run.log = commonStub.log;
+	return run;
+}
+
+static bool Contains( const std::string &text, const char *needle ) {
+	return text.find( needle ) != std::string::npos;
+}
+
+static bool SameRecord( const verifiedOpenQ4Pak_t &a, const verifiedOpenQ4Pak_t &b ) {
+	return a.path == b.path && FS_SameOpenQ4PakStamp( a.stamp, b.stamp ) && idStr::Icmp( a.md5, b.md5 ) == 0;
+}
+
+static verifiedOpenQ4Pak_t Record( const char *path, uint64_t salt ) {
+	verifiedOpenQ4Pak_t record;
+	record.path = path;
+	record.stamp = Stamp( 0x100000000ull + salt, 0x01dc5a0f3c2b1a09ull + salt, 0xffffffffffffffffull - salt, salt * 3 );
+	record.stamp.volume = salt;
+	record.stamp.zipChecksum = 0xf1d23717u;
+	record.stamp.zipFiles = static_cast<uint32_t>( salt );
+	memcpy( record.md5, OPENQ4_PAK1_MD5, 33 );
+	return record;
+}
+
+static void TestRecordFormat() {
+	std::vector<verifiedOpenQ4Pak_t> records, parsed;
+	records.push_back( Record( "C:\\Program Files\\openQ4\\baseoq4\\pak1.pk4", 1 ) );
+	records.push_back( Record( "/home/player/.local/share/openQ4 dev/baseoq4/pak0.pk4", 2 ) );
+	std::string text;
+	FS_FormatVerifiedPaks( records, text );
+	FS_ParseVerifiedPaks( text.c_str(), parsed );
+	CHECK( parsed.size() == 2 && SameRecord( parsed[ 0 ], records[ 0 ] ) && SameRecord( parsed[ 1 ], records[ 1 ] ),
+		"a formatted record parses back to the same packs, spaces in paths included" );
+
+	std::string crlf;
+	for ( const char c : text ) {
+		if ( c == '\n' ) {
+			crlf += '\r';
+		}
+		crlf += c;
+	}
+	FS_ParseVerifiedPaks( crlf.c_str(), parsed );
+	CHECK( parsed.empty(), "a header with CRLF endings is another format" );
+	const std::string header = std::string( FS_VERIFIED_PAKS_HEADER ) + "\n";
+	std::string crlfBody = header + crlf.substr( crlf.find( '\n' ) + 1 );
+	FS_ParseVerifiedPaks( crlfBody.c_str(), parsed );
+	CHECK( parsed.size() == 2 && parsed[ 0 ].path == records[ 0 ].path, "CRLF record lines lose the CR from the path" );
+
+	FS_ParseVerifiedPaks( ( "openQ4 verified runtime packs 2\n" + text.substr( header.size() ) ).c_str(), parsed );
+	CHECK( parsed.empty(), "another record version is ignored" );
+	FS_ParseVerifiedPaks( FS_VERIFIED_PAKS_HEADER, parsed );
+	CHECK( parsed.empty(), "a header without its newline is ignored" );
+	FS_ParseVerifiedPaks( text.substr( 0, text.size() - 1 ).c_str(), parsed );
+	CHECK( parsed.size() == 1, "a line without its newline is ignored" );
+
+	const std::string line = text.substr( header.size(), text.find( '\n', header.size() ) + 1 - header.size() );
+	const char *const broken[] = {
+		"00112233445566778899AABBCCDDEEFF 1 2 3 4 5 6 7 /p\n",				// upper-case digest
+		"0011223344556677889aabbccddeef 1 2 3 4 5 6 7 /p\n",				// short digest
+		"00112233445566778899aabbccddeefg 1 2 3 4 5 6 7 /p\n",				// last digest character not hexadecimal
+		"00112233445566778899aabbccddeeff 1 2 3 4 5 6 /p\n",				// a field missing
+		"00112233445566778899aabbccddeeff 1 2 3 4 5 6 7 \n",				// no path
+		"00112233445566778899aabbccddeeff 1 2 3 4 5 6 7\n",					// no path or separator
+		"00112233445566778899aabbccddeeff 1  2 3 4 5 6 7 /p\n",				// empty field
+		"00112233445566778899aabbccddeeff 1 -2 3 4 5 6 7 /p\n",				// signed field
+		"00112233445566778899aabbccddeeff 1 2 3 4 5 6 7g /p\n",				// not hexadecimal
+		"00112233445566778899aabbccddeeff 1 2 3 4 5 100000000 7 /p\n",		// zip checksum over 32 bits
+		"00112233445566778899aabbccddeeff 1 2 3 4 5 6 100000000 /p\n",		// zip entries over 32 bits
+		"00112233445566778899aabbccddeeff 10000000000000000 2 3 4 5 6 7 /p\n",	// over 64 bits
+	};
+	for ( const char *bad : broken ) {
+		FS_ParseVerifiedPaks( ( header + bad + line ).c_str(), parsed );
+		CHECK( parsed.size() == 1 && SameRecord( parsed[ 0 ], records[ 0 ] ), bad );
+	}
+
+	// BuildOSPath caps a pack path at MAX_STRING_CHARS (1024)
+	std::vector<verifiedOpenQ4Pak_t> many;
+	std::string longPath( 1020, 'x' );
+	for ( int i = 0; i < 20; i++ ) {
+		FS_RecordVerifiedPak( many, ( longPath + std::to_string( i ) ).c_str(), Record( "", static_cast<uint64_t>( i ) ).stamp, OPENQ4_PAK1_MD5 );
+	}
+	CHECK( many.size() == FS_VERIFIED_PAKS_MAX, "the record keeps a bounded number of packs" );
+	CHECK( many[ 0 ].path == longPath + "19" && many.back().path == longPath + "4", "the newest packs stay, newest first" );
+	FS_FormatVerifiedPaks( many, text );
+	CHECK( text.size() <= static_cast<size_t>( FS_VERIFIED_PAKS_MAX_BYTES ), "a full record of long paths stays readable" );
+	FS_ParseVerifiedPaks( text.c_str(), parsed );
+	CHECK( parsed.size() == FS_VERIFIED_PAKS_MAX && SameRecord( parsed[ 3 ], many[ 3 ] ), "a full record parses back" );
+
+	FS_RecordVerifiedPak( many, ( longPath + "10" ).c_str(), Record( "", 99 ).stamp, OPENQ4_PAK0_MD5 );
+	int copies = 0;
+	for ( const verifiedOpenQ4Pak_t &record : many ) {
+		copies += record.path == longPath + "10" ? 1 : 0;
+	}
+	CHECK( copies == 1 && many[ 0 ].path == longPath + "10" && many[ 0 ].stamp.volume == 99,
+		"recording a path again replaces its entry and moves it first" );
+	const size_t before = many.size();
+	FS_RecordVerifiedPak( many, "/bad\npath", Record( "", 5 ).stamp, OPENQ4_PAK1_MD5 );
+	CHECK( many.size() == before && many[ 0 ].path == longPath + "10", "a path the line format cannot hold is not recorded" );
+}
+
+static void TestValidation() {
+	{
+		idFileSystemLocal fs;
+		Install( fs, "/install" );
+		run_t first = Run( fs );
+		CHECK( first.passed && first.errors.empty() && first.hashes == 2 && first.writes == 1, "the first startup hashes both packs and records them" );
+		CHECK( Contains( first.log, "Verified pk4 /install/baseoq4/pak1.pk4: hashed in" ), "a hashed pack says so" );
+		run_t second = Run( fs );
+		CHECK( second.passed && second.hashes == 0 && second.writes == 0, "an unchanged install is not read again" );
+		CHECK( Contains( second.log, "Verified pk4 /install/baseoq4/pak1.pk4: unchanged since its checksum was recorded" ), "a recorded pack says so" );
+	}
+
+	// Every part of the identity sends the pack back to hashing, and a pack
+	// edited behind it fails, even with its write time put back.
+	for ( int field = 0; field < 7; field++ ) {
+		for ( int edited = 0; edited < 2; edited++ ) {
+			idFileSystemLocal fs;
+			Install( fs, "/install" );
+			Run( fs );
+			diskPak_t &pak1 = disk.at( PAK1 );
+			switch ( field ) {
+				case 0: pak1.stamp.size++; break;
+				case 1: pak1.stamp.modified++; break;
+				case 2: pak1.stamp.changed++; break;
+				case 3: pak1.stamp.volume++; break;
+				case 4: pak1.stamp.fileId++; break;
+				case 5: fs.packs[ 1 ].checksum ^= 1; break;
+				default: fs.packs[ 1 ].numfiles++; break;
+			}
+			if ( edited ) {
+				pak1.md5 = EDITED_MD5;
+			}
+			const run_t run = Run( fs );
+			CHECK( run.hashes == 1, "a changed identity hashes that pack again" );
+			if ( edited ) {
+				CHECK( !run.passed && run.writes == 0, "an edited pack fails and leaves the record alone" );
+				CHECK( Contains( run.errors, "checksum mismatch for baseoq4/pak1.pk4 (expected ffeeddccbbaa99887766554433221100, got 0123456789abcdef0123456789abcdef from /install/baseoq4/pak1.pk4)" ),
+					"the mismatch names both digests" );
+				CHECK( Run( fs ).hashes == 1, "and fails again at the next startup" );
+			} else {
+				CHECK( run.passed && run.writes == 1, "a re-hashed pack that matches is recorded again" );
+				CHECK( Run( fs ).hashes == 0, "under its new identity" );
+			}
+		}
+	}
+
+	{
+		idFileSystemLocal fs;
+		Install( fs, "/install" );
+		std::vector<verifiedOpenQ4Pak_t> records;
+		for ( const pack_t &pack : fs.packs ) {
+			openQ4PakStamp_t stamp;
+			FS_StampOpenQ4Pak( &pack, stamp );
+			FS_RecordVerifiedPak( records, pack.pakFilename.c_str(), stamp, EDITED_MD5 );
+		}
+		FS_FormatVerifiedPaks( records, fs.recordText );
+		run_t run = Run( fs );
+		CHECK( run.passed && run.hashes == 2 && run.writes == 1, "a pack recorded with another build's digest is hashed" );
+		CHECK( Run( fs ).hashes == 0, "and recorded with this build's digest" );
+		disk.at( PAK1 ).md5 = EDITED_MD5;
+		FS_FormatVerifiedPaks( records, fs.recordText );
+		run = Run( fs );
+		CHECK( !run.passed && run.hashes == 2, "a record cannot vouch for a digest this build does not expect" );
+	}
+
+	{
+		idFileSystemLocal fs;
+		Install( fs, "/install" );
+		Run( fs );
+		fs.fs_cacheVerifiedPaks.value = "0";
+		const run_t run = Run( fs );
+		CHECK( run.passed && run.hashes == 2 && run.reads == 0 && run.writes == 0, "fs_cacheVerifiedPaks 0 hashes both packs and leaves the record alone" );
+	}
+
+	{
+		idFileSystemLocal fs;
+		Install( fs, "/install" );
+		disk.at( PAK1 ).stampable = false;
+		run_t run = Run( fs );
+		CHECK( run.passed && run.hashes == 2 && run.writes == 1, "a pack without an identity is hashed" );
+		CHECK( Run( fs ).hashes == 1, "and never recorded" );
+	}
+
+	{
+		idFileSystemLocal fs;
+		Install( fs, "/install" );
+		disk.at( PAK1 ).changesWhileHashed = true;
+		run_t run = Run( fs );
+		CHECK( run.passed && run.hashes == 2, "a pack that changes while it is hashed is judged by its digest" );
+		CHECK( run.writes == 1 && !Contains( fs.recordText, PAK1 ), "but gets no entry" );
+		disk.at( PAK1 ).changesWhileHashed = false;
+		CHECK( Run( fs ).hashes == 1, "but not recorded under the identity read before hashing" );
+		CHECK( Run( fs ).hashes == 0, "until a quiet startup records it" );
+	}
+
+	{
+		idFileSystemLocal fs;
+		Install( fs, "/install" );
+		Run( fs );
+		fs.packs.pop_back();
+		run_t run = Run( fs );
+		CHECK( !run.passed && run.writes == 0 && Contains( run.errors, "missing baseoq4/pak1.pk4 (expected checksum ffeeddccbbaa99887766554433221100)" ),
+			"a missing pack fails even with a record" );
+	}
+
+	{
+		idFileSystemLocal fs;
+		Install( fs, "/install" );
+		disk.at( PAK1 ).readable = false;
+		const run_t run = Run( fs );
+		CHECK( !run.passed && run.writes == 0 && Contains( run.errors, "could not read /install/baseoq4/pak1.pk4 for checksum validation" ),
+			"an unreadable pack fails" );
+	}
+
+	{
+		idFileSystemLocal fs;
+		Install( fs, "/install" );
+		fs.recordWritable = false;
+		run_t run = Run( fs );
+		CHECK( run.passed && run.errors.empty(), "a read-only cache path still passes good packs" );
+		CHECK( Contains( run.log, "Could not record the verified pk4 checksums in /fs_cachepath/baseoq4/generated/packs/verified.txt" ),
+			"and says where it could not record them" );
+		CHECK( Run( fs ).hashes == 2, "so they are hashed at every startup" );
+	}
+
+	{
+		idFileSystemLocal fs;
+		Install( fs, "/install" );
+		fs.fs_game.value = "mymod";
+		run_t run = Run( fs );
+		CHECK( run.passed && run.hashes == 0 && run.reads == 0, "a mod that names its own base checks no openQ4 packs" );
+		fs.underlay = true;
+		run = Run( fs );
+		CHECK( run.passed && run.hashes == 2, "a mod over the openQ4 runtime checks them" );
+		fs.underlay = false;
+		fs.fs_game_base.value = "baseoq4";
+		CHECK( Run( fs ).hashes == 0, "and is recorded like any other startup" );
+	}
+
+	{
+		// builddir and the staged package sharing one fs_cachepath
+		idFileSystemLocal staged, direct;
+		Install( staged, "/install" );
+		Install( direct, "/builddir" );
+		Run( staged );
+		direct.recordText = staged.recordText;
+		CHECK( Run( direct ).hashes == 2, "another runtime's packs are not vouched for by this one's" );
+		staged.recordText = direct.recordText;
+		CHECK( Run( staged ).hashes == 0 && Run( direct ).hashes == 0, "both runtimes keep their entries" );
+	}
+}
+
+int main() {
+	TestRecordFormat();
+	TestValidation();
+	if ( failures != 0 ) {
+		fprintf( stderr, "%d verified-pack check(s) failed\n", failures );
+		return 1;
+	}
+	return 0;
+}
+'''
+
+
+def verified_pack_type(source: str, name: str) -> str:
+    start = source.find(f"typedef struct {name}_s {{")
+    end = source.find(f"}} {name}_t;", start)
+    if start == -1 or end == -1:
+        raise AssertionError(f"Missing typedef {name}_t")
+    return source[start : end + len(f"}} {name}_t;")]
+
+
+def validate_verified_pack_record() -> None:
+    source = read("src/framework/FileSystem.cpp")
+    validator = function_body(source, "bool idFileSystemLocal::ValidateOpenQ4Paks(")
+    stamp = function_body(source, "static bool FS_StampOpenQ4Pak(")
+    reader = function_body(source, "void idFileSystemLocal::ReadVerifiedOpenQ4Paks(")
+    writer = function_body(source, "bool idFileSystemLocal::WriteVerifiedOpenQ4Paks(")
+    startup = function_body(source, "void idFileSystemLocal::Startup(")
+
+    require(
+        source,
+        'idCVar	idFileSystemLocal::fs_cacheVerifiedPaks( "fs_cacheVerifiedPaks", "1", CVAR_SYSTEM | CVAR_INIT | CVAR_BOOL,',
+        "verified-pack record switch",
+    )
+    require(validator, "const bool useRecord = fs_cacheVerifiedPaks.GetBool();", "record switch gate")
+    require(validator, "const bool stamped = useRecord && FS_StampOpenQ4Pak( pack, stamp );", "identity before hashing")
+    require(validator, "FS_SameOpenQ4PakStamp( recorded->stamp, stamp )", "recorded identity match")
+    require(validator, "!idStr::Icmp( recorded->md5, expected.md5 )", "recorded digest must be this build's")
+    require(validator, "FS_StampOpenQ4Pak( pack, after ) && FS_SameOpenQ4PakStamp( stamp, after )", "identity unchanged while hashed")
+    require_order(validator, "FS_SameOpenQ4PakStamp( recorded->stamp, stamp )", "MD5_FileChecksum(", "record consulted before hashing")
+    require_order(validator, "checksum mismatch for %s/%s", "FS_RecordVerifiedPak(", "only a passing pack is recorded")
+    require_order(validator, "if ( errors.Length() != 0 ) {", "WriteVerifiedOpenQ4Paks( records )", "a failed check writes no record")
+    require_order(startup, "ValidateOpenQ4Paks( openQ4PakErrors )", "openQ4 runtime content packs in '%s' are missing or modified", "pack failure stays fatal")
+
+    for token, context in (
+        ("GetFileInformationByHandleEx( handle, FileBasicInfo, &basic, sizeof( basic ) )", "Windows change time"),
+        ("basic.ChangeTime.QuadPart", "Windows change time"),
+        ("basic.LastWriteTime.QuadPart", "Windows write time"),
+        ("info.nFileIndexHigh", "Windows file id"),
+        ("info.dwVolumeSerialNumber", "Windows volume"),
+        ("fstat( fileno( file ), &info )", "POSIX identity from the open pack"),
+        ("info.st_ctimespec", "macOS change time"),
+        ("info.st_ctim", "POSIX change time"),
+        ("info.st_mtim", "POSIX write time"),
+        ("info.st_ino", "POSIX file id"),
+        ("pack->checksum", "zip central directory CRC digest"),
+        ("pack->numfiles", "zip central directory entry count"),
+    ):
+        require(stamp, token, context)
+    reject(stamp, "st_dev", "per-mount device numbers would miss after every reboot")
+
+    require(reader, 'RelativePathToOSPath( FS_VERIFIED_PAKS_FILE, "fs_cachepath" )', "record under fs_cachepath")
+    require(reader, "OpenExplicitFileRead( osPath )", "record read from its exact path")
+    reject(reader, "OpenFileRead(", "record must not come from a search path")
+    reject(reader, "ReadFile(", "record must not come from a search path")
+    require(writer, "GetCurrentProcessId()", "per-process staged record")
+    require(writer, "getpid()", "per-process staged record")
+    require(writer, 'PromoteFile( staged, FS_VERIFIED_PAKS_FILE, "fs_cachepath" )', "atomic record publication")
+    require(writer, 'RemoveFileChecked( staged, "fs_cachepath" )', "staged record cleanup")
+
+    support = "\n".join(
+        verified_pack_type(source, name) for name in ("openQ4PakStamp", "verifiedOpenQ4Pak")
+    )
+    constants = "\n".join(
+        line for line in source.splitlines() if line.startswith("static const") and "FS_VERIFIED_PAKS_" in line
+    )
+    if constants.count("\n") != 3:
+        raise AssertionError("Expected the four FS_VERIFIED_PAKS_ constants")
+    helpers = "\n".join(
+        function_body(source, signature)
+        for signature in (
+            "static bool FS_SameOpenQ4PakStamp(",
+            "static bool FS_IsVerifiedPakHexDigit(",
+            "static bool FS_ParseVerifiedPakNumber(",
+            "static bool FS_ParseVerifiedPakLine(",
+            "static void FS_ParseVerifiedPaks(",
+            "static void FS_FormatVerifiedPaks(",
+            "static const verifiedOpenQ4Pak_t *FS_FindVerifiedPak(",
+            "static void FS_RecordVerifiedPak(",
+        )
+    )
+    program_text = "\n".join(
+        (VERIFIED_PACK_SUPPORT, support, constants, helpers, VERIFIED_PACK_DISK, validator, VERIFIED_PACK_MAIN)
+    )
+
+    compiler = next((path for name in ("clang++", "g++", "c++") if (path := shutil.which(name))), None)
+    if compiler is None:
+        raise RuntimeError("a C++ compiler is required for the verified-pack record harness")
+    flags = ["-std=c++17", "-Wall", "-Wextra", "-Werror", "-Wno-unused-parameter", "-Wno-unused-function"]
+    (ROOT / ".tmp").mkdir(exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="verified-pack-", dir=ROOT / ".tmp") as directory:
+        program = Path(directory) / "verified_pack.cpp"
+        binary = Path(directory) / "verified_pack.exe"
+        program.write_text(program_text, encoding="utf-8")
+        subprocess.run([compiler, *flags, str(program), "-o", str(binary)], check=True)
+        subprocess.run([str(binary)], check=True)
+
+
 def validate_validation_coverage() -> None:
     validator = read("tools/validation/openq4_validate.py")
     push = read(".github/workflows/push-verification.yml")
@@ -1237,6 +1824,7 @@ def main() -> None:
     validate_install_error_console_contract()
     validate_packager_pure_pack_contract()
     validate_build_pak0_contract()
+    validate_verified_pack_record()
     validate_validation_coverage()
     print("openq4_pure_pack: ok")
 

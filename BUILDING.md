@@ -627,7 +627,7 @@ bash tools/build/meson_setup.sh install -C builddir --no-rebuild --skip-subproje
 | `baseoq4/game-mp_<arch>[.dll/.so/.dylib]` | Multiplayer game module |
 
 - BSE (Basic Set of Effects) is linked directly into `openQ4-client_<arch>`; the dedicated server keeps a disabled/stub path.
-- `content/baseoq4/pak0/` and `content/baseoq4/pak1/` are compiled into deterministic `pak0.pk4` and `pak1.pk4` before the engine is built; the generated pack checksums are embedded into the executable so startup can reject missing or modified openQ4 runtime packs.
+- `content/baseoq4/pak0/` and `content/baseoq4/pak1/` are compiled into deterministic `pak0.pk4` and `pak1.pk4` before the engine is built; the generated pack checksums are embedded into the executable so startup can reject missing or modified openQ4 runtime packs. A pack that passes is recorded under `fs_cachepath` and hashed again only when its file changes, so the first launch after a build or an install step hashes the packs it rewrote and later launches skip them ([runtime pack verification](docs/dev/runtime-pack-verification.md)).
 - On Windows, the wrapper stages `OpenAL32.dll` next to the executables and rejects builds that still depend on external MSVC/UCRT runtime DLLs.
 
 ### Install directory (`.install/`)

@@ -1442,6 +1442,24 @@ typedef enum modManifestStatus_s {
 	MOD_MANIFEST_INVALID
 } modManifestStatus_t;
 
+// The identity on disk of an openQ4 runtime pack that passed its checksum
+// check (see ValidateOpenQ4Paks).
+typedef struct openQ4PakStamp_s {
+	uint64_t			size;
+	uint64_t			modified;		// last write, in the platform's native time units
+	uint64_t			changed;		// last content or metadata change, likewise
+	uint64_t			volume;
+	uint64_t			fileId;
+	uint32_t			zipChecksum;	// pack_t::checksum, over the central directory's CRCs
+	uint32_t			zipFiles;
+} openQ4PakStamp_t;
+
+typedef struct verifiedOpenQ4Pak_s {
+	std::string			path;
+	openQ4PakStamp_t	stamp;
+	char				md5[ 33 ];
+} verifiedOpenQ4Pak_t;
+
 class idLevelLoadCacheManager;
 
 class idFileSystemLocal : public idFileSystem {
@@ -1581,6 +1599,7 @@ private:
 	static idCVar			fs_caseSensitiveOS;
 	static idCVar			fs_searchAddons;
 	static idCVar			fs_validateOfficialPaks;
+	static idCVar			fs_cacheVerifiedPaks;
 	static idCVar			fs_cacheLooseDirectories;
 
 	backgroundDownload_t *	backgroundDownloads;
@@ -1650,7 +1669,9 @@ private:
 	pack_t *				FindBaseGamePackByName( const char *name ) const;
 	void					PrintContentSearchDiagnostics( void );
 	bool					FindMisplacedOfficialPaks( idStr &errors ) const;
-	bool					ValidateOpenQ4Paks( idStr &errors ) const;
+	bool					ValidateOpenQ4Paks( idStr &errors );
+	void					ReadVerifiedOpenQ4Paks( std::vector<verifiedOpenQ4Pak_t> &records );
+	bool					WriteVerifiedOpenQ4Paks( const std::vector<verifiedOpenQ4Pak_t> &records );
 	bool					ValidateRequiredOfficialPaks( idStr &errors ) const;
 	bool					UsesOpenQ4RuntimeUnderlay( void ) const;
 	void					Startup( void );
@@ -1703,6 +1724,7 @@ idCVar	idFileSystemLocal::fs_caseSensitiveOS( "fs_caseSensitiveOS", "1", CVAR_SY
 #endif
 idCVar	idFileSystemLocal::fs_searchAddons( "fs_searchAddons", "0", CVAR_SYSTEM | CVAR_BOOL, "search all addon pk4s ( disables addon functionality )" );
 idCVar	idFileSystemLocal::fs_validateOfficialPaks( "fs_validateOfficialPaks", "1", CVAR_SYSTEM | CVAR_INIT | CVAR_BOOL, "verify required official q4base media pk4 checksums on startup" );
+idCVar	idFileSystemLocal::fs_cacheVerifiedPaks( "fs_cacheVerifiedPaks", "1", CVAR_SYSTEM | CVAR_INIT | CVAR_BOOL, "skip re-hashing an openQ4 runtime pack whose size, times, file id and zip directory are unchanged since it passed its checksum check; 0 hashes both packs at every startup" );
 idCVar	idFileSystemLocal::fs_cacheLooseDirectories( "fs_cacheLooseDirectories", "1", CVAR_SYSTEM | CVAR_BOOL, "during a level load, remember which loose search-path directories do not exist, so a lookup skips them instead of failing an open in each (case-insensitive filesystems only)" );
 
 idFileSystemLocal	fileSystemLocal;
@@ -5648,10 +5670,307 @@ bool idFileSystemLocal::FindMisplacedOfficialPaks( idStr &errors ) const {
 
 /*
 ================
+openQ4 runtime pack verification record
+
+ValidateOpenQ4Paks proves pak0.pk4 and pak1.pk4 against the MD5 digests built
+into this executable. pak1 is about 800 MB, and hashing it cost about 1.3 s of
+every warm launch, more from a cold disk cache, and the same again at every
+filesystem restart.
+
+A pack that passes is written to a small record, generated/packs/verified.txt
+under fs_cachepath, with its identity on disk: size, last-write time, change
+time, volume and file id, and the CRC digest and entry count of its zip central
+directory that LoadZipFile already computed. A later startup that finds the
+same identity at the same path, recorded with the digest this executable
+expects, does not read the pack again.
+
+Writing, replacing, re-staging or touching a pack changes that identity.
+Writing to a file always moves its change time, which ordinary tools cannot
+set back, so an edited pack is hashed again and fails exactly as before. Every
+doubt falls back to hashing: no record, an unreadable or malformed one, another
+build's digest, a pack that could not be stamped or that changed while it was
+hashed. Only a hash ever rejects a pack. The record is a cache with the trust
+model of make and git, not a signature: whoever can rewrite it can equally
+rewrite the executable. fs_cacheVerifiedPaks 0 hashes both packs at every
+startup.
+================
+*/
+static const char * const	FS_VERIFIED_PAKS_FILE = "generated/packs/verified.txt";
+static const char * const	FS_VERIFIED_PAKS_HEADER = "openQ4 verified runtime packs 1";
+static const size_t			FS_VERIFIED_PAKS_MAX = 16;
+static const int			FS_VERIFIED_PAKS_MAX_BYTES = 64 * 1024;
+
+#ifndef _WIN32
+static uint64_t FS_StampTime( const struct timespec &value ) {
+	return static_cast<uint64_t>( value.tv_sec ) * 1000000000ull + static_cast<uint64_t>( value.tv_nsec );
+}
+#endif
+
+/*
+================
+FS_StampOpenQ4Pak
+
+Reads the pack's identity through the same narrow-path fopen that loaded it.
+================
+*/
+static bool FS_StampOpenQ4Pak( const pack_t *pack, openQ4PakStamp_t &stamp ) {
+	memset( &stamp, 0, sizeof( stamp ) );
+	FILE *file = fopen( pack->pakFilename.c_str(), "rb" );
+	if ( file == NULL ) {
+		return false;
+	}
+	bool stamped = false;
+#ifdef _WIN32
+	const HANDLE handle = reinterpret_cast<HANDLE>( _get_osfhandle( _fileno( file ) ) );
+	BY_HANDLE_FILE_INFORMATION info;
+	FILE_BASIC_INFO basic;
+	if ( handle != INVALID_HANDLE_VALUE &&
+		 GetFileInformationByHandle( handle, &info ) &&
+		 GetFileInformationByHandleEx( handle, FileBasicInfo, &basic, sizeof( basic ) ) ) {
+		stamp.size = ( static_cast<uint64_t>( info.nFileSizeHigh ) << 32 ) | info.nFileSizeLow;
+		stamp.modified = static_cast<uint64_t>( basic.LastWriteTime.QuadPart );
+		stamp.changed = static_cast<uint64_t>( basic.ChangeTime.QuadPart );
+		stamp.volume = info.dwVolumeSerialNumber;
+		stamp.fileId = ( static_cast<uint64_t>( info.nFileIndexHigh ) << 32 ) | info.nFileIndexLow;
+		stamped = true;
+	}
+#else
+	struct stat info;
+	if ( fstat( fileno( file ), &info ) == 0 && S_ISREG( info.st_mode ) ) {
+		stamp.size = static_cast<uint64_t>( info.st_size );
+#if defined( __APPLE__ )
+		stamp.modified = FS_StampTime( info.st_mtimespec );
+		stamp.changed = FS_StampTime( info.st_ctimespec );
+#else
+		stamp.modified = FS_StampTime( info.st_mtim );
+		stamp.changed = FS_StampTime( info.st_ctim );
+#endif
+		// The device number stays out: btrfs subvolumes and network mounts
+		// get a new one at each mount, and the path and inode pin the file.
+		stamp.fileId = static_cast<uint64_t>( info.st_ino );
+		stamped = true;
+	}
+#endif
+	fclose( file );
+	stamp.zipChecksum = static_cast<uint32_t>( pack->checksum );
+	stamp.zipFiles = static_cast<uint32_t>( pack->numfiles );
+	return stamped;
+}
+
+static bool FS_SameOpenQ4PakStamp( const openQ4PakStamp_t &a, const openQ4PakStamp_t &b ) {
+	return a.size == b.size && a.modified == b.modified && a.changed == b.changed &&
+		a.volume == b.volume && a.fileId == b.fileId &&
+		a.zipChecksum == b.zipChecksum && a.zipFiles == b.zipFiles;
+}
+
+static bool FS_IsVerifiedPakHexDigit( const char c ) {
+	return ( c >= '0' && c <= '9' ) || ( c >= 'a' && c <= 'f' );
+}
+
+/*
+================
+FS_ParseVerifiedPakNumber
+
+One hexadecimal field and the single space after it.
+================
+*/
+static bool FS_ParseVerifiedPakNumber( const char *&cursor, uint64_t &value ) {
+	if ( !FS_IsVerifiedPakHexDigit( *cursor ) ) {
+		return false;
+	}
+	char *end = NULL;
+	errno = 0;
+	const unsigned long long parsed = strtoull( cursor, &end, 16 );
+	if ( errno != 0 || end == NULL || *end != ' ' ) {
+		return false;
+	}
+	value = static_cast<uint64_t>( parsed );
+	cursor = end + 1;
+	return true;
+}
+
+/*
+================
+FS_ParseVerifiedPakLine
+
+<md5> <size> <modified> <changed> <volume> <file id> <zip checksum> <zip files> <path>
+================
+*/
+static bool FS_ParseVerifiedPakLine( const char *line, const char *end, verifiedOpenQ4Pak_t &record ) {
+	for ( int i = 0; i < 32; i++ ) {
+		if ( !FS_IsVerifiedPakHexDigit( line[ i ] ) ) {
+			return false;
+		}
+	}
+	if ( line[ 32 ] != ' ' ) {
+		return false;
+	}
+	memcpy( record.md5, line, 32 );
+	record.md5[ 32 ] = '\0';
+
+	const char *cursor = line + 33;
+	uint64_t fields[ 7 ];
+	for ( int i = 0; i < 7; i++ ) {
+		if ( cursor >= end || !FS_ParseVerifiedPakNumber( cursor, fields[ i ] ) ) {
+			return false;
+		}
+	}
+	const char *pathEnd = end;
+	if ( pathEnd > cursor && pathEnd[ -1 ] == '\r' ) {
+		pathEnd--;
+	}
+	if ( pathEnd <= cursor || fields[ 5 ] > UINT32_MAX || fields[ 6 ] > UINT32_MAX ) {
+		return false;
+	}
+	record.stamp.size = fields[ 0 ];
+	record.stamp.modified = fields[ 1 ];
+	record.stamp.changed = fields[ 2 ];
+	record.stamp.volume = fields[ 3 ];
+	record.stamp.fileId = fields[ 4 ];
+	record.stamp.zipChecksum = static_cast<uint32_t>( fields[ 5 ] );
+	record.stamp.zipFiles = static_cast<uint32_t>( fields[ 6 ] );
+	record.path.assign( cursor, static_cast<size_t>( pathEnd - cursor ) );
+	return true;
+}
+
+static void FS_ParseVerifiedPaks( const char *text, std::vector<verifiedOpenQ4Pak_t> &records ) {
+	records.clear();
+	const int headerLength = idStr::Length( FS_VERIFIED_PAKS_HEADER );
+	if ( idStr::Cmpn( text, FS_VERIFIED_PAKS_HEADER, headerLength ) != 0 || text[ headerLength ] != '\n' ) {
+		return;
+	}
+	const char *line = text + headerLength + 1;
+	while ( *line != '\0' && records.size() < FS_VERIFIED_PAKS_MAX ) {
+		const char *end = strchr( line, '\n' );
+		if ( end == NULL ) {
+			break;	// a line counts only with its newline
+		}
+		verifiedOpenQ4Pak_t record;
+		if ( FS_ParseVerifiedPakLine( line, end, record ) ) {
+			records.push_back( record );
+		}
+		line = end + 1;
+	}
+}
+
+static void FS_FormatVerifiedPaks( const std::vector<verifiedOpenQ4Pak_t> &records, std::string &text ) {
+	text = FS_VERIFIED_PAKS_HEADER;
+	text += '\n';
+	for ( size_t i = 0; i < records.size(); i++ ) {
+		const verifiedOpenQ4Pak_t &record = records[ i ];
+		char fields[ 256 ];
+		idStr::snPrintf( fields, sizeof( fields ), "%s %llx %llx %llx %llx %llx %x %x ", record.md5,
+			static_cast<unsigned long long>( record.stamp.size ),
+			static_cast<unsigned long long>( record.stamp.modified ),
+			static_cast<unsigned long long>( record.stamp.changed ),
+			static_cast<unsigned long long>( record.stamp.volume ),
+			static_cast<unsigned long long>( record.stamp.fileId ),
+			static_cast<unsigned int>( record.stamp.zipChecksum ),
+			static_cast<unsigned int>( record.stamp.zipFiles ) );
+		text += fields;
+		text += record.path;
+		text += '\n';
+	}
+}
+
+static const verifiedOpenQ4Pak_t *FS_FindVerifiedPak( const std::vector<verifiedOpenQ4Pak_t> &records, const char *path ) {
+	for ( size_t i = 0; i < records.size(); i++ ) {
+		if ( records[ i ].path == path ) {
+			return &records[ i ];
+		}
+	}
+	return NULL;
+}
+
+/*
+================
+FS_RecordVerifiedPak
+
+Puts the pack first, replacing any older entry for its path, and keeps the
+most recent FS_VERIFIED_PAKS_MAX packs (builddir, the staged package and test
+runtimes can share one fs_cachepath).
+================
+*/
+static void FS_RecordVerifiedPak( std::vector<verifiedOpenQ4Pak_t> &records, const char *path,
+		const openQ4PakStamp_t &stamp, const char *md5 ) {
+	if ( strpbrk( path, "\r\n" ) != NULL ) {
+		return;	// would not survive the line format
+	}
+	for ( size_t i = 0; i < records.size(); ) {
+		if ( records[ i ].path == path ) {
+			records.erase( records.begin() + static_cast<std::ptrdiff_t>( i ) );
+		} else {
+			i++;
+		}
+	}
+	verifiedOpenQ4Pak_t record;
+	record.path = path;
+	record.stamp = stamp;
+	memcpy( record.md5, md5, 32 );
+	record.md5[ 32 ] = '\0';
+	records.insert( records.begin(), record );
+	if ( records.size() > FS_VERIFIED_PAKS_MAX ) {
+		records.resize( FS_VERIFIED_PAKS_MAX );
+	}
+}
+
+/*
+================
+idFileSystemLocal::ReadVerifiedOpenQ4Paks
+
+Reads the exact file under fs_cachepath. A search-path lookup would let a pak
+or another search directory supply the record.
+================
+*/
+void idFileSystemLocal::ReadVerifiedOpenQ4Paks( std::vector<verifiedOpenQ4Pak_t> &records ) {
+	records.clear();
+	const idStr osPath = RelativePathToOSPath( FS_VERIFIED_PAKS_FILE, "fs_cachepath" );
+	idFile *file = OpenExplicitFileRead( osPath );
+	if ( file == NULL ) {
+		return;
+	}
+	const int length = file->Length();
+	if ( length > 0 && length <= FS_VERIFIED_PAKS_MAX_BYTES ) {
+		std::string text( static_cast<size_t>( length ), '\0' );
+		if ( file->Read( &text[ 0 ], length ) == length ) {
+			FS_ParseVerifiedPaks( text.c_str(), records );
+		}
+	}
+	CloseFile( file );
+}
+
+/*
+================
+idFileSystemLocal::WriteVerifiedOpenQ4Paks
+
+Publishes the record through a staged file of this process's own, so startups
+sharing fs_cachepath never read a partial record.
+================
+*/
+bool idFileSystemLocal::WriteVerifiedOpenQ4Paks( const std::vector<verifiedOpenQ4Pak_t> &records ) {
+	std::string text;
+	FS_FormatVerifiedPaks( records, text );
+#ifdef _WIN32
+	const unsigned long processId = static_cast<unsigned long>( GetCurrentProcessId() );
+#else
+	const unsigned long processId = static_cast<unsigned long>( getpid() );
+#endif
+	const idStr staged = va( "generated/packs/verified.%lu.tmp", processId );
+	const int length = static_cast<int>( text.size() );
+	if ( WriteFile( staged, text.data(), length, "fs_cachepath" ) == length &&
+		 PromoteFile( staged, FS_VERIFIED_PAKS_FILE, "fs_cachepath" ) ) {
+		return true;
+	}
+	RemoveFileChecked( staged, "fs_cachepath" );
+	return false;
+}
+
+/*
+================
 idFileSystemLocal::ValidateOpenQ4Paks
 ================
 */
-bool idFileSystemLocal::ValidateOpenQ4Paks( idStr &errors ) const {
+bool idFileSystemLocal::ValidateOpenQ4Paks( idStr &errors ) {
 	struct expectedOpenQ4Pak_t {
 		const char *name;
 		const char *md5;
@@ -5670,6 +5989,13 @@ bool idFileSystemLocal::ValidateOpenQ4Paks( idStr &errors ) const {
 		return true;
 	}
 
+	const bool useRecord = fs_cacheVerifiedPaks.GetBool();
+	std::vector<verifiedOpenQ4Pak_t> records;
+	bool recordChanged = false;
+	if ( useRecord ) {
+		ReadVerifiedOpenQ4Paks( records );
+	}
+
 	for ( int i = 0; expectedPaks[ i ].name != NULL; i++ ) {
 		const expectedOpenQ4Pak_t &expected = expectedPaks[ i ];
 		pack_t *pack = FindGamePackByName( expected.name, OPENQ4_GAMEDIR );
@@ -5680,6 +6006,17 @@ bool idFileSystemLocal::ValidateOpenQ4Paks( idStr &errors ) const {
 			continue;
 		}
 
+		// unchanged since it was hashed and recorded with this executable's digest
+		openQ4PakStamp_t stamp;
+		const bool stamped = useRecord && FS_StampOpenQ4Pak( pack, stamp );
+		const verifiedOpenQ4Pak_t *recorded = stamped ? FS_FindVerifiedPak( records, pack->pakFilename.c_str() ) : NULL;
+		if ( recorded != NULL && FS_SameOpenQ4PakStamp( recorded->stamp, stamp ) &&
+			 !idStr::Icmp( recorded->md5, expected.md5 ) ) {
+			common->Printf( "Verified pk4 %s: unchanged since its checksum was recorded\n", pack->pakFilename.c_str() );
+			continue;
+		}
+
+		const int hashStart = Sys_Milliseconds();
 		if ( !MD5_FileChecksum( pack->pakFilename.c_str(), actualMD5 ) ) {
 			errors += va( "could not read %s for checksum validation\n", pack->pakFilename.c_str() );
 			continue;
@@ -5688,10 +6025,26 @@ bool idFileSystemLocal::ValidateOpenQ4Paks( idStr &errors ) const {
 		if ( idStr::Icmp( actualMD5, expected.md5 ) ) {
 			errors += va( "checksum mismatch for %s/%s (expected %s, got %s from %s)\n",
 				OPENQ4_GAMEDIR, expected.name, expected.md5, actualMD5, pack->pakFilename.c_str() );
+			continue;
+		}
+		common->Printf( "Verified pk4 %s: hashed in %d ms\n", pack->pakFilename.c_str(), Sys_Milliseconds() - hashStart );
+
+		// record the pass only if the pack did not change while it was read
+		openQ4PakStamp_t after;
+		if ( stamped && FS_StampOpenQ4Pak( pack, after ) && FS_SameOpenQ4PakStamp( stamp, after ) ) {
+			FS_RecordVerifiedPak( records, pack->pakFilename.c_str(), stamp, actualMD5 );
+			recordChanged = true;
 		}
 	}
 
-	return ( errors.Length() == 0 );
+	if ( errors.Length() != 0 ) {
+		return false;
+	}
+	if ( recordChanged && !WriteVerifiedOpenQ4Paks( records ) ) {
+		common->Printf( "Could not record the verified pk4 checksums in %s; the packs will be hashed again at the next startup\n",
+			RelativePathToOSPath( FS_VERIFIED_PAKS_FILE, "fs_cachepath" ) );
+	}
+	return true;
 }
 
 /*

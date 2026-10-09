@@ -15,6 +15,24 @@
   in-tree contract and native fixture suites and `tools/tests/mp_bot_audit.py`
   runs on q4dm5 (DM and Team DM with a follow order).
 
+- [x] Stop hashing the openQ4 runtime packs at every launch
+  ([Runtime pack verification](runtime-pack-verification.md)). Startup
+  MD5-hashed `baseoq4/pak1.pk4` (about 800 MB) and `pak0.pk4` each time, about
+  1.3 s with a warm disk cache in an optimized build, and again at every
+  filesystem restart. A pack that passes is now recorded in
+  `generated/packs/verified.txt` under `fs_cachepath` with its size, write and
+  change times, volume, file id and zip-directory CRC digest, and an unchanged
+  pack is not read again. Anything that edits, replaces, touches or re-stages a
+  pack sends it back to hashing, so a missing or modified pack still stops
+  startup with the same message; `fs_cacheVerifiedPaks 0` hashes at every
+  startup. Interleaved debug-build A/B (5 ABBA pairs, hidden 1280x720 GL,
+  warm cache): the first title frame came a median 3.5 s sooner (15.0 s to
+  11.9 s, every pair faster), the pack checks fell from 1.86 s to 4 ms, and
+  decl and renderer init ran about 0.5 s faster each without the 800 MB read.
+  The optimized MD5 of pak1 costs 1.34 s. A pak0 edited in place with its size
+  and write time kept, and a missing pak1, are still refused; the dedicated
+  server records and reuses the same way.
+
 - [x] Lay out the gameplay HUD in visual specification section 14's Remastered
   layout: the on-foot, multiplayer, walker and hover tank, air-defence cannon,
   Awakening space cannon (with its ship-status panel), MCC cannon (with the
