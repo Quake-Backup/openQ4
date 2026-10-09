@@ -87,6 +87,7 @@ the timer (`oq4_mb_sub`, `oq4_mb_ready`), the team status rows
 | `guis/vehicles/airassault/turretplayerhud.gui` | `remastered_turret.q4ui` | The Awakening's space cannon (m03's dropship guns): the transmission display, boss bar, notices, damage direction, brackets and missile warning without gauges, strip or powerups; the ship-status panel under the transmission display (damage sections, spinning objective markers, attack darts, and the view cone relative to the ship's nose); the HUD prompt's Exit |
 | `guis/vehicles/mcc/cannonplayerhud.gui` | `remastered_mcc.q4ui` | The Awakening's MCC cannon (m06): the gun takes no damage, so the readout is the MCC's hull, U.S.S. Hannibal over the stock gauge plate with the hull number (the MCC's health divided by 10), stacked under the transmission display the side gun's HUD lacked, its track filled in proportion and warning at 25%; the HUD prompt's Exit |
 | `guis/vehicles/speederplayerhud.gui` | `remastered_speeder.q4ui` | The Awakening's speeder bike (m07's races): the vehicle status bar with the bike's own glyphs (its machinegun first, then the cannon with its recharge bar), the hull and shield warnings the expansion removed and the entry lines its HUD never played; the race display 18 u lower (the plate, ten checkpoint pips, the countdown with two-digit hundredths and its seconds #FF3333 in the last 10 s, shown only while the race runs it); the HUD prompt (Boost on the crouch control while a boost is ready, the hazard and Boosting while it pushes, then Exit or Vehicle locked); the speed streak while boosting; transmission display, boss bar, notices |
+| `guis/vehicles/gev_hud.gui` | `remastered_gev.q4ui` | The Awakening's GEV (`vehicle_speeder`, which no map places), whose HUD names art that never shipped: the atlas's status cluster centered on the bottom edge (two plates at black 0.60; the #FF9E1A health bar draining from the top, where the stock divided the normalized health by 1000 and read empty; the hull from above turning with the view under the fixed turret; three shield stages as arcs that fade out in turn and the inner arcs pulsing #FF591A to #80591A once the shields fail; the weapon's glyph turned 60 degrees with the infinity mark or the rocket count over the charge bar), the transmission display, notices and the HUD prompt's Exit or Vehicle locked |
 | `guis/vehicles/hud.gui` | `remastered_vehicle.q4ui` | The walker's and hover tank's status bar (ARMOR and SHIELDS gauges, weapon panel, rocket count, charge bar), entry lines, hit flash, electrical warning, HUD prompt (Exit or Vehicle locked), transmission display, boss bar, notices |
 | `guis/vehicles/airdef_cannon.gui` | `remastered_airdef.q4ui` | The air-defence cannon: the retained nailgun lens held still (Gaussian focus beyond the aperture) with its two crescent load bars and amber reticle, the transmission display the stock lacks, the HUD prompt (Exit or Vehicle locked) in place of the centered exit line, and the save notice |
 | `guis/wristcomm.gui`, `guis/wristcomm_strogg.gui` | `remastered_objectives.q4ui`, `remastered_objectives_strogg.q4ui` | Objectives display (every objective, three at a time, a COMPLETED section), new-objective and objective-complete notices, OBJECTIVE FAILED |
@@ -294,7 +295,14 @@ and frame costs for a document.
   keeping and closing the display with presses), `speeder` (m07_race1, whose
   script seats the player
   on the bike and runs the countdown; the race's checkpoint event, the
-  countdown's expiry and the crouch control drive the rest), `mp` (with the
+  countdown's expiry and the crouch control drive the rest), `gev`
+  (m09_valkaryne: the hover tank gives up its spot to the GEV, which no map
+  places; the `damage` command drains the shield and, with god mode off, the
+  hull, and `openq4_testInput` selects the machinegun and fires the cannon
+  last. The GEV's model lacks every joint its def names (`eye`, `turret`,
+  `gun_pivot`, `muzzle`): without an eye joint the game applies the hull's
+  yaw twice, so `vehicle_rotate` reads the vehicle's own heading, and the
+  cannon's kickback flings it and ejects the driver), `mp` (with the
   scoreboard and the respawn
   prompt after `kill 0`, then the chat input through `clientMessageMode`,
   `chatInput` and `chatCaret`), `mp-spectator` (in warm-up, so the match is not
@@ -314,8 +322,6 @@ and frame costs for a document.
 
 ## Open work
 
-- The Awakening's GEV display still draws its stock layout through the
-  presentation bridge.
 - The chat input's prompts name the keyboard's keys; controller and touch
   players' platform or on-screen keyboard (section 13.5) is not implemented.
 - The touch control that toggles the objectives display is not implemented.

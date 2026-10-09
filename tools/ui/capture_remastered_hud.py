@@ -158,6 +158,35 @@ def speeder():
     ]
 
 
+def gev():
+    """The Awakening's GEV (guis/vehicles/gev_hud.gui), which no map places:
+    m09's hover tank gives up its spot to the GEV (vehicle_speeder) and the
+    player boards through the actor's enterVehicle script event. The damage
+    command drains the 10-point shield (it regenerates after 6 s) and, with
+    god mode off (the driver's god protects the vehicle from its next frame),
+    the hull; the test input selects the machinegun and fires the cannon.
+    The GEV's model lacks every joint its def names (eye, turret, gun_pivot,
+    muzzle), so it spawns facing yaw 0, where its hull reading is level, and
+    the cannon fires last: its kickback flings the GEV and ejects the driver."""
+    gui = 'guis/vehicles/gev_hud.gui'
+    return [
+        'set g_autoExecAfterMapLoad ""', 'notarget', 'god', 'waitMsec 6000',
+        'script "$vehicle_gev_1.remove()"', 'setviewpos -5968 -9632 132 0', 'waitMsec 500',
+        'spawn vehicle_speeder name gev origin "-6212 -8768 112" angle 0', 'waitMsec 1500',
+        'script "$player1.enterVehicle($gev)"', 'waitMsec 2000', shot('gev'),
+        *hud(gui, 'state rhinochatter 1', 'event radioChatterUp'), 'waitMsec 700', shot('gev-radio'),
+        *hud(gui, 'event radioChatterDown', 'event showLockmessage'), 'waitMsec 200', shot('gev-locked'),
+        *hud(gui, 'event hideLockmessage'),
+        'set ui_hudLayout 0', 'waitMsec 400', shot('gev-classic'), 'set ui_hudLayout 1', 'waitMsec 400', shot('gev-restored'),
+        'set ui_hudLayout 2', 'waitMsec 400', shot('gev-minimal'), 'set ui_hudLayout 1', 'waitMsec 400',
+        'damage gev 4', 'waitMsec 300', shot('gev-shields'),
+        'god', 'waitMsec 100', 'damage gev 306', 'waitMsec 100', 'god', 'waitMsec 200', shot('gev-hull'),
+        'waitMsec 500', shot('gev-pulse'),
+        'openq4_testInput 100 impulse 1', 'waitMsec 600', shot('gev-mgun'),
+        'openq4_testInput 100 impulse 0', 'waitMsec 600', 'openq4_testInput 200 attack', 'waitMsec 450', shot('gev-charge'),
+    ]
+
+
 def objectives(gui):
     """The objectives display through the held scores button (the game
     publishes the list), then the notices and a failure through the stock
@@ -255,6 +284,7 @@ SCENARIOS = {
     'turret': ('game/m03_airassault', space_cannon()),
     'mcc': ('game/m06_mcc_invasion', mcc_cannon()),
     'speeder': ('game/m07_race1', speeder()),
+    'gev': ('game/m09_valkaryne', gev()),
     'strogg': ('game/recomp', on_foot('guis/hud_strogg.gui')),
     'mp': ('mp:mp/q4dm1', [
         'set g_autoExecAfterMapLoad ""', 'waitMsec 2500', shot('mp-base'),
@@ -367,7 +397,7 @@ SCENARIOS = {
 }
 
 
-AWAKENING = {'turret', 'mcc', 'speeder'}
+AWAKENING = {'turret', 'mcc', 'speeder', 'gev'}
 COMPETITIVE = {'mp-competitive', 'mp-competitive-ctf', 'mp-competitive-spec', 'mp-competitive-matrix'}
 
 

@@ -1205,6 +1205,142 @@ static void CheckRemasteredSpeederHud(ScreenHost& host, const char* path) {
 	runtime.Shutdown();
 }
 
+// The Awakening's GEV (gev_hud.gui, 14.12), whose art never shipped: the
+// status cluster centred on the bottom edge, the health bar draining from the
+// top, the hull turning under the turret, the shield stages and the failed
+// shields' pulse, the turned weapon glyph over the charge bar, and Exit.
+static void CheckRemasteredGevHud(ScreenHost& host, const char* path) {
+	const auto source = Read(path);
+	Document document; std::vector<Diagnostic> diagnostics;
+	if (!document.Load(source,diagnostics)) for (const auto& d : diagnostics) std::fprintf(stderr,"%s %u:%u %s\n",path,unsigned(d.line),unsigned(d.column),d.message.c_str());
+	Check(diagnostics.empty() && document.Model().id == "openq4.hud.remastered.gev","Remastered GEV HUD validates");
+	Check(document.Model().canvasHeight == 720 && document.Model().canvasMinWidth == 960,"the GEV HUD uses the 4:3 center-screen canvas");
+	RemasteredLayoutPreference(host,1);
+	Runtime runtime(host);
+	Check(runtime.Initialize(),"retained runtime");
+	Check(runtime.LoadDocument(source,"guis/hud/remastered_gev.q4ui",diagnostics),"Remastered GEV HUD loads into a runtime");
+	std::string error;
+	Runtime::EventEffects effects;
+	StateValues values = RemasteredLayout(1280,720);
+	values.insert({{"vehicle_health",1.0},{"vehicle_shield",1.0},{"vehicle_weapon",0.0},{"vehicle_weaponammo",0.0},
+		{"vehicle_weaponcharge",1.0},{"vehicle_rotate",0.0},{"vehicle_locked",0.0},{"oq4_key_jump",std::string("SPACE")}});
+	Check(runtime.SetState(values,error,0),error.c_str());
+	Check(runtime.RunEvent("hudJoin",0,effects,error),"the join program runs");
+	host.draws.clear();
+	runtime.Frame(RemasteredViewport(1280,720),.1);
+	Check(host.errors == 0,"the GEV HUD frames without runtime errors");
+
+	// The cluster centres on the bottom edge: its sheared plates (black 0.60)
+	// span 7.0-212.0 u in the stock and 210.5 u further on.
+	Bounds cluster;
+	Check(runtime.GetBounds("gev",cluster) && Near(cluster.x,160+210.5f*1.5f,1.f),"the cluster moves 210.5 u toward the centre");
+	float left = 1e9f, right = -1e9f;
+	for (const auto& draw : host.draws) for (const auto& v : draw.vertices) {
+		if (std::fabs(v.a-.6f) > .003f || v.r > .01f) continue;
+		left = std::min(left,v.x); right = std::max(right,v.x);
+	}
+	Check(Near(left,160+(210.5f+7.04f)*1.5f,1.5f) && Near(right,160+(210.5f+211.96f)*1.5f,1.5f) && Near((left+right)*.5f,640,1.f),
+		"the plates centre on the bottom edge");
+
+	// The health bar drains from the top: #FF9E1A keeps its foot at 465 u.
+	const auto healthExtent = [&]() {
+		float top = 1e9f, bottom = -1e9f;
+		for (const auto& draw : host.draws) for (const auto& v : draw.vertices) {
+			if (v.a < .05f || v.x > 640 || std::fabs(v.r/v.a-1) > .03f || std::fabs(v.g/v.a-.621f) > .03f || std::fabs(v.b/v.a-.102f) > .03f) continue;
+			top = std::min(top,v.y); bottom = std::max(bottom,v.y);
+		}
+		return std::pair{top,bottom};
+	};
+	const auto whole = healthExtent();
+	Check(Near(whole.first,419*1.5f,1.5f) && Near(whole.second,465*1.5f,1.5f),"a whole GEV fills the 46 u bar");
+	Check(runtime.SetState({{"vehicle_health",0.5}},error,.2),error.c_str());
+	host.draws.clear(); runtime.Frame(RemasteredViewport(1280,720),.25);
+	const auto half = healthExtent();
+	const auto drain = runtime.PresentedValue("gev-health-fill","transform");
+	Check(Near(half.first,(419+23)*1.5f,1.5f) && Near(half.second,465*1.5f,1.5f) && drain && Near(float(drain->data[1]),23*1.5f*.5f,.05f) &&
+		Near(float(drain->data[3]),.5f,.001f),"half the health shortens the bar from the top");
+
+	// The hull turns with the view relative to it; the turret stays put.
+	Check(runtime.SetState({{"vehicle_rotate",30.0}},error,.3),error.c_str());
+	runtime.Frame(RemasteredViewport(1280,720),.35);
+	const auto turn = runtime.PresentedValue("gev-hull","transform");
+	Check(turn && Near(float(turn->data[4]),-30,.01f),"a view 30 degrees right of the hull turns the hull counter-clockwise");
+	Bounds glyph;
+	Check(runtime.GetBounds("gev-glyph",glyph) && Near(glyph.x+glyph.width*.5f,160+(210.5f+77)*1.5f,1.f) &&
+		Near(glyph.y+glyph.height*.5f,444*1.5f,1.f),"the hull glyph sits on the stock base's centre");
+
+	// The shield stages fade out in turn; at none, the inner arcs pulse.
+	const auto opacity = [&](const char* id) {
+		const auto value = runtime.PresentedValue(id,"opacity");
+		return value ? float(value->data[0]) : -1.f;
+	};
+	Check(Near(opacity("gev-shield1"),1) && Near(opacity("gev-shield2"),1) && Near(opacity("gev-shield3"),1) &&
+		!Shown(runtime,"gev-shield-out"),"full shields light all three stages");
+	Check(runtime.SetState({{"vehicle_shield",0.6}},error,.4),error.c_str());
+	runtime.Frame(RemasteredViewport(1280,720),.45);
+	Check(Near(opacity("gev-shield1"),0) && Near(opacity("gev-shield2"),.5f) && Near(opacity("gev-shield3"),1),
+		"60% shields drop the outer stage and halve the middle one");
+	Check(runtime.SetState({{"vehicle_shield",0.1}},error,.5),error.c_str());
+	runtime.Frame(RemasteredViewport(1280,720),.55);
+	Check(Near(opacity("gev-shield2"),0) && Near(opacity("gev-shield3"),.25f) && !Shown(runtime,"gev-shield-out"),
+		"10% shields leave a quarter of the inner stage");
+	Check(runtime.SetState({{"vehicle_shield",0.0}},error,.6),error.c_str());
+	runtime.Frame(RemasteredViewport(1280,720),2.2);
+	const float lit = opacity("gev-shield-out-lit");
+	runtime.Frame(RemasteredViewport(1280,720),2.7);
+	const float dim = opacity("gev-shield-out-lit");
+	Check(Shown(runtime,"gev-shield-out") && Near(opacity("gev-shield3"),0) && Near(lit,1) && Near(dim,0),
+		"failed shields pulse #FF591A to #80591A every 500 ms");
+	host.reducedMotion = true;
+	runtime.Frame(RemasteredViewport(1280,720),2.75);
+	runtime.Frame(RemasteredViewport(1280,720),3.25);
+	Check(Near(opacity("gev-shield-out-lit"),1),"reduced motion holds the lit colour");
+	host.reducedMotion = false;
+
+	// The weapon: the cannon's glyph turned 60 degrees with the infinity mark;
+	// the rocket pods' count instead; the charge bar from its leading end.
+	Check(Shown(runtime,"gev-weapon0") && !Shown(runtime,"gev-weapon1") && !Shown(runtime,"gev-weapon2") &&
+		Shown(runtime,"gev-infinity") && !Shown(runtime,"gev-count"),"the cannon shows its glyph and the infinity mark");
+	const auto turned = runtime.PresentedValue("gev-weapon0","transform");
+	Check(turned && Near(float(turned->data[4]),60),"the weapon glyph turns 60 degrees");
+	Check(runtime.SetState({{"vehicle_weapon",2.0},{"vehicle_weaponammo",12.0},{"vehicle_weaponcharge",0.5}},error,3.3),error.c_str());
+	runtime.Frame(RemasteredViewport(1280,720),3.35);
+	const auto count = runtime.PresentedValue("gev-count-text","text");
+	const auto charge = runtime.PresentedValue("gev-charge-fill","transform");
+	Check(Shown(runtime,"gev-weapon2") && !Shown(runtime,"gev-weapon0") && Shown(runtime,"gev-count") && !Shown(runtime,"gev-infinity") &&
+		count && count->text == "12","the rocket pods count their rockets");
+	Check(charge && Near(float(charge->data[0]),-26.5f*1.5f*.5f,.05f) && Near(float(charge->data[2]),.5f,.001f),
+		"half a charge fills half the bar from its leading end");
+
+	// The opaque-backing option deepens the plates.
+	host.cvars["ui_retainedOpaqueBacking"] = true;
+	runtime.Frame(RemasteredViewport(1280,720),3.4);
+	Check(Shown(runtime,"gev-plate-hull-opaque") && !Shown(runtime,"gev-plate-hull"),"opaque backing deepens the plates");
+	host.cvars["ui_retainedOpaqueBacking"] = false;
+
+	// The HUD prompt: Exit with the jump key, or the lock; the transmission
+	// display top-trailing.
+	Check(runtime.RunEvent("showExitmessage",3.5,effects,error),"boarding runs");
+	runtime.Frame(RemasteredViewport(1280,720),3.55);
+	Bounds prompt;
+	Check(Shown(runtime,"vpr") && Shown(runtime,"vpr-exit") && !Shown(runtime,"vpr-lock") && runtime.GetBounds("vpr",prompt) &&
+		Near(prompt.x+prompt.width,320+629*1.5f,1.5f),"Exit trails at 629 u");
+	Check(runtime.SetState({{"vehicle_locked",1.0}},error,3.6),error.c_str());
+	runtime.Frame(RemasteredViewport(1280,720),3.65);
+	Check(Shown(runtime,"vpr-lock") && !Shown(runtime,"vpr-exit"),"a locked GEV shows Vehicle locked");
+	Check(runtime.RunEvent("radioChatterUp",3.7,effects,error),"a transmission runs");
+	runtime.Frame(RemasteredViewport(1280,720),3.75);
+	Check(Shown(runtime,"radio"),"the transmission display shows");
+
+	// Minimal keeps the cluster and the prompt.
+	RemasteredLayoutPreference(host,2);
+	runtime.Frame(RemasteredViewport(1280,720),3.8);
+	Check(!Shown(runtime,"tr-full") && Shown(runtime,"vpr") && runtime.GetBounds("gev",cluster),"Minimal keeps the cluster and the prompt");
+	RemasteredLayoutPreference(host,1);
+	Check(host.errors == 0,"no runtime diagnostics across the GEV exercise");
+	runtime.Shutdown();
+}
+
 // The objectives display and notices (wristcomm.gui, 14.11).
 static void CheckRemasteredObjectivesHud(ScreenHost& host, const char* path, bool strogg) {
 	const auto source = Read(path);

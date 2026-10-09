@@ -26,7 +26,7 @@ from remastered_hud_status import full, status_bar
 from remastered_hud_objectives import objectives_document
 from remastered_hud_scoreboard import scoreboard_document
 from remastered_hud_vehicle import airdef_document, ride_gauge, vehicle_document
-from remastered_hud_awakening import mcc_document, ship_panel, speeder_document, turret_document
+from remastered_hud_awakening import gev_document, mcc_document, ship_panel, speeder_document, turret_document
 
 ROOT = Path(__file__).resolve().parents[2]
 OUT = ROOT / "content/baseoq4/pak0/guis/hud"
@@ -104,6 +104,7 @@ DOCUMENTS = {
     "remastered_turret.q4ui": turret_document,
     "remastered_mcc.q4ui": mcc_document,
     "remastered_speeder.q4ui": speeder_document,
+    "remastered_gev.q4ui": gev_document,
     "remastered_objectives.q4ui": lambda: objectives_document(strogg=False),
     "remastered_objectives_strogg.q4ui": lambda: objectives_document(strogg=True),
     "remastered_scoreboard.q4ui": scoreboard_document,

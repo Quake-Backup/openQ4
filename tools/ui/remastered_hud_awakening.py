@@ -5,19 +5,21 @@ dropship guns: the on-foot HUD's radio, boss bar and notices without its
 gauges, strip and powerups, and the ship-status panel top-trailing directly
 below the transmission display. The same panel joins the expansion's on-foot
 HUD, which receives the script's markers, damage and warnings but cannot
-show them. The MCC cannon reports the MCC's hull, and the speeder bike keeps
-the vehicle status bar under the m07 race display. Constructions are the
-design atlas's (awakening sheet), measured from the expansion's GUIs; the
-stock coordinates are the 640x480 canvas.
+show them. The MCC cannon reports the MCC's hull, the speeder bike keeps
+the vehicle status bar under the m07 race display, and the GEV's status
+cluster is drawn from scratch, since its art never shipped. Constructions
+are the design atlas's (awakening sheet), measured from the expansion's
+GUIs; the stock coordinates are the 640x480 canvas.
 """
 from __future__ import annotations
 
 import math
 
 import build_retained_screens as ui
+import hud_svg
 from remastered_hud_base import (AND, BOUND_TEXT, NOT, OR, S, HudDocument, anchor, beyond_minimal, box, face_metrics, join_events,
-                                 layout_state, num, op, play, pts_path, rgb, sel, stroke, text_box, tr, transform_value, u, vec,
-                                 when)
+                                 layout_state, num, op, play, pts_path, rgb, rounded_rect, sel, shear_group, stroke, svg_path,
+                                 text_box, tr, transform_value, u, vec, when)
 
 # The dropship from above, nose up (hud_ship_01), in the panel's 128 u box.
 SHIP = [(62.7, 17.0), (58.6, 20.5), (56.9, 28.0), (51.0, 33.5), (47.5, 38.5), (47.5, 40.0), (34.0, 49.5), (34.6, 61.5),
@@ -533,3 +535,159 @@ def speeder_document() -> dict:
     return doc.build(root, {"canvas": {"height": 720, "minWidth": 960},
                             "extensions": {"openq4": {"reference": "ui-visual-design.md 14.8, 14.12",
                                                       "stock": "guis/vehicles/speederplayerhud.gui", "joinEvents": joins}}})
+
+
+# ------------------------------------------------------------ the GEV
+
+# guis/vehicles/gev_hud.gui (vehicle_speeder; findings awakening_hud.md 4)
+# names ten materials that neither game ships, so the cluster is the atlas's
+# own drawing in the stock construction: the stock rects, with plates and bars
+# sheared 0,-.32 about their own centres.
+GEV_INK, GEV_CHARGE = "#B0C891", "#FF9E1A"
+GEV_K = -0.32
+GEV_SHIFT = 210.5            # Remastered centres the cluster (its plates span x 6.4-212.6 u) on 320
+GEV_HULL = (77, 444)         # the hull glyph's centre (the stock base and turret, 48,415 58x58)
+GEV_GLYPH = (171, 433)       # the weapon glyph's centre, turned 60 degrees
+# The shield stages: radius, colour and the stock alpha (shield - low) / span.
+GEV_STAGES = [(27.0, "#D1AF47", 0.8, 0.2), (23.5, "#C6C251", 0.4, 0.4), (20.0, "#A2B85C", 0.0, 0.4)]
+# vehicle_weapon: 0 the cannon, 1 the machinegun, 2 the rocket pods (which
+# the def comments out).
+GEV_GLYPHS = ("veh_shell", "veh_mgun", "veh_rocket")
+
+
+def gev_arcs(ident: str, r: float, spans: tuple, colour: list, width: float, props: dict | None = None) -> dict:
+    """Arcs about the hull glyph's centre (30 u into its box), one per span
+    of degrees clockwise from east, round-capped."""
+    paths = [pts_path(f"a{index}", scaled(arc_points(30, 30, r, a0, a1, 3.0)), closed=False,
+                      stroke=stroke(colour, u(width), join="round", cap="round")) for index, (a0, a1) in enumerate(spans)]
+    return vec(ident, paths, props)
+
+
+def gev_cluster(doc: HudDocument) -> dict:
+    """The GEV's status cluster (14.12): two plates at black 0.60; a vertical
+    #FF9E1A health bar in its #B0C891 track draining from the top (the stock
+    divided the already normalized health by 1000 and read empty); the hull
+    from above turning with the view relative to it under the fixed turret;
+    three shield stages as arcs on both sides, fading out in turn, and inner
+    arcs pulsing #FF591A to #80591A every 500 ms once the shields fail; the
+    weapon's glyph turned 60 degrees with an infinity mark, or the rocket
+    count, over the charge bar."""
+    from remastered_hud_status import full
+    for key, initial in (("vehicle_health", 1), ("vehicle_shield", 1), ("vehicle_weapon", 0), ("vehicle_weaponammo", 0),
+                         ("vehicle_weaponcharge", 1), ("vehicle_rotate", 0)):
+        doc.number(key, initial)
+    ink = rgb(GEV_INK)
+    nodes = []
+    for ident, rect in (("gev-plate-hull", (16, 412, 97, 60)), ("gev-plate-weapon", (120, 412, 83, 60))):
+        outline = scaled(rounded_rect(*rect, 2, GEV_K, 442))
+        normal = vec(ident, [pts_path("back", outline, fill=ui.solid([0, 0, 0, 0.6]))])
+        opaque = vec(ident + "-opaque", [pts_path("back", outline, fill=ui.solid([0, 0, 0, 0.85]))], {"display": ui.keyword("none")})
+        doc.show(normal["id"], NOT(S("oq4.opaque")))
+        doc.show(opaque["id"], S("oq4.opaque"))
+        nodes += [normal, opaque]
+    # The health bar: the track, the well and the fill, which keeps its foot
+    # while it shortens from the top.
+    nodes.append(vec("gev-health-track", [pts_path("track", scaled(rounded_rect(21, 416, 23, 52, 2, GEV_K, 442)),
+                                                   fill=ui.solid(rgb(GEV_INK, 0.3)))]))
+    nodes.append(vec("gev-health-well", [pts_path("well", scaled(rounded_rect(25, 419, 15, 46, 1.4, GEV_K, 442)),
+                                                  fill=ui.solid([0, 0, 0, 0.65]))]))
+    health = op("clamp", S("vehicle_health"), 0, 1)
+    fill = box("gev-health-fill", u(25), u(419 - 412), u(15), u(46),
+               [vec("gev-health-fill-v", [pts_path("fill", scaled(rounded_rect(0, 0, 15, 46, 1.4)), fill=ui.solid(rgb(GEV_CHARGE)))])],
+               transform=ui.transform())
+    doc.bind("gev-health-fill.drain", "gev-health-fill", "transform", [0, op("*", u(23), op("-", 1, health)), 1, health, 0])
+    nodes.append(shear_group("gev-health", 0, u(412), u(640), u(60), GEV_K, [fill]))
+    # The hull turns by the view's yaw relative to it (the stock rotate turns
+    # counter-clockwise for a positive angle); the turret, its dome and
+    # barrel, stays put.
+    cx, cy = GEV_HULL
+    hull = box("gev-hull", 0, 0, u(60), u(60), [vec("gev-hull-v", [
+        svg_path("body", "M-10 -17Q0 -21 10 -17L13 14Q0 19 -13 14Z", dx=u(30), dy=u(30),
+                 stroke=stroke(ink, u(2.2), join="round")),
+        svg_path("skirts", "M-16 -11V10M16 -11V10", dx=u(30), dy=u(30), stroke=stroke(ink, u(3), cap="round"))])],
+        transform=ui.transform())
+    doc.bind("gev-hull.turn", "gev-hull", "transform", [0, 0, 1, 1, op("-", 0, S("vehicle_rotate"))])
+    turret = vec("gev-turret", [pts_path("dome", scaled(circle_points(30, 30, 6.5, 32)), fill=ui.solid(rgb(GEV_INK, 0.85))),
+                                pts_path("barrel", scaled(rounded_rect(28.4, 8, 3.2, 16, 1)), fill=ui.solid(ink))])
+    shield = S("vehicle_shield")
+    stages = []
+    for index, (r, colour, low, span) in enumerate(GEV_STAGES):
+        stage = gev_arcs(f"gev-shield{index + 1}", r, ((125, 235), (-55, 55)), rgb(colour), 2.6, {"opacity": num(1)})
+        doc.bind(stage["id"] + ".fade", stage["id"], "opacity", op("clamp", op("/", op("-", shield, low), span), 0, 1))
+        stages.append(stage)
+    spans = ((140, 220), (-40, 40))
+    out_dim = gev_arcs("gev-shield-out-dim", 18, spans, rgb("#80591A"), 3)
+    out_lit = gev_arcs("gev-shield-out-lit", 18, spans, rgb("#FF591A"), 3, {"opacity": num(1)})
+    out = full("gev-shield-out", [out_dim, out_lit], display=ui.keyword("none"))
+    doc.show(out["id"], op("<=", shield, 0))
+    # Half a second each way; reduced motion holds the lit colour.
+    doc.timeline("gev-shield-out-pulse", 1000, [tr(out_lit["id"], "opacity", [(0, num(1)), (499, num(1)), (500, num(0)), (999, num(0)),
+                                                                              (1000, num(1))])], iterations=0)
+    doc.joins.append(play("gev-shield-out-pulse"))
+    nodes.append(box("gev-glyph", u(cx - 30), u(cy - 30), u(60), u(60), [hull, turret, *stages, out]))
+    # The weapon: its glyph turned 60 degrees, nose up and leading; an
+    # infinity mark, or the rocket pods' count, over the charge bar.
+    weapon = S("vehicle_weapon")
+    gx, gy = GEV_GLYPH
+    for index, glyph in enumerate(GEV_GLYPHS):
+        turned = box(f"gev-weapon{index}", u(gx - 30), u(gy - 30), u(60), u(60),
+                     hud_svg.icon_nodes(glyph, f"gev-weapon{index}-g", u(30), u(30 - 11), u(22), anchor="middle", tint=ink),
+                     transform=transform_value(deg=60), display=ui.keyword("none"))
+        doc.show(turned["id"], op("==", weapon, index))
+        nodes.append(turned)
+    infinity = shear_group("gev-infinity", u(128), u(435), u(29), u(24), GEV_K,
+                           hud_svg.icon_nodes("icon_infinity", "gev-infinity-g", u(14.5), 0, u(24), anchor="middle",
+                                              tint=rgb(GEV_INK, 0.8)))
+    doc.show(infinity["id"], op("!=", weapon, 2))
+    count = text_box("gev-count-text", "", face="marine", size=50.4, colour=rgb(GEV_INK, 0.8), baseline=u(457 - 420),
+                     center=u(140.5), width=u(60))
+    doc.bind("gev-count-text.text", "gev-count-text", "text", op("numberText", op("max", 0, op("floor", S("vehicle_weaponammo")))))
+    counted = shear_group("gev-count", 0, u(420), u(640), u(41), GEV_K, [count])
+    counted["properties"]["display"] = ui.keyword("none")
+    doc.show(counted["id"], op("==", weapon, 2))
+    nodes += [infinity, counted]
+    nodes.append(vec("gev-charge-track", [pts_path("track", scaled(rounded_rect(124, 459, 63, 6, 3, GEV_K, 462)),
+                                                   fill=ui.solid(rgb(GEV_INK, 0.3)))]))
+    charge = op("clamp", S("vehicle_weaponcharge"), 0, 1)
+    bar = box("gev-charge-fill", u(129), u(461 - 459), u(53), u(2),
+              [vec("gev-charge-fill-v", [pts_path("fill", scaled(rounded_rect(0, 0, 53, 2, 1)), fill=ui.solid(rgb(GEV_CHARGE)))])],
+              transform=ui.transform())
+    # Scaled about its leading end: the box centre sits 26.5 u in.
+    doc.bind("gev-charge-fill.scale", "gev-charge-fill", "transform", [op("*", u(-26.5), op("-", 1, charge)), 0, charge, 1, 0])
+    nodes.append(shear_group("gev-charge", 0, u(459), u(640), u(6), GEV_K, [bar]))
+    return box("gev", u(GEV_SHIFT), 0, u(640), u(480), nodes)
+
+
+def gev_document() -> dict:
+    """The GEV (guis/vehicles/gev_hud.gui, 14.12): its status cluster centred
+    on the bottom edge like every status bar, the transmission display at the
+    top-trailing corner, the notices, and the HUD prompt's Exit, which its HUD
+    never showed. No map places the GEV."""
+    from remastered_hud_groups import notices, transmission
+    from remastered_hud_status import full
+    from remastered_hud_vehicle import hud_prompt
+    doc = HudDocument("openq4.hud.remastered.gev")
+    layout_state(doc)
+    radio = transmission(doc, strogg=False, emblem="squad_falcon")
+    exit_notice, saved, missile_text = notices(doc)
+    cluster = gev_cluster(doc)
+    prompt = hud_prompt(doc)
+    doc.on("showExitmessage", {"op": "setState", "values": {"oq4.vehicle": True}})
+    doc.on("hideExitmessage", {"op": "setState", "values": {"oq4.vehicle": False}})
+    doc.on("showLockmessage", {"op": "setState", "values": {"oq4.locked": True}})
+    doc.on("hideLockmessage", {"op": "setState", "values": {"oq4.locked": False}})
+    # The HUD draws only while the GEV is driven.
+    doc.joins.append({"op": "setState", "values": {"oq4.vehicle": True}})
+    doc.on("hudJoin", *doc.joins)
+    doc.on("onInit", *doc.joins)
+    # Minimal (ui_hudLayout 2) keeps the cluster, the prompt and the save notice.
+    root = full("hud-root", [
+        anchor(doc, "bc", [cluster], scale="hud.centerScale"),
+        anchor(doc, "tr", [beyond_minimal(doc, "tr-full", [radio])]),
+        anchor(doc, "tc", [beyond_minimal(doc, "tc-full", [missile_text, exit_notice]), saved]),
+        anchor(doc, "br", [prompt]),
+    ])
+    joins = join_events(doc, [("p_radio::visible", "radioChatterUp")])
+    return doc.build(root, {"canvas": {"height": 720, "minWidth": 960},
+                            "extensions": {"openq4": {"reference": "ui-visual-design.md 14.12", "stock": "guis/vehicles/gev_hud.gui",
+                                                      "joinEvents": joins}}})
