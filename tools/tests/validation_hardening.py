@@ -741,6 +741,9 @@ def validate_validation_wiring() -> None:
         "campaign_selection_runtime.py",
         "renderer_milestone_d_acceptance.py",
         "renderer_milestone_d_fixture.py",
+        # Radio graph evidence plays decoded audio through a staged client on
+        # retail assets.
+        "audio_graphs.py",
         # Need a staged OpenXR client, the built test runtime and retail assets.
         "openxr_vr_smoke.py",
         "openxr_vr_menu_smoke.py",

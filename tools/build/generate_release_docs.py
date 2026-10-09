@@ -1318,6 +1318,8 @@ def generate_release_docs_site(
         "docs/licenses/openxr-sdk.txt", "subprojects/openxr.wrap",
         "docs/dev/ui/migration-manifest.json",
         "docs/dev/ui/product-requirements.json",
+        # The editable atlas sheet the visual specification links (14.19).
+        "docs/dev/ui/atlas/medlabs-implant.html",
         "subprojects/rmlui.wrap", "subprojects/packagefiles/libtess2/double-precision.patch",
         "subprojects/packagefiles/rmlui/masked-hit-test.patch",
         "subprojects/packagefiles/jsoncpp/subnormal-numbers.patch",
