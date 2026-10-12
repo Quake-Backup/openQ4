@@ -317,8 +317,8 @@ static const int SESSION_SAVE_PREVIEW_DELETE_MAGIC = 'O' | ( 'Q' << 8 ) | ( '4' 
 static const int SESSION_SAVE_PREVIEW_DELETE_VERSION = 1;
 static const char *SESSION_SAVEGAME_NO_OVERWRITE_TOKEN = "nooverwrite";
 static const int SESSION_OPENQ4_SAVEGAME_COMPATIBILITY_MAGIC = 'O' | ( 'Q' << 8 ) | ( '4' << 16 ) | ( 'S' << 24 );
-static const int SESSION_OPENQ4_SAVEGAME_COMPATIBILITY_VERSION = 3;
-static const int SESSION_OPENQ4_SAVEGAME_PREVIOUS_COMPATIBILITY_VERSION = 2;
+static const int SESSION_OPENQ4_SAVEGAME_COMPATIBILITY_VERSION = 4;
+static const int SESSION_OPENQ4_SAVEGAME_PREVIOUS_COMPATIBILITY_VERSION = 3;
 // Oldest v3 payload this build has a verified decoder for. Saves at or above it
 // restore cleanly; the released v0.10 payload (build 1) still desyncs part way
 // through, and it did so only after the running map had been torn down. Refuse
@@ -869,7 +869,7 @@ static bool Session_ValidateSaveGamePayload( idFile *file, const idStr &savePath
 			SESSION_OPENQ4_SAVEGAME_COMPATIBILITY_VERSION );
 		valid = false;
 	}
-	if ( valid && payloadVersion == SESSION_OPENQ4_SAVEGAME_COMPATIBILITY_VERSION ) {
+	if ( valid && payloadVersion >= SESSION_OPENQ4_SAVEGAME_PREVIOUS_COMPATIBILITY_VERSION ) {
 		valid = Session_ReadSaveGameString( file, payloadWireABI, SESSION_OPENQ4_SAVEGAME_ABI_STAMP_MAX_BYTES,
 			"payload wire ABI", savePath.c_str() );
 	}
@@ -879,13 +879,7 @@ static bool Session_ValidateSaveGamePayload( idFile *file, const idStr &savePath
 		valid = false;
 	}
 
-	if ( valid && payloadVersion == SESSION_OPENQ4_SAVEGAME_PREVIOUS_COMPATIBILITY_VERSION ) {
-		// Every v2 snapshot that was tested against a real save desynced part way
-		// through the restore, so none of them are claimed any more.
-		common->Warning( "Savegame '%s' was written by an older openQ4 (v%d payload, build %d) and cannot be restored by this build",
-			savePath.c_str(), payloadVersion, payloadBuild );
-		valid = false;
-	} else if ( valid ) {
+	if ( valid ) {
 		if ( payloadWireABI.Icmp( Session_GetSaveGameWireABI() ) != 0 ) {
 			common->Warning( "Savegame '%s' wire ABI '%s' is incompatible with this '%s' build",
 				savePath.c_str(), payloadWireABI.c_str(), Session_GetSaveGameWireABI() );
@@ -906,7 +900,7 @@ static bool Session_ValidateSaveGamePayload( idFile *file, const idStr &savePath
 
 	const int compatibilityHeaderEnd = file->Tell();
 	int protectedLength = fileLength;
-	if ( valid && payloadVersion == SESSION_OPENQ4_SAVEGAME_COMPATIBILITY_VERSION ) {
+	if ( valid && payloadVersion >= SESSION_OPENQ4_SAVEGAME_PREVIOUS_COMPATIBILITY_VERSION ) {
 		const int integrityOffset = fileLength - SESSION_OPENQ4_SAVEGAME_INTEGRITY_BYTES;
 		if ( integrityOffset <= compatibilityHeaderEnd + SESSION_OPENQ4_SAVEGAME_FOOTER_BYTES ||
 			 file->Seek( integrityOffset, FS_SEEK_SET ) != 0 ) {
@@ -1438,6 +1432,7 @@ private:
 
 void idSessionLocal::ResetFramePacingStats( void ) {
 	memset( &framePacingStats, 0, sizeof( framePacingStats ) );
+	framePacingWindowMsec = 0;
 	framePacingStats.boundMode = OPENQ4_FRAME_BOUND_UNKNOWN;
 	framePacingLastFrameMsec = 0;
 	framePacingLastLatchedTic = -1;
@@ -1458,6 +1453,14 @@ void idSessionLocal::PrintFramePacingSnapshot( const char *reason ) const {
 	}
 
 	Session_PrintFramePacingSummary( framePacingStats, reasonText.c_str() );
+	// The HUD's avgFrameMsec is an exponential moving average after 120
+	// samples. Benchmarks need the arithmetic mean of every interval since
+	// reset, including stalls; keep that separate from the live diagnostic.
+	if ( framePacingStats.frameSampleCount > 0 ) {
+		common->Printf( "Frame timing window (%s): samples=%d, span_ms=%llu, mean_ms=%.6f\n",
+			framePacingStats.multiplayer ? "MP" : "SP", framePacingStats.frameSampleCount,
+			framePacingWindowMsec, double( framePacingWindowMsec ) / framePacingStats.frameSampleCount );
+	}
 }
 
 void idSessionLocal::SampleMultiplayerFramePacing( int frameStartMsec ) {
@@ -1483,6 +1486,7 @@ void idSessionLocal::UpdateFramePacingStats( int frameStartMsec, int requestedWa
 		const int frameDeltaMsec = Max( 0, frameStartMsec - framePacingLastFrameMsec );
 		framePacingStats.lastFrameMsec = frameDeltaMsec;
 		++framePacingStats.frameSampleCount;
+		framePacingWindowMsec += static_cast<unsigned int>( frameDeltaMsec );
 		framePacingStats.avgFrameMsec = Session_UpdateMetricAverage( framePacingStats.avgFrameMsec, static_cast<float>( frameDeltaMsec ), framePacingStats.frameSampleCount );
 		framePacingStats.avgFrameHz = framePacingStats.avgFrameMsec > 0.0f ? 1000.0f / framePacingStats.avgFrameMsec : 0.0f;
 		if ( framePacingStats.frameSampleCount == 1 || frameDeltaMsec < framePacingStats.minFrameMsec ) {
@@ -2492,6 +2496,7 @@ void idSessionLocal::SetMainMenuBackgroundMontageGuiVars( void ) {
 			material->SetSort( SS_GUI );
 		}
 		renderSystem->PreloadImage( resolvedPath.c_str() );
+		openQ4_UpdateInitialization();
 	}
 
 	idMaterial *maskMaterial = const_cast<idMaterial *>( declManager->FindMaterial( menuBackgroundMask ) );
@@ -2526,6 +2531,7 @@ void idSessionLocal::PrimeMainMenuGuiResources( void ) {
 }
 
 static void Session_DrawFallbackLoadingScreen() {
+	if ( RetainedUI_DrawInitialization( common->GetLanguageDict()->GetString( "#str_104351" ) ) ) return;
 	static const idVec4 loadingTextColor( 0.94f, 0.62f, 0.05f, 1.0f );
 
 	const float virtualWidth = static_cast<float>( SCREEN_WIDTH );
@@ -2629,7 +2635,7 @@ static void Session_DrawLevelshotBounds() {
 // The current difficulty's localized name, as the retained pause and loading
 // screens show it.
 static const char *Session_GetSkillName( void ) {
-	static const char *skills[] = { "#str_200014", "#str_200015", "#str_200016", "#str_200017", "#str_42063" };
+	static const char *skills[] = { "#str_200014", "#str_200015", "#str_200016", "#str_200017", "#str_41117" };
 	return common->GetLanguageDict()->GetString( skills[ idMath::ClampInt( 0, 4, cvarSystem->GetCVarInteger( "g_skill" ) ) ] );
 }
 
@@ -3809,6 +3815,8 @@ void idSessionLocal::Clear() {
 	guiRetainedReleasing = NULL;
 	retainedReleaseUntil = 0;
 	retainedSubpageFrom = NULL;
+	retainedDetailTarget = 0;
+	retainedDetailCampaign.Clear();
 	retainedSubpageDeeper = false;
 	retainedSubpageBegan = 0;
 	retainedSubpageUntil = 0;
@@ -4198,6 +4206,15 @@ void idSessionLocal::StartWipe( const char *_wipeMaterial, bool hold ) {
 		return;
 	}
 	console->Close();
+	wipeToBlack = cvarSystem->GetCVarBool( "ui_retained" ) && !idStr::Icmp( _wipeMaterial, "gfx/wipes/fade" );
+	if ( wipeToBlack ) {
+		// Keep the live menu/world at native resolution and close it to black
+		// before any assets or GUI owners are torn down. No 640x480 capture.
+		wipeFadeStarted = Sys_Milliseconds();
+		wipeFadeDuration = cvarSystem->GetCVarBool( "ui_retainedReducedMotion" ) ? 80 : 240;
+		wipeHold = hold;
+		return;
+	}
 
 	{
 		// ExecuteMapChange captures while the loading screen still redraws on prints
@@ -4227,6 +4244,26 @@ idSessionLocal::CompleteWipe
 */
 void idSessionLocal::CompleteWipe() {
 	if ( IsDedicatedServer() ) {
+		return;
+	}
+	if ( wipeToBlack ) {
+		bool capturedMiddle = false;
+		do {
+			Session_BeginBlockingLoadPresentationFrame();
+			UpdateScreen( true );
+			if ( !capturedMiddle && cvarSystem->GetCVarBool( "ui_retainedCaptureLoadFade" ) &&
+				 Sys_Milliseconds() - wipeFadeStarted >= wipeFadeDuration / 2 ) {
+				capturedMiddle = true;
+				cmdSystem->BufferCommandText( CMD_EXEC_NOW, "screenshot \"screenshots/loading-fade-middle.tga\"" );
+			}
+			Sys_Sleep( 1 );
+		} while ( Sys_Milliseconds() - wipeFadeStarted < wipeFadeDuration );
+		// Present the terminal black frame; the loop's previous frame may have
+		// been just short of the deadline. Loading starts only after this swap.
+		Session_BeginBlockingLoadPresentationFrame();
+		UpdateScreen( true );
+		if ( cvarSystem->GetCVarBool( "ui_retainedTrace" ) ) common->Printf( "RETAINED_LOAD_FADE duration=%d terminal=black\n", wipeFadeDuration );
+		if ( cvarSystem->GetCVarBool( "ui_retainedCaptureLoadFade" ) ) cmdSystem->BufferCommandText( CMD_EXEC_NOW, "screenshot \"screenshots/loading-fade-black.tga\"" );
 		return;
 	}
 	if ( com_ticNumber == 0 ) {
@@ -4291,6 +4328,7 @@ idSessionLocal::ClearWipe
 ================
 */
 void idSessionLocal::ClearWipe( void ) {
+	wipeToBlack = false;
 	wipeHold = false;
 	wipeStopTic = 0;
 	wipeStartTic = wipeStopTic + 1;
@@ -6650,12 +6688,6 @@ void idSessionLocal::ExecuteMapChange( bool noFadeWipe ) {
 	// close console and remove any prints from the notify lines
 	console->Close();
 
-	if ( IsMultiplayer() ) {
-		// make sure the mp GUI isn't up, or when players get back in the
-		// map, mpGame's menu and the gui will be out of sync.
-		SetGUI( NULL, NULL );
-	}
-
 	// mute sound
 	soundSystem->SetMute( true );
 
@@ -6675,6 +6707,10 @@ void idSessionLocal::ExecuteMapChange( bool noFadeWipe ) {
 		// immediately complete the wipe to fade out the level transition
 		// run the wipe to completion
 		CompleteWipe();
+	}
+	if ( IsMultiplayer() ) {
+		// Retire the menu after its final black frame has been presented.
+		SetGUI( NULL, NULL );
 	}
 
 	// extract the map name from serverinfo
@@ -7946,6 +7982,16 @@ Draw the fade material over everything that has been drawn
 ===============
 */
 void	idSessionLocal::DrawWipeModel() {
+	if ( wipeToBlack ) {
+		const float t = idMath::ClampFloat( 0, 1, ( Sys_Milliseconds() - wipeFadeStarted ) / float( Max( 1, wipeFadeDuration ) ) );
+		if ( !wipeHold && t >= 1 ) return;
+		const bool viewport = renderSystem->GetUseUIViewportFor2D();
+		renderSystem->SetUseUIViewportFor2D( false );
+		renderSystem->SetColor4( 0, 0, 0, t * t * ( 3 - 2 * t ) );
+		renderSystem->DrawStretchPic( 0, 0, 640, 480, 0, 0, 1, 1, declManager->FindMaterial( "_white" ) );
+		renderSystem->SetUseUIViewportFor2D( viewport );
+		return;
+	}
 	int		latchedTic = com_ticNumber;
 
 	if (  wipeStartTic >= wipeStopTic ) {
@@ -8213,6 +8259,7 @@ idSessionLocal::PacifierUpdate
 ===============
 */
 void idSessionLocal::PacifierUpdate() {
+	if ( openQ4_UpdateInitialization() ) return;
 	if ( !insideExecuteMapChange || insidePacifierUpdate ) {
 		return;
 	}
@@ -8338,6 +8385,7 @@ idSessionLocal::Draw
 ===============
 */
 void idSessionLocal::Draw() {
+	if ( guiActive != NULL || mapSpawned ) RetainedUI_EndInitialization();
 	static const int fallbackMenuDelayMs = 3000;
 	const int presentationTime = common->GetPresentationTime();
 	if ( guiDemoMenu != NULL && ( IsDemoPlaybackActive() || guiActive == guiDemoMenu ) ) {

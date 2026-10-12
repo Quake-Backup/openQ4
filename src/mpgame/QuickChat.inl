@@ -55,20 +55,28 @@ void idPlayer::ApplyQuickChatInputMask( void ) {
 	usercmd.buttons &= ~maskedButtons;
 }
 
-void idPlayer::ResetQuickChat( void ) {
+void idPlayer::ResetQuickChat( bool instantRestore ) {
 	quickChatActive = false;
 	quickChatCanceled = ( usercmd.buttons & BUTTON_QUICKCHAT ) != 0;
 	quickChatDebug = quickChatDebugHeld = false;
 	quickChatSelected = -1;
 	quickChatCursor.Zero();
-	quickChatBlend = 0;
+	if ( instantRestore ) quickChatBlend = 0;
 	quickChatLastUpdateTime = 0;
 	if ( quickChatGui && quickChatGuiActive ) quickChatGui->HandleNamedEvent( "close" );
 	quickChatGuiActive = false;
+	if ( entityNumber == gameLocal.localClientNum && cvarSystem->GetCVarInteger( "ui_radialOwner" ) == 2 ) {
+		cvarSystem->SetCVarInteger( "ui_radialOwner", 0 );
+		cvarSystem->SetCVarBool( "ui_radialCancel", false );
+	}
 }
 
 void idPlayer::UpdateQuickChat( void ) {
 	if ( entityNumber != gameLocal.localClientNum ) return;
+	if ( quickChatActive && cvarSystem->GetCVarBool( "ui_radialCancel" ) ) {
+		ResetQuickChat( false );
+		return;
+	}
 	const bool requested = quickChatDebug ? quickChatDebugHeld : ( usercmd.buttons & BUTTON_QUICKCHAT ) != 0;
 	if ( !requested ) quickChatCanceled = false;
 	const bool usable = CanUseQuickChat();
@@ -106,11 +114,11 @@ void idPlayer::UpdateQuickChat( void ) {
 		// Past the dead zone the phrase under the cursor's angle, clockwise from
 		// the top, with 4 degrees of hysteresis at the boundaries; inside it the
 		// selection holds.
-		if ( !quickChatDebug && quickChatCursor.Length() > WEAPON_WHEEL_DEADZONE_RADIUS ) {
+		if ( !quickChatDebug && quickChatCursor.Length() > WeaponWheelDeadzoneRadius() ) {
 			float angle = atan2f( quickChatCursor.x, -quickChatCursor.y );
 			if ( angle < 0.0f ) angle += idMath::TWO_PI;
 			const float slice = idMath::TWO_PI / QUICK_CHAT_COUNT;
-			int slot = idMath::FtoiFast( angle / slice + 0.5f ) % QUICK_CHAT_COUNT;
+			int slot = static_cast<int>( angle / slice + 0.5f ) % QUICK_CHAT_COUNT;
 			if ( quickChatSelected >= 0 && slot != quickChatSelected &&
 				idMath::Fabs( WeaponWheelNormalizeAngle( angle - quickChatSelected * slice ) ) <= slice * 0.5f + DEG2RAD( 4.0f ) ) {
 				slot = quickChatSelected;
@@ -123,7 +131,8 @@ void idPlayer::UpdateQuickChat( void ) {
 	if ( !held && quickChatActive ) {
 		quickChatActive = false;
 		// A menu or the weapon wheel taking over closes the wheel unsent.
-		if ( usable && quickChatSelected >= 0 && quickChatSelected < QUICK_CHAT_COUNT ) {
+		if ( usable && quickChatSelected >= 0 && quickChatSelected < QUICK_CHAT_COUNT &&
+			( quickChatDebug || quickChatCursor.Length() > WeaponWheelDeadzoneRadius() ) ) {
 			// Sent at once and escaped as the chat input sends a line (say
 			// reverses the escapes).
 			idStr text = common->GetLocalizedString( QUICK_CHAT_PHRASES[ quickChatSelected ] );
@@ -140,8 +149,10 @@ void idPlayer::UpdateQuickChat( void ) {
 	}
 
 	const float blendIn = reducedMotion ? 12.5f : WEAPON_WHEEL_BLEND_IN_SPEED;
-	const float blendOut = reducedMotion ? 12.5f : WEAPON_WHEEL_BLEND_OUT_SPEED;
+	const float blendOut = reducedMotion ? 12.5f : 6.25f;
 	quickChatBlend = quickChatActive ? Min( 1.0f, quickChatBlend + dt * blendIn ) : Max( 0.0f, quickChatBlend - dt * blendOut );
+	if ( quickChatActive ) cvarSystem->SetCVarInteger( "ui_radialOwner", 2 );
+	else if ( cvarSystem->GetCVarInteger( "ui_radialOwner" ) == 2 ) cvarSystem->SetCVarInteger( "ui_radialOwner", 0 );
 }
 
 void idPlayer::DrawQuickChat( void ) {
@@ -172,16 +183,17 @@ void idPlayer::DrawQuickChat( void ) {
 	quickChatGui->SetStateInt( "channel", channel );
 	quickChatGui->SetStateString( "zoomKey", common->KeysFromBinding( "_zoom" ) );
 	quickChatGui->StateChanged( gameLocal.time );
+	const bool justOpened = quickChatActive && !quickChatGuiActive;
 	if ( quickChatGuiActive != quickChatActive ) {
 		quickChatGui->HandleNamedEvent( quickChatActive ? "open" : "close" );
 		quickChatGuiActive = quickChatActive;
 	}
 	if ( quickChatGuiSelected != quickChatSelected ) {
-		if ( quickChatSelected >= 0 ) quickChatGui->HandleNamedEvent( "selection" );
+		if ( quickChatSelected >= 0 && !justOpened ) quickChatGui->HandleNamedEvent( "selection" );
 		quickChatGuiSelected = quickChatSelected;
 	}
 	if ( quickChatGuiChannel != channel ) {
-		if ( quickChatGuiChannel >= 0 ) quickChatGui->HandleNamedEvent( "channel" );
+		if ( quickChatGuiChannel >= 0 && !justOpened ) quickChatGui->HandleNamedEvent( "channel" );
 		quickChatGuiChannel = channel;
 	}
 	quickChatGui->Redraw( gameLocal.time );

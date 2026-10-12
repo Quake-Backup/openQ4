@@ -334,7 +334,7 @@ void idIK_Walk::Restore( idRestoreGame *savefile ) {
 	if ( enabledLegs < 0 || ( enabledLegs & ~(( 1 << MAX_LEGS ) - 1) ) != 0 ) {
 		savefile->Error( "idIK_Walk::Restore: invalid enabled leg mask %d", enabledLegs );
 	}
-	if ( savefile->GetOpenQ4SaveGameCompatibilityVersion() == OPENQ4_SAVEGAME_COMPATIBILITY_VERSION ) {
+	if ( savefile->GetOpenQ4SaveGameCompatibilityVersion() >= OPENQ4_SAVEGAME_TYPED_COMPATIBILITY_VERSION ) {
 		for ( i = 0; i < MAX_LEGS; i++ ) savefile->ReadJoint( footJoints[i] );
 		for ( i = 0; i < MAX_LEGS; i++ ) savefile->ReadJoint( ankleJoints[i] );
 		for ( i = 0; i < MAX_LEGS; i++ ) savefile->ReadJoint( kneeJoints[i] );
@@ -381,7 +381,7 @@ void idIK_Walk::Restore( idRestoreGame *savefile ) {
 	savefile->ReadVec3( pivotPos );
 	savefile->ReadBool( oldHeightsValid );
 	savefile->ReadFloat( oldWaistHeight );
-	if ( savefile->GetOpenQ4SaveGameCompatibilityVersion() == OPENQ4_SAVEGAME_COMPATIBILITY_VERSION ) {
+	if ( savefile->GetOpenQ4SaveGameCompatibilityVersion() >= OPENQ4_SAVEGAME_TYPED_COMPATIBILITY_VERSION ) {
 		for ( i = 0; i < MAX_LEGS; i++ ) savefile->ReadFloat( oldAnkleHeights[i] );
 	} else {
 		savefile->Read( oldAnkleHeights, sizeof( oldAnkleHeights ) );
@@ -899,7 +899,7 @@ void idIK_Reach::Restore( idRestoreGame *savefile ) {
 	if ( enabledArms < 0 || ( enabledArms & ~(( 1 << MAX_ARMS ) - 1) ) != 0 ) {
 		savefile->Error( "idIK_Reach::Restore: invalid enabled arm mask %d", enabledArms );
 	}
-	if ( savefile->GetOpenQ4SaveGameCompatibilityVersion() == OPENQ4_SAVEGAME_COMPATIBILITY_VERSION ) {
+	if ( savefile->GetOpenQ4SaveGameCompatibilityVersion() >= OPENQ4_SAVEGAME_TYPED_COMPATIBILITY_VERSION ) {
 		for ( i = 0; i < MAX_ARMS; i++ ) savefile->ReadJoint( handJoints[i] );
 		for ( i = 0; i < MAX_ARMS; i++ ) savefile->ReadJoint( elbowJoints[i] );
 		for ( i = 0; i < MAX_ARMS; i++ ) savefile->ReadJoint( shoulderJoints[i] );

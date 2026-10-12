@@ -586,7 +586,7 @@ $defaultBuildDir = Join-Path $repoRoot "builddir"
 # Android uses the NDK compiler recorded in its cross file/build metadata.
 # Dispatch through this same Windows entry point, without desktop-only CRT,
 # companion Windows builds, process shutdown or runtime staging side effects.
-$androidMesonArgs = @($args)
+[string[]]$androidMesonArgs = @($args)
 $isAndroidCross = $false
 $androidBuildInfo = Get-CompileBuildDirInfo -MesonArgs $androidMesonArgs -DefaultBuildDir $defaultBuildDir
 $androidMachineInfo = Join-Path $androidBuildInfo.BuildDir "meson-info/intro-machines.json"
@@ -648,7 +648,7 @@ if (Test-WindowsHost) {
 }
 $mesonCommand = Get-MesonCommand
 
-$effectiveArgs = @($args)
+[string[]]$effectiveArgs = @($args)
 if ($effectiveArgs.Count -eq 0) {
     throw "No Meson arguments were provided to meson_setup.ps1."
 }

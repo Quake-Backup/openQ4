@@ -17,7 +17,7 @@ class HudElement final : public Rml::Element {
 public:
 	explicit HudElement(const Rml::String& tag) : Rml::Element(tag) {}
 	bool Prepare(const std::vector<HudPrimitive>&, const Node&, int width, int height,
-		RuntimeStatistics&, std::string& error);
+		RuntimeStatistics&, std::string& error, bool& changed);
 protected:
 	void OnRender() override;
 private:

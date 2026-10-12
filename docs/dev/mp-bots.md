@@ -1,8 +1,9 @@
 # Multiplayer bots
 
-openQ4 multiplayer ships with bots that navigate any map without a per-map
-authoring or compile step, and that arrive with a name, a way of playing and
-something to say about it. This describes how they work and how to drive them.
+openQ4 multiplayer generates bot navigation at map load without a per-map
+authoring or compile step. Bots arrive with a name, a way of playing and
+something to say about it. This describes their behaviour, validation and
+current limits.
 
 ## Why not AAS
 
@@ -25,7 +26,7 @@ load.
 **Generation** follows the same shape as a modern voxel navmesh generator -
 rasterise the walkable surface, connect what a walking agent can traverse - but
 the "rasteriser" is the engine's own collision system, so a link exists only if
-the player's bounding box can actually make that move:
+the configured player hull clears the sampled move:
 
 1. **Seeds.** Spawn points, items, jump pads and their landing targets, and any
    player already in the map. These are places the map guarantees are standable,
@@ -38,26 +39,73 @@ the player's bounding box can actually make that move:
    A mover sitting just above a lethal volume (a trapdoor) or one that crushes
    is priced the same way.
 3. **Flood fill.** From each node, the eight neighbouring grid cells are probed
-   with `TryStep`, which sweeps the player's bounding box - `pm_bboxwidth` by
-   `pm_normalheight`, taken live from the cvars the server is running - flat,
+   with `TryStep`, which sweeps the player's hull - `pm_bboxwidth` by
+   `pm_normalheight`, with `pm_usecylinder` selecting the same side count and
+   alignment as player physics - flat,
    then lifted by `pm_stepsize`, then lifted by `pm_jumpheight`, and drops
    whatever it reaches onto the floor. The cheapest lift that works decides the
-   link type. A node is keyed by grid cell *and* floor height, so a catwalk over
+   link type. A smaller central support probe keeps ordinary nodes away from
+   floors touched only by the outside edge of the hull. Jump and drop landings
+   also need support around that centre, so a decorative rim beside a pit is
+   not treated as stable ground. The probes lift for legitimate slopes and
+   require the returned floor to remain within a step of the expected height.
+   A node is keyed by grid cell *and* floor height, so a catwalk over
    a corridor is two nodes in the same column. Drops reach 512 units and pay
    for the fall damage they would cost. A proven level walk links back at once,
-   which halves the build's collision sweeps.
+   which halves the build's collision sweeps. Every jump-height lift also needs
+   the full jump trajectory proof: lifting a box over a railing and dropping
+   it vertically does not model momentum over a narrow lower ledge or raised
+   decorative lip. Near-ground air steps preserve momentum as multiplayer
+   physics does; a blocked ascent can slide up a riser, while partially
+   completed air steps fail closed. Drops also simulate slow and full-speed
+   walk-offs, including the permitted sideways approach velocity, through
+   touchdown and supported floor along the braking distance. Grounded steps
+   over low lips remain usable under ceilings too low for a jump. A vertical
+   projection onto a small island is insufficient.
 4. **Gap jumps.** From a ledge with a straight run-up behind it, each direction
    is searched for the first floor beyond a gap within a running jump's reach,
-   and the jump is linked only when a ballistic sweep of the real hull at 85% of
-   run speed proves it clears and lands.
+   and the jump is linked only when full hull sweeps through touchdown at both
+   85% and full approach speed prove it clears and lands. The simulation uses
+   the bot's direction-to-corner air input and multiplayer air acceleration;
+   landing requires supported, nonlethal ground with a walkable connection to
+   the destination. Passing above an island while still rising is insufficient.
 5. **Off-mesh links.** `rvJumpPad` and teleporter `idTrigger_Multi` volumes get
-   a one-way link from the volume to their target. On a stock Quake 4
-   multiplayer map these are what keep the graph a single component.
+   a one-way link from the volume to where they put the player. A pad's target
+   is the apex of its arc, not its landing, so the flight is integrated from the
+   pad's own launch velocity at the multiplayer frame rate and swept with the
+   player's box until it comes down; q4dm1's pad 24 aims over a ledge and lands
+   players on the floor below. A pad can put a player down in more than one
+   place, as Quake III's AAS knows: besides its natural landing, the supported
+   node nearest the apex on each floor level within 256 units is flown again
+   with air control steering for it, and linked when the flight really comes
+   down within 32 units of it from the pad's centre and from the middle of
+   every side a standing box can touch the volume from - a bot is thrown where
+   it first touches the pad, not from its centre - up to four landings a pad. That is the only way
+   onto the ledge beside q4dm1's vertical pads, whose arc falls straight back
+   down their shaft. A bot rides a natural landing without steering, as long as
+   the ridden arc lands on or past the node and within a box of its line -
+   braking onto the node slowed flyers under the bots behind them, and over
+   q4ctf5's gap they met in the air. Steering is `NavAirSteer`, shared with the
+   bot in flight:
+   it aims for the horizontal velocity that arrives over the landing as the arc
+   comes down to its height, rather than at the landing itself, which overshot
+   and swung back. Nothing that comes down on the pad itself is a landing, and
+   a pad with no other is a trampoline that gets no link. Each landing costs
+   the ground a bot would have run while in the air, never less than 128, so a
+   second and a half aloft beside a vertical pad is not a cheap way past it. On
+   a stock Quake 4 multiplayer map these links are what keep the graph a single
+   component.
 6. **Transport sealing.** A pad or teleporter takes whoever touches it, so every
-   node whose standing box touches a live volume keeps the transport as its only
-   exit. A route either takes the pad or goes round it; it can never walk across
+   node whose standing box touches a live volume - tested against the brush
+   itself, not its bounding box - keeps the transport, to each of its landings,
+   as its only exits. A route either takes the pad or goes round it; it can never walk across
    one by accident. Links into the volume stay - entering it is how a route
-   takes the transport - and a route never starts or ends on one.
+   takes the transport - and a route never starts or ends on one. Shortcuts are
+   held to the same brush: a line is tested by sweeping the standing box along
+   it, and 48 units under it, against the volume's own clip model, and only a
+   line whose box starts touching the brush counts as leaving it. A diagonal
+   pad's bounding box covers floor beside the pad that sealing leaves walkable,
+   and a line from that floor used to skip the pad altogether.
 7. **Compaction.** Each node's links are rewritten into one contiguous run, so
    every search walks memory in order instead of chasing a list through a
    quarter of a million entries.
@@ -65,6 +113,9 @@ the player's bounding box can actually make that move:
    of their condensation answer "can A reach B" exactly in constant time, so a
    goal nobody can reach - an enemy standing in a one-way pit - is refused
    without a search.
+   The build line reports the share of nodes in the largest component and the
+   dead ends - nodes with no way off at all - that a map sweep reads for
+   places a bot can be trapped.
 9. **Landmarks.** Eight far-apart nodes of the largest component carry exact
    travel costs to and from every node (ALT). The triangle inequality turns
    them into a lower bound on any route, which guides A* around walls and stays
@@ -81,8 +132,8 @@ with them refused route snaps on the very floor a bot stood on.
 larger of the landmark bound and the straight-line distance scaled by the
 graph's cheapest cost-to-distance ratio; both are consistent, and a node the
 landmarks prove cannot lead to the goal is never opened. Ordinary walking pays
-distance, jumps and drops add a safety/time penalty, and jump pads and
-teleporters retain their short transport cost. Search scratch is tagged by a
+distance, jumps and drops add a safety/time penalty, jump pads pay for flight
+time as running distance, and teleporters retain their short transport cost. Search scratch is tagged by a
 serial number rather than cleared, so a query costs only the nodes it opens. A
 selected route is then swept against the solids that can move after the build -
 movers, doors, plats and loose physics objects - and only those; a stale edge is
@@ -90,27 +141,59 @@ excluded and A* retries. Ordinary unlocked touch/proximity doors count as open,
 because approaching them opens them; locked, no-touch, keyed or scripted doors
 stay barriers.
 
+An injured bot also qualifies selected jump, drop and pad landings against its
+current health and armour. The limit comes from the player's fall thresholds
+and resolved multiplayer damage declarations. Predicted impacts use the same
+water reductions and no-damage surface flag as `CrashLand`. Unsafe edges are
+excluded only from that search, so healthy bots and safe alternate routes keep
+using the shared graph. A grounded pre-entry check catches damage after route
+planning, brakes and abandons the old goal; its cached proof is reused while
+the route and survivable tier stay unchanged. An already launched flight keeps
+its landing controller.
+
 Route endpoints in the air - a jumping bot, an enemy mid-jump - are projected
 onto whatever surface is under them before they snap to a node. A snap or a
 string-pulled shortcut must pass `WalkableLine`: a box sweep, floor samples
 along the line, no lethal ground, no step onto a transport, and no rise or fall
-steeper than a walk, so a bot under a balcony never routes from the balcony.
+steeper than a walk, so a bot under a balcony never routes from the balcony. A
+sweep stopped within its last two units has arrived: a player flush against a
+wall is a legal endpoint the clip epsilon stops a box just short of.
 
 The node chain is then string-pulled: a corner is dropped when the shortcut is
 proven, and smoothing never skips a link that has to be entered deliberately.
-Every jump, drop, jump pad and teleporter retains both its entry and exit, and a
-gap jump gets a straight run-up corner in front of its takeoff. A goal that
+Every jump, drop, jump pad and teleporter retains both its entry and exit. A jump - up a
+step too tall to walk or across a gap - lands only where floor reaches within
+8 units of the box's middle: a standing box rests on any overlap, so flood fill
+lays nodes that hang off a platform by all but a sliver (the corner of q4dm1's
+turned crate held one by six tenths of a unit), and a jump aimed at one comes
+down beside the platform every time. A gap jump whose first floor is such an
+edge lands one cell further in. A
+gap jump - or a jump up more than two steps, such as q4dm1's crates - gets a
+straight run-up corner in front of its takeoff. A jump that comes back down on
+its takeoff floor short of the middle of its link fell short; the bot goes back
+to the run-up and takes it again at speed, twice, before the stuck detector
+decides. Height alone cannot tell, since a level jump lands at its takeoff's
+height whether it made it or not. A goal that
 stands in a pad's or teleporter's reach - an item beside one, an enemy at its
 edge - ends its route at the nearest node, because nobody can stand exactly
-there without being carried off.
+there without being carried off. Two other final-leg refusals are not real: the
+goal's own snap already proved the walk the other way, which stands; and a goal
+set against a wall, such as an item in an alcove, can sit where a player's box
+does not fit, so the route ends where the box stops within touching distance.
+A chase may also settle for the nearest node on the target's floor when the
+target stands where no node is proven walkable, such as a tight diagonal
+corridor; item routes stay exact.
 
-**Goal pricing** answers "which of these is worth going for" without a search
-per candidate. Every candidate gets a landmark lower bound on its route cost,
+**Goal pricing** answers "which of these is worth going for" without a field
+per decision. Every candidate gets a landmark lower bound on its route cost,
 so its weight over that bound is the most it can score; candidates are priced
 exactly, best bound first, by a corner-free A* (`rvNavMesh::PathCost`), until
 the best few exact scores beat everything still unpriced. The top few are then
 exact and FindPath proves only the winner. On `q4dm5` this expands about 6% of
-what a whole-map Dijkstra field per decision settled.
+what a whole-map Dijkstra field per decision settled. Where the bounds are weak
+- long detours around pads and drops - each exact search would re-expand the
+same ground, so past a work budget the candidates still unpriced are priced
+from one bounded field and a decision never costs much more than a field.
 
 Typical output for `q4dm5` at the default 24-unit cell is about **27,800 nodes,
 204,000 links, 316 gap jumps and 44 sealed transports**, built in under two
@@ -184,7 +267,8 @@ entities from other multiplayer instances, and supplies rule urgency to the
 ordinary path-aware goal selector. The currently supported mode families are:
 
 - **CTF variants.** Standard CTF, One Flag, Arena CTF and Arena One Flag use a
-  deterministic, distance-aware team role allocation. Carriers follow the
+  deterministic team role allocation informed by navigation route bounds.
+  Carriers follow the
   correct base or their instance's ordered assault-point chain; the nearest
   useful teammates return a dropped flag or intercept an enemy carrier, escorts
   form around a friendly carrier (with extra help when that carrier is hurt), a
@@ -320,7 +404,12 @@ Four things keep a bot from ever parking:
   on. Once grounded, the bot compares its height with the height the current
   leg has where it stands; knocked off a ledge, carried by a pad or fallen past
   a landing, it is more than 80 units below (or, on a walk, 96 above) and the
-  route is replaced at once, with the goal itself decided again.
+  route is replaced at once, with the goal itself decided again. So is a bot
+  more than 384 units to the side of its leg, as a teleporter or a long
+  knockback leaves it, and a drop or a jump that came down more than a step
+  below its takeoff without reaching its landing - momentum past the landing's
+  wall, a pad beside the landing, a gap jump into its gap - since that landing
+  may now be behind a wall.
 - **Stuck detection.** Progress means advancing a path corner or materially
   shortening the horizontal distance to the current one, not merely moving in
   any direction. Two consecutive failed samples trigger a sidestep, a jump and
@@ -334,7 +423,20 @@ Four things keep a bot from ever parking:
   short per-bot blacklist. The blacklist holds several entries on purpose:
   with one slot a bot ping-pongs between two items it cannot take.
 - **Off-mesh recovery.** If routing fails repeatedly the bot walks toward the
-  nearest node it does know about, and wanders if there is not one.
+  nearest node it does know about, and wanders if there is not one. Both paths
+  use the grounded momentum/edge brake; abandoning a route cannot bypass it.
+  A stationary bot supported only by its outer hull may crawl toward a known
+  node at no more than 32 units/s if a separate, at-most-64-unit proof finds
+  nearby strong support. Every four-unit sample must retain same-height hull
+  contact and body clearance. Consecutive footprints must also share a known
+  floor patch, so even a narrow loss of support between samples refuses the
+  escape. Gaps, walls, transports and lethal floor are rejected. Ordinary
+  walking and random wandering gain no such exception.
+  A recovery turn updates the command's view yaw before projecting movement,
+  so physics uses the same world direction that passed the floor check.
+
+A foe last seen inside a lethal volume - falling into q4dm5's void - is not
+chased: it is dying, and no route reaches the air it falls through.
 
 Repathing is time-throttled rather than "whenever there is no path": an enemy
 standing somewhere genuinely unreachable would otherwise cost a full failed A*
@@ -343,15 +445,95 @@ keying it off "am I currently chasing an enemy" leaves it dead on the failure
 path, which is the only path it exists for. Goal selection, which walks every
 spawned item, is throttled the same way.
 
+Grounded movement includes a void-edge guard. A route leg is proven, but
+the box drifts off it - a string-pulled corner, a dodge, a team-mate's shove, a
+landing at a pad's speed - and on q4ctf5's walkways over space momentum carried
+bots over an edge ten times a minute. Each frame the bot looks 0.15 s ahead
+along its velocity; with no floor within a survivable 512-unit fall there,
+tested with the middle 16 units of the box so a crack is not a void, or a kill
+volume, it brakes against its velocity instead. A jump takeoff and a pad or
+teleporter entry leave an edge on purpose and are exempt.
+
+World-space movement retains its intended strength while the bot turns to aim.
+The projected forward/side command pair is scaled for the player's `CmdScale`,
+so a 45-degree aim difference does not reduce speed or air braking. Deliberately
+partial input and zero movement retain their strengths.
+
 Combat strafing, teammate separation and unsticking are local hints layered on
 top of the route. Each altered direction must pass a player-bounds sweep and a
 floor check before it can replace the nav direction, preventing a useful dodge
 from becoming a step into a wall or off a ledge.
+Discretionary dodge and recovery hops additionally simulate their flight
+through touchdown for both current momentum and a full-speed approach. A
+72-unit walking probe does not cover a hop's roughly 220-unit travel. The
+bounded proof runs only on fresh grounded jump pulses and refuses unsupported,
+lethal or transport landings; deliberate route jumps retain their own proof.
+An accepted hop holds that proved world-space input through touchdown while
+aiming and firing remain independent. A changed goal, strafe or view angle
+cannot bend the flight after qualification. A refused launch releases after
+128 ms, the flight hold expires after 1,600 ms, and death/spawn clear it. Real
+pad launches supersede the hold. A newly acquired speed boost cannot increase
+the held command beyond its captured wish speed.
 
 A drop's landing can lie under the lip of its own ledge, so near a drop or a jump
-the bot walks the link's own direction until it actually leaves the ground. A
-drop taken at speed may land far past its one-cell landing; down on the
-landing's floor and ahead of it, the drop counts as done.
+the bot walks the link's own direction until it actually leaves the ground.
+A bot that has pressed along its route for a quarter second without closing in
+on a walk corner more than a few units above it, or on the pad or teleporter
+volume it is stepping into, hops, on any leg. The navmesh steps onto a rise in
+one 24-unit stride and the player in five-unit frames, so a bevelled lip - the
+sides of q4dm1's pad ramps - can pass the generator and still stop the feet, and
+the ramp can stand between a pad's entry node and its trigger; the generic
+unstick hop waits for the stuck detector and stays off on the approach to an
+action, which is exactly where those ramps are. Entering a pad or a teleporter steers at the volume's own
+centre rather than the node the route enters it by. In a pad's flight or a
+drop's fall the bot steers with `NavAirSteer` for the velocity that lands it on
+the route's node, coasting when no correction is needed, so it comes down where
+the navmesh predicted instead of overshooting onto the pad beside a landing.
+Pads that throw players at each other over a gap - q4ctf5's either side of
+the floating large armour - meet head-on over the void, and solid players
+stop each other dead there: within 80 units of touching a pad, a bot brakes
+while anyone is flying along that finite corridor in either direction. A
+same-direction leader can rebound from the far pad into a follower. Reserving the
+expanded trigger boundary does not release that hold; an actual launch does.
+A blockage lasting two seconds requests route reconsideration while continuing
+to hold, and waiting cannot trigger a climb hop into the pad. A flight that
+comes down on the next pad of a chain hands over to it on
+touch, and a bot thrown away from its landing at a pad's speed - a short landing
+on the pad opposite, a pad the route never planned - coasts rather than brake
+the throw over the void, and replans where it sets down. A pad counts as taken only on real launch
+speed - more than a jump climbs or a player runs - and its flight ends when the
+bot is back on the ground, wherever that is; a flight still airborne after four
+seconds is a bounce and releases the route. A
+drop or a gap jump taken at speed may land far past its one-cell landing; down
+on the landing's floor and ahead of it, the action counts as done only after
+the route from the actual touchdown to the next walking corner is checked.
+An unsafe continuation brakes and replans. Before a sharp turn into a jump or drop,
+the bot sheds sideways momentum while it still has ground to stop on.
+It also sheds overspeed before either action. A routed jump is checked again
+at the actual takeoff position with its live velocity, rather than assuming
+the bot is centred on the entry and already moving along the link. The first
+frame uses the encoded movement command, including the jump axis in
+`CmdScale`; the flight then uses the same direction-to-landing steering as
+the proof. Refused launches brake, can recenter over proven supported ground,
+and abandon an unusable approach after the traversal timeout.
+Haste and Scout retain their benefit
+on ordinary routes, while action entry and flight commands stay within the
+base-speed trajectory model. Discretionary combat hops instead qualify their
+actual boosted wish speed.
+
+An unplanned pad touch also replaces an ordinary walking route with the pad's
+proven natural landing. Detection requires the actual player hull to contact
+the force-field brush and a launch impulse, including the first frame when
+the grounded flag can still describe the preceding physics update. The
+original goal remains available after landing. An overlapping bounding box
+alone cannot activate this recovery, and an already planned pad keeps its
+chosen landing.
+An active pad with no accepted entry node or landing still registers its
+activation volume. Its ground nodes have no ordinary exits, preventing a
+walking shortcut through a launcher that the route planner cannot safely use.
+No destination or recovery flight is invented for that volume. Objective
+holding also waits for actual grounding, so crossing a scoring volume in the
+air cannot replace an existing landing controller with stationary combat.
 
 Every navigation event is in the `bot_debug 1` log: stuck and off-route
 reports with the corner, its travel type and height, completed actions with
@@ -1003,9 +1185,11 @@ result-flow pass for that mode.
 - Ladders and lifts are not modelled. No stock multiplayer map routes through
   either, but a custom map that needs one to connect its levels leaves those
   levels unreachable to bots.
-- Role allocation and teammate claims compare straight-line distances, not
-  route costs, so on a stacked map a bot directly above the flag can be
-  preferred over one with a shorter run.
+- Role allocation compares landmark route-cost lower bounds rather than full
+  routes, with a margin for bots already filling a role. It can mis-rank runs
+  where those bounds are loose, and falls back to straight-line distance when
+  a target or player has no usable navigation node. Teammate pickup claims
+  count existing commitments and reduce utility; they do not rank travel times.
 - `FindNearestNode` spends at most `NAV_MAX_WALKABLE_PROBES` collision probes
   when asked to prove walkability. A bot standing somewhere that genuinely needs
   more than that to escape falls back to wandering rather than stalling the
@@ -1021,10 +1205,20 @@ result-flow pass for that mode.
   complete authoritative runtime state and scoring rules required for honest
   objective decisions. Their objective query therefore fails closed and bots
   deliberately fall back to combat, inventory pickups and directed roaming.
-- A jump pad's link lands on its target entity, but `rvJumpPad` aims the player
-  to *arrive* there with its vertical speed spent, so the real landing spot is a
-  little past it. Off-route recovery re-routes on landing, so this costs a
-  moment, not a route.
+- A pad's landing is simulated with the same air steering the bot flies with,
+  but at a fixed frame step and without other players in the way, so a flight
+  can still come down somewhat off its node. It ends when the bot is back on
+  the ground, and off-route recovery re-routes from wherever it landed.
+- Enemy knockback and in-flight player collisions can still carry a bot into
+  a void. Corridor occupancy reduces preventable launches, but does not
+  arbitrate simultaneous grounded entries at opposite ends. The health guard
+  prices each landing using current health and armour; damage received after
+  takeoff can still make that committed landing fatal.
+- Routed jump qualification conservatively refuses unsettled inward ground
+  velocity instead of approximating the player's slope-slide adjustment.
+  Command-byte rounding and changing speed powerups remain small differences
+  from the fixed-step flight model. A failed live launch may require a new
+  approach; the bot does not construct a new run-up while standing on the lip.
 - The navmesh is rebuilt at every map load rather than cached on disk.
   Generation runs once per map and is lazy, so a server without bots never pays
   it.
@@ -1057,12 +1251,42 @@ fixtures need a C++17 compiler (`clang++` or `g++`, or `CXX`).
   route cost, the heuristic never overestimates and is consistent on every
   edge, and ranked goal pricing returns exactly the exhaustive field's best four
   in 180 runs while expanding 6% of its nodes.
+- `tools/tests/mp_bot_jump_trajectories.py` executes production hull construction,
+  support, floor, step and jump proof against an independent convex sweep
+  fixture using the engine's cylinder vertices. It rejects the
+  narrow lower ledge and island cases that a vertical landing projection
+  accepted, unsupported corner/rim nodes and landings, lethal floors, and
+  raised lips whose running air step overshoots. Broad raised and lower floors,
+  normal steps and gaps, a 24-unit platform, a floor seam and a 45-degree
+  slope provide positive cases. Discretionary hop cases cover a platform where
+  walking is safe but jumping overshoots, opposing initial momentum, and
+  lethal/transport landings. The former proof fails the narrow 280-unit descent
+  regression. Landing-impact cases cover descending jumps, drops and pads,
+  with the same no-damage surface and water reductions as player physics.
+  Running-drop cases reject small islands and preserve broad lower floors;
+  landing continuation cases distinguish connected ground from a gap or rim,
+  with low-ceiling, small-lip and boosted-hop regressions.
 - `tools/tests/mp_bot_regressions.py` compiles the production decision
   functions against a deterministic world: goal replacement and stall
   recovery, inventory changes, hearing and item timing, fight-or-flight,
   arming and duty pickups, perception against exhaustive target selection
   over 240 cases, one goal-pricing search for 80 pickups, grenade bounce
-  threats, and bot message queues that never accumulate.
+  threats, bot message queues that never accumulate, and pad holds that brake
+  through reserved entry, retain real flights and reconsider blocked routes,
+  plus adoption of observed unplanned pad launches without replacing goals.
+  Landing-health cases cover the live damage service and armour, immunity,
+  alternate pickup routes, cached pre-entry checks and preserved flights.
+  Production movement projection and player command scaling are checked
+  together at 0, 45 and 90 degrees, including partial input and zero movement.
+  Transition cases cover transverse jump/drop approaches, unsafe actual landing
+  continuations, same-direction pad followers and pad completion only on
+  grounding or an explicit chained handoff.
+  Hop ownership cases change goals, view yaw and speed boosts during flight,
+  then verify release on landing, failed launch, death, expiry and pad transfer.
+  Recovery cases exercise both edge-guard branches, inland rescue from a
+  marginal footprint, and actual command yaw with a nonzero view delta.
+  Actual box/cylinder rim fixtures distinguish continuous inland rescue from
+  unsupported tangency, a distant floor across a gap, walls and hazards.
 - `tools/tests/mp_bot_team_orders.py` runs the team-order parser on phrasings
   that must and must not be orders and pins who may give them, when they
   lapse, and how every mode's planner reads them.
@@ -1086,6 +1310,14 @@ kept to real time, and process CPU. `--map`, `--gametype`, `--bots` and
 observer give an order and reports its team-mates' distance to it. Use the
 optimized `builddir-perf` runtime for absolute costs; `builddir` is a debug
 build and is several times slower.
+The report records SHA-256 identities for the client, MP module and runtime
+packs and refuses a stage older than `builddir`. `--debug 2` includes traversal entry positions
+and velocities; `--max-world-deaths 0` turns any complete-run death to the map into
+an audit failure. A default audit remains a measurement run, so its successful
+exit alone does not establish safe navigation. A fatal engine-log error stops
+the audit's own hidden client promptly, including a content-pack mismatch.
+Timed rates retain their measurement window; warmup and complete-run world
+deaths are separate report fields and both contribute to the safety gate.
 
 On `mp/q4dm5` with eight skill-4 bots in a debug build, the October 2026 pass
 took the server from 0.32 to 0.96 of real time, stuck reports from 29 to 3-4
@@ -1093,9 +1325,34 @@ per two minutes, failed path searches from about 10% to under 2%, and goal
 pricing from about 7,600 settled nodes per decision to about 2,200 expanded,
 with no deaths to the map.
 
+That single-map result does not qualify every stock map. The subsequent
+32-map sweep found world deaths on q4dm8, q4ctf3, q4ctf5 and q4dz3. Follow-up
+six-bot, 45-second audits exposed hull/support mismatches, unsafe upward hops,
+pad steering ownership, low-health landing risk and unsafe landing handoffs.
+The landing candidate recorded one warmup and four measured world deaths;
+the warmup fall revealed why qualification must include the complete run.
+
+The subsequent control candidate completed all four affected maps for 45
+seconds each, with one measured world death per map and no warmup deaths or
+traversal timeouts. All engine processes exited normally; the strict safety
+audit failed. The DM8 fall followed a documented enemy impulse. CTF3 exposed
+a routed jump launched with large transverse momentum outside its graph
+proof. CTF5's fall followed unclassified non-enemy damage; the log cannot
+separate self/team impulse from steering. DZ3's low-health hard-fall death
+strongly matches an accidental launch from an active pad omitted from the
+transport registry. The exact-state jump gate and unroutable-pad sealing
+corrections pass all 12 suites, including production registry/sealing fixtures;
+their staged rerun and the final 32-map sweep remain pending. No cross-map
+safety or optimized-performance qualification is claimed. These four debug
+maps built navigation in 986–3,267 ms and ran at 0.963 of real time; these are
+diagnostic observations, not controlled performance comparisons.
+
 For a live look, run a listen server with `bot_debug 2` and read the status
 lines: each carries the bot's position, health, armour, goal, path progress,
-current enemy and whether it is firing. `bot_debugNav 2` draws the mesh and
+current enemy and whether it is firing. Damage and voluntary-jump lines include
+position, velocity and game time so a fall can be traced to the preceding
+input or hit. Positive self/team/world damage is included; zero-damage
+impulses are not forwarded by the player damage callback. `bot_debugNav 2` draws the mesh and
 every bot's route near the local player, and `bot_debugAim 1` logs the
 reaction, settle and lead behind every shot.
 

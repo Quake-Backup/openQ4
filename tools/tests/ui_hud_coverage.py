@@ -31,6 +31,17 @@ def main():
         assert art in nodes and nodes[art]['paths'], (material, art)
     assert set(registry['images']).isdisjoint(registry['materials'])
     assert set(registry['imageAliases']) <= set(registry['images'])
+    # Side weapon images must resolve to real source bitmaps, never the
+    # catalog's synthetic colored compatibility spellings.
+    for name in registry['images']:
+        if '/gun_' not in name:
+            continue
+        target = registry['imageAliases'].get(name, name)
+        assert '_colored' not in target, (name, target)
+        supplied = [root for root in (args.assets, args.awakening) if root]
+        optional = target.endswith(('gun_corecannon', 'gun_freezegun', 'gun_flamegun')) and not args.awakening
+        if supplied and not optional:
+            assert any((root/(target+'.tga')).is_file() for root in supplied), (name, target)
     # The fixed route allowlist must cover exactly the audited root families.
     adapter = (ROOT/'src/ui/RetainedHud.cpp').read_text()
     eligible = adapter.split('static const std::set<std::string> roots={', 1)[1].split('};', 1)[0]
@@ -66,9 +77,9 @@ def main():
                     supplied = (assets/name).is_file() or (args.assets and (args.assets/name).is_file())
                     if supplied and name not in roots:
                         missing.append((str(path), 'HUD root: '+name))
-                for match in re.finditer(r'"(?:inv_icon|inv_ammoicon|inv_weaponicon|hud_icon)"\s+"([^\"]+)"', text):
+                for match in re.finditer(r'"(?:inv_icon|inv_ammoicon|inv_weaponicon|hud_icon|mtr_icon)"\s+"([^\"]+)"', text):
                     name = match[1].lower()
-                    if name.startswith('gfx/guis/hud/') and name not in registry['materials']:
+                    if name.startswith('gfx/guis/hud/') and name not in registry['materials'] and name not in registry['images']:
                         missing.append((str(path), name))
     assert not missing, '\n'.join(f'{p}: {name}' for p, name in sorted(set(missing)))
     print(f'HUD coverage: {len(roots)} routes, {len(nodes)} editable symbols, {len(registry["materials"])} aliases; {files} installed GUIs audited')

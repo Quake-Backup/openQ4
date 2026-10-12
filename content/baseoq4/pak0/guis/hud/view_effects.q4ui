@@ -10,6 +10,10 @@
   "recovery_amount": {"type": "number", "initial": 0},
   "death_amount": {"type": "number", "initial": 0},
   "death_shock": {"type": "number", "initial": 0},
+  "death_focus": {"type": "number", "initial": 0},
+  "death_tunnel": {"type": "number", "initial": 0},
+  "crash_focus": {"type": "number", "initial": 0},
+  "crash_lids": {"type": "number", "initial": 0},
   "wheel_amount": {"type": "number", "initial": 0}
  },
  "bindings": [
@@ -56,6 +60,36 @@
    "value": {"state": "recovery_amount"}
   },
   {
+   "id": "crash-focus.display",
+   "node": "crash-focus",
+   "property": "display",
+   "value": {"op": "select", "args": [{"op": ">", "args": [{"state": "crash_focus"}, 0.001]}, "block", "none"]}
+  },
+  {
+   "id": "crash-focus.blur",
+   "node": "crash-focus",
+   "property": "backdrop-blur",
+   "value": {"op": "*", "args": [{"state": "crash_focus"}, 16]}
+  },
+  {
+   "id": "crash-focus.saturation",
+   "node": "crash-focus",
+   "property": "backdrop-saturate",
+   "value": {"op": "-", "args": [1, {"op": "*", "args": [{"state": "crash_focus"}, 0.38]}]}
+  },
+  {
+   "id": "crash-periphery.opacity",
+   "node": "crash-periphery",
+   "property": "opacity",
+   "value": {"state": "crash_focus"}
+  },
+  {
+   "id": "crash-eyelids.opacity",
+   "node": "crash-eyelids",
+   "property": "opacity",
+   "value": {"state": "crash_lids"}
+  },
+  {
    "id": "death-focus.display",
    "node": "death-focus",
    "property": "display",
@@ -65,7 +99,10 @@
    "id": "death-focus.blur",
    "node": "death-focus",
    "property": "backdrop-blur",
-   "value": {"op": "*", "args": [{"state": "death_amount"}, 3.4]}
+   "value": {
+    "op": "+",
+    "args": [{"op": "*", "args": [{"state": "death_amount"}, 3.4]}, {"op": "*", "args": [{"state": "death_focus"}, 4.5]}]
+   }
   },
   {
    "id": "death-focus.saturation",
@@ -78,6 +115,12 @@
    "node": "death-vignette",
    "property": "opacity",
    "value": {"state": "death_amount"}
+  },
+  {
+   "id": "death-tunnel.opacity",
+   "node": "death-tunnel",
+   "property": "opacity",
+   "value": {"state": "death_tunnel"}
   },
   {
    "id": "death-afterimage.opacity",
@@ -190,6 +233,122 @@
     ]
    },
    {
+    "id": "crash-focus",
+    "type": "group",
+    "properties": {
+     "position": {"type": "keyword", "value": "absolute"},
+     "left": {"type": "length", "value": 0, "unit": "dp"},
+     "top": {"type": "length", "value": 0, "unit": "dp"},
+     "width": {"type": "length", "value": 100, "unit": "%"},
+     "height": {"type": "length", "value": 100, "unit": "%"},
+     "display": {"type": "keyword", "value": "none"},
+     "backdrop-blur": {"type": "length", "value": 0, "unit": "dp"},
+     "backdrop-saturate": {"type": "number", "value": 1}
+    }
+   },
+   {
+    "id": "crash-periphery",
+    "type": "vector",
+    "properties": {
+     "position": {"type": "keyword", "value": "absolute"},
+     "left": {"type": "length", "value": 0, "unit": "dp"},
+     "top": {"type": "length", "value": 0, "unit": "dp"},
+     "width": {"type": "length", "value": 100, "unit": "%"},
+     "height": {"type": "length", "value": 100, "unit": "%"},
+     "opacity": {"type": "number", "value": 0}
+    },
+    "paths": [
+     {
+      "id": "wash-0",
+      "commands": [
+       {"id": "p0", "op": "move", "points": [[0, 0]]},
+       {"id": "p1", "op": "line", "points": [[{"fraction": 1}, 0]]},
+       {"id": "p2", "op": "line", "points": [[{"fraction": 1}, {"fraction": 1}]]},
+       {"id": "p3", "op": "line", "points": [[0, {"fraction": 1}]]},
+       {"id": "close", "op": "close"}
+      ],
+      "fill": {
+       "type": "linear",
+       "from": [0, 0],
+       "to": [{"fraction": 1}, 0],
+       "stops": [
+        {"at": 0, "color": {"type": "color", "value": [0.1412, 0.1059, 0.0824, 0.66]}},
+        {"at": 0.1, "color": {"type": "color", "value": [0.1412, 0.1059, 0.0824, 0.34]}},
+        {"at": 0.28, "color": {"type": "color", "value": [0.1412, 0.1059, 0.0824, 0.05]}},
+        {"at": 0.5, "color": {"type": "color", "value": [0.1412, 0.1059, 0.0824, 0]}},
+        {"at": 0.72, "color": {"type": "color", "value": [0.1412, 0.1059, 0.0824, 0.05]}},
+        {"at": 0.9, "color": {"type": "color", "value": [0.1412, 0.1059, 0.0824, 0.34]}},
+        {"at": 1, "color": {"type": "color", "value": [0.1412, 0.1059, 0.0824, 0.66]}}
+       ]
+      }
+     },
+     {
+      "id": "wash-1",
+      "commands": [
+       {"id": "p0", "op": "move", "points": [[0, 0]]},
+       {"id": "p1", "op": "line", "points": [[{"fraction": 1}, 0]]},
+       {"id": "p2", "op": "line", "points": [[{"fraction": 1}, {"fraction": 1}]]},
+       {"id": "p3", "op": "line", "points": [[0, {"fraction": 1}]]},
+       {"id": "close", "op": "close"}
+      ],
+      "fill": {
+       "type": "linear",
+       "from": [0, 0],
+       "to": [0, {"fraction": 1}],
+       "stops": [
+        {"at": 0, "color": {"type": "color", "value": [0.1412, 0.1059, 0.0824, 0.66]}},
+        {"at": 0.1, "color": {"type": "color", "value": [0.1412, 0.1059, 0.0824, 0.34]}},
+        {"at": 0.28, "color": {"type": "color", "value": [0.1412, 0.1059, 0.0824, 0.05]}},
+        {"at": 0.5, "color": {"type": "color", "value": [0.1412, 0.1059, 0.0824, 0]}},
+        {"at": 0.72, "color": {"type": "color", "value": [0.1412, 0.1059, 0.0824, 0.05]}},
+        {"at": 0.9, "color": {"type": "color", "value": [0.1412, 0.1059, 0.0824, 0.34]}},
+        {"at": 1, "color": {"type": "color", "value": [0.1412, 0.1059, 0.0824, 0.66]}}
+       ]
+      }
+     }
+    ]
+   },
+   {
+    "id": "crash-eyelids",
+    "type": "vector",
+    "properties": {
+     "position": {"type": "keyword", "value": "absolute"},
+     "left": {"type": "length", "value": 0, "unit": "dp"},
+     "top": {"type": "length", "value": 0, "unit": "dp"},
+     "width": {"type": "length", "value": 100, "unit": "%"},
+     "height": {"type": "length", "value": 100, "unit": "%"},
+     "opacity": {"type": "number", "value": 0}
+    },
+    "paths": [
+     {
+      "id": "wash-0",
+      "commands": [
+       {"id": "p0", "op": "move", "points": [[0, 0]]},
+       {"id": "p1", "op": "line", "points": [[{"fraction": 1}, 0]]},
+       {"id": "p2", "op": "line", "points": [[{"fraction": 1}, {"fraction": 1}]]},
+       {"id": "p3", "op": "line", "points": [[0, {"fraction": 1}]]},
+       {"id": "close", "op": "close"}
+      ],
+      "fill": {
+       "type": "linear",
+       "from": [0, 0],
+       "to": [0, {"fraction": 1}],
+       "stops": [
+        {"at": 0, "color": {"type": "color", "value": [0.0196, 0.0157, 0.0118, 0.84]}},
+        {"at": 0.1, "color": {"type": "color", "value": [0.0196, 0.0157, 0.0118, 0.68]}},
+        {"at": 0.22, "color": {"type": "color", "value": [0.0196, 0.0157, 0.0118, 0.3]}},
+        {"at": 0.36, "color": {"type": "color", "value": [0.0196, 0.0157, 0.0118, 0.04]}},
+        {"at": 0.46, "color": {"type": "color", "value": [0.0196, 0.0157, 0.0118, 0]}},
+        {"at": 0.56, "color": {"type": "color", "value": [0.0196, 0.0157, 0.0118, 0]}},
+        {"at": 0.7, "color": {"type": "color", "value": [0.0196, 0.0157, 0.0118, 0.04]}},
+        {"at": 0.84, "color": {"type": "color", "value": [0.0196, 0.0157, 0.0118, 0.26]}},
+        {"at": 1, "color": {"type": "color", "value": [0.0196, 0.0157, 0.0118, 0.72]}}
+       ]
+      }
+     }
+    ]
+   },
+   {
     "id": "death-focus",
     "type": "group",
     "properties": {
@@ -260,6 +419,72 @@
         {"at": 0.72, "color": {"type": "color", "value": [0.0314, 0.0353, 0.0431, 0.05]}},
         {"at": 0.9, "color": {"type": "color", "value": [0.0314, 0.0353, 0.0431, 0.34]}},
         {"at": 1, "color": {"type": "color", "value": [0.0314, 0.0353, 0.0431, 0.66]}}
+       ]
+      }
+     }
+    ]
+   },
+   {
+    "id": "death-tunnel",
+    "type": "vector",
+    "properties": {
+     "position": {"type": "keyword", "value": "absolute"},
+     "left": {"type": "length", "value": 0, "unit": "dp"},
+     "top": {"type": "length", "value": 0, "unit": "dp"},
+     "width": {"type": "length", "value": 100, "unit": "%"},
+     "height": {"type": "length", "value": 100, "unit": "%"},
+     "opacity": {"type": "number", "value": 0}
+    },
+    "paths": [
+     {
+      "id": "wash-0",
+      "commands": [
+       {"id": "p0", "op": "move", "points": [[0, 0]]},
+       {"id": "p1", "op": "line", "points": [[{"fraction": 1}, 0]]},
+       {"id": "p2", "op": "line", "points": [[{"fraction": 1}, {"fraction": 1}]]},
+       {"id": "p3", "op": "line", "points": [[0, {"fraction": 1}]]},
+       {"id": "close", "op": "close"}
+      ],
+      "fill": {
+       "type": "linear",
+       "from": [0, 0],
+       "to": [{"fraction": 1}, 0],
+       "stops": [
+        {"at": 0, "color": {"type": "color", "value": [0.0314, 0.0353, 0.0431, 0.28]}},
+        {"at": 0.1, "color": {"type": "color", "value": [0.0314, 0.0353, 0.0431, 0.24]}},
+        {"at": 0.25, "color": {"type": "color", "value": [0.0314, 0.0353, 0.0431, 0.13]}},
+        {"at": 0.4, "color": {"type": "color", "value": [0.0314, 0.0353, 0.0431, 0.015]}},
+        {"at": 0.5, "color": {"type": "color", "value": [0.0314, 0.0353, 0.0431, 0]}},
+        {"at": 0.6, "color": {"type": "color", "value": [0.0314, 0.0353, 0.0431, 0.015]}},
+        {"at": 0.75, "color": {"type": "color", "value": [0.0314, 0.0353, 0.0431, 0.13]}},
+        {"at": 0.9, "color": {"type": "color", "value": [0.0314, 0.0353, 0.0431, 0.24]}},
+        {"at": 1, "color": {"type": "color", "value": [0.0314, 0.0353, 0.0431, 0.28]}}
+       ]
+      }
+     },
+     {
+      "id": "wash-1",
+      "commands": [
+       {"id": "p0", "op": "move", "points": [[0, 0]]},
+       {"id": "p1", "op": "line", "points": [[{"fraction": 1}, 0]]},
+       {"id": "p2", "op": "line", "points": [[{"fraction": 1}, {"fraction": 1}]]},
+       {"id": "p3", "op": "line", "points": [[0, {"fraction": 1}]]},
+       {"id": "close", "op": "close"}
+      ],
+      "fill": {
+       "type": "linear",
+       "from": [0, 0],
+       "to": [0, {"fraction": 1}],
+       "stops": [
+        {"at": 0, "color": {"type": "color", "value": [0.0314, 0.0353, 0.0431, 0.28]}},
+        {"at": 0.1, "color": {"type": "color", "value": [0.0314, 0.0353, 0.0431, 0.24]}},
+        {"at": 0.25, "color": {"type": "color", "value": [0.0314, 0.0353, 0.0431, 0.13]}},
+        {"at": 0.4, "color": {"type": "color", "value": [0.0314, 0.0353, 0.0431, 0.015]}},
+        {"at": 0.5, "color": {"type": "color", "value": [0.0314, 0.0353, 0.0431, 0]}},
+        {"at": 0.6, "color": {"type": "color", "value": [0.0314, 0.0353, 0.0431, 0.015]}},
+        {"at": 0.75, "color": {"type": "color", "value": [0.0314, 0.0353, 0.0431, 0.13]}},
+        {"at": 0.9, "color": {"type": "color", "value": [0.0314, 0.0353, 0.0431, 0.24]}},
+        {"at": 1, "color": {"type": "color", "value": [0.0314, 0.0353, 0.0431, 0.28]}}
        ]
       }
      }

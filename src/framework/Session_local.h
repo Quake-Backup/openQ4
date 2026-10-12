@@ -216,6 +216,8 @@ public:
 	virtual void		SetGUI( idUserInterface *gui, HandleGuiCommand_t handle );
 	void OpenCampaignSelector( bool campaigns );
 	void SelectCampaign( const char *campaign, bool start = false );
+	bool OpenRetainedCampaignSkill();
+	void BeginRetainedCampaignSkill( idUserInterface *from, const char *campaign, bool back = false );
 	bool				OpenSystemSettings();
 	bool				ReturnSystemSettings();
 	void				ReportSystemSettings();
@@ -450,6 +452,7 @@ public:
 	bool				cinematicStateValid;
 	bool				cinematicActive;
 	openq4FramePacingStats_t framePacingStats;
+	unsigned long long	framePacingWindowMsec;
 	int					framePacingLastFrameMsec;
 	int					framePacingLastLatchedTic;
 	openq4FramePacingBound_t framePacingLastLoggedBound;
@@ -498,6 +501,10 @@ public:
 	bool				retainedSubpageDeeper;	// going to the sub-page, or back to the page
 	int					retainedSubpageBegan;	// presentation time the change began
 	int					retainedSubpageUntil;	// presentation time of the hand-over
+	int                     retainedDetailTarget = 0; // 0: normal level change, 1: skill, 2: campaign parent
+	idStr                   retainedDetailCampaign;
+	bool                    wipeToBlack = false;
+	int                     wipeFadeStarted = 0, wipeFadeDuration = 0;
 	bool				retainedHomeReturning;
 	// The multiplayer Escape and Welcome cards, loaded inside each
 	// multiplayer level load; the card covering the game's menu now (NULL:

@@ -10,8 +10,10 @@ Save game related helper classes.
 
 const int INITIAL_RELEASE_BUILD_NUMBER = 1262;
 const int OPENQ4_SAVEGAME_COMPATIBILITY_MAGIC = 'O' | ( 'Q' << 8 ) | ( '4' << 16 ) | ( 'S' << 24 );
-const int OPENQ4_SAVEGAME_COMPATIBILITY_VERSION = 3;
-const int OPENQ4_SAVEGAME_PREVIOUS_COMPATIBILITY_VERSION = 2;
+const int OPENQ4_SAVEGAME_COMPATIBILITY_VERSION = 4;
+const int OPENQ4_SAVEGAME_PREVIOUS_COMPATIBILITY_VERSION = 3;
+// Packed flags, typed fields and integrity trailers were introduced in v3.
+const int OPENQ4_SAVEGAME_TYPED_COMPATIBILITY_VERSION = 3;
 const int OPENQ4_SAVEGAME_SYNC_MAGIC = 'O' | ( 'Q' << 8 ) | ( '4' << 16 ) | ( 'Y' << 24 );
 const int OPENQ4_SAVEGAME_FOOTER_MAGIC = 'O' | ( 'Q' << 8 ) | ( '4' << 16 ) | ( 'F' << 24 );
 const int OPENQ4_SAVEGAME_FOOTER_VERSION = 1;

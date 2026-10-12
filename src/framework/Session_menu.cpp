@@ -50,22 +50,24 @@ extern glconfig_t glConfig;
 idCVar	idSessionLocal::gui_configServerRate( "gui_configServerRate", "0", CVAR_GUI | CVAR_ARCHIVE | CVAR_ROM | CVAR_INTEGER, "" );
 idCVar gui_set_sys_scroll( "gui_set_sys_scroll", "0", CVAR_GUI | CVAR_INTEGER, "display menu scroll step", 0, 28 );
 idCVar gui_set_audio_scroll( "gui_set_audio_scroll", "0", CVAR_GUI | CVAR_INTEGER, "audio menu scroll step", 0.0f, 0.0f );
-idCVar gui_set_game_scroll( "gui_set_game_scroll", "0", CVAR_GUI | CVAR_INTEGER, "game menu scroll step", 0, 72 );
+idCVar gui_set_game_scroll( "gui_set_game_scroll", "0", CVAR_GUI | CVAR_INTEGER, "game menu scroll step", 0, 73 );
 // The opt-ins are unarchived, so each lasts until the player quits, and
 // CVAR_NOCHEAT, because the engine counts any other unarchived CVar as a
 // cheat: joining or hosting a server without cheats resets it to its default,
 // and a player cannot set it during a match, where both pages open.
 idCVar ui_retainedSystem( "ui_retainedSystem", "0", CVAR_GUI | CVAR_BOOL | CVAR_NOCHEAT, "use the in-development retained SYSTEM page, which ui_retained includes only once every stock setting works there" );
 idCVar ui_retainedMultiplayer( "ui_retainedMultiplayer", "0", CVAR_GUI | CVAR_BOOL | CVAR_NOCHEAT, "use the in-development retained multiplayer menu card, which ui_retained includes only once all its pages are built" );
-// The single gate for the retained (RmlUi) interface, on by default. Each
+// The single gate for the retained (RmlUi) interface, off by default until its
+// gameplay overhead is negligible compared with the stock interface. Each
 // screen presents its stock GUI instead when its retained document is missing
 // or cannot load, or when the legacy menu it covers lacks a page it hands off
 // to (see idSessionLocal::FindRetainedGui). While it is 0 no session route
 // creates a retained view and the stock GUIs present every screen. Archived,
-// so a player who prefers the stock screens keeps them.
-idCVar ui_retained( "ui_retained", "1", CVAR_GUI | CVAR_BOOL | CVAR_ARCHIVE, "use the retained interface, including the gameplay status bar; 0 presents the stock interface" );
+// so an explicit player preference persists across launches.
+idCVar ui_retained( "ui_retained", "0", CVAR_GUI | CVAR_BOOL | CVAR_ARCHIVE, "opt into the experimental retained interface; 0 uses the default stock interface with lower gameplay overhead" );
 idCVar ui_hudScale( "ui_hudScale", "1", CVAR_GUI | CVAR_FLOAT | CVAR_ARCHIVE, "retained status bar scale, independent of menus", .5f, 2.0f );
 idCVar ui_hudSafeInset( "ui_hudSafeInset", "0", CVAR_GUI | CVAR_FLOAT | CVAR_ARCHIVE, "retained status bar safe inset in percent of viewport", 0.0f, 10.0f );
+idCVar ui_retainedCaptureLoadFade( "ui_retainedCaptureLoadFade", "0", CVAR_GUI | CVAR_BOOL | CVAR_NOCHEAT, "diagnostic: use the engine screenshot command to capture the middle and end of the retained loading fade" );
 
 static bool Session_RetainedScreensEnabled( void ) {
 #ifdef ID_DEDICATED
@@ -4101,10 +4103,10 @@ static const mainMenuSettingsScrollPage_t MAINMENU_SETTINGS_SCROLL_PAGES[] = {
 		"game_section_choice",
 		21,
 		0,
-		72,
+		73,
 		-24,
 		-41,
-		2042,
+		2066,
 		24.0f
 	}
 };
@@ -4141,13 +4143,13 @@ static int MainMenuSettingsSectionChoiceForScroll( const mainMenuSettingsScrollP
 		if ( scrollValue < 46 ) {
 			return 3;
 		}
-		if ( scrollValue < 56 ) {
+		if ( scrollValue < 57 ) {
 			return 4;
 		}
-		if ( scrollValue < 61 ) {
+		if ( scrollValue < 62 ) {
 			return 5;
 		}
-		if ( scrollValue < 68 ) {
+		if ( scrollValue < 69 ) {
 			return 6;
 		}
 		return 7;
@@ -5009,6 +5011,7 @@ static const char *const RETAINED_PAUSE_STROGG_GUI = "guis/menu/pause_strogg.q4u
 static const char *const RETAINED_LOADING_GUI = "guis/loading/loading.q4ui";
 static const char *const RETAINED_SINGLEPLAYER_GUI = "guis/menu/singleplayer.q4ui";
 static const char *const RETAINED_CAMPAIGNS_GUI = "guis/menu/campaigns.q4ui";
+static const char *const RETAINED_SKILL_GUI = "guis/menu/campaign_skill.q4ui";
 // The stock choreography shows a page 550 ms after its activation and a
 // home-state pop-up at once (specification section 8); the retained screen
 // covers the legacy departure for that long before the page takes over.
@@ -5199,6 +5202,7 @@ void idSessionLocal::SelectCampaign( const char *campaign, bool start ) {
         StartNewGame( awakening ? "game/m01_stranarus_trench1" : "game/airdefense1" );
         return;
     }
+    if ( !arena && OpenRetainedCampaignSkill() ) return;
     StartMenu();
     if ( arena ) {
         arenaCampaign.OpenBrowser();
@@ -5207,6 +5211,46 @@ void idSessionLocal::SelectCampaign( const char *campaign, bool start ) {
         // action chooses the active campaign's fixed initial map below.
         arenaCampaign.HandleGuiCommand( "arenaMissionOpen" );
     }
+#endif
+}
+
+bool idSessionLocal::OpenRetainedCampaignSkill() {
+#ifdef ID_DEDICATED
+    return false;
+#else
+    if ( !Session_RetainedScreensEnabled() ) return false;
+    idUserInterface *gui = FindRetainedGui( RETAINED_SKILL_GUI, true, false );
+    if ( !gui ) return false;
+    const int skill = idMath::ClampInt( 0, 4, cvarSystem->GetCVarInteger( "g_skill" ) );
+    static const char *descriptions[] = { "#str_200183", "#str_200019", "#str_200184", "#str_200185", "#str_41118" };
+    gui->SetStateInt( "skill", skill );
+    gui->SetStateBool( "turbo", false );
+    gui->SetStateString( "skill_description", descriptions[skill] );
+    gui->SetStateString( "campaign_title", !idStr::Icmp( fileSystem->GetActiveGameDir(), "q4xbase" ) ? "#str_230040" : "#str_230039" );
+    SetGUI( gui, NULL );
+    gui->StateChanged( common->GetPresentationTime() );
+    return true;
+#endif
+}
+
+void idSessionLocal::BeginRetainedCampaignSkill( idUserInterface *from, const char *campaign, bool back ) {
+#ifndef ID_DEDICATED
+    if ( !from || retainedSubpageFrom ) return;
+    if ( !back && idStr::Icmp( campaign, "quake4" ) && idStr::Icmp( campaign, "awakening" ) ) return;
+    if ( FindRetainedGui( back ? RETAINED_CAMPAIGNS_GUI : RETAINED_SKILL_GUI, true, false ) == NULL ||
+         cvarSystem->GetCVarBool( "ui_retainedReducedMotion" ) ) {
+        if ( back ) OpenCampaignSelector( true ); else SelectCampaign( campaign );
+        return;
+    }
+    retainedDetailTarget = back ? 2 : 1;
+    retainedDetailCampaign = campaign;
+    from->HandleNamedEvent( back ? "detailLeave" : !idStr::Icmp( campaign, "awakening" ) ? "detailEnterAwakening" : "detailEnterQuake4" );
+    PumpApplicationActions( from );
+    retainedSubpageFrom = from;
+    retainedSubpageDeeper = !back;
+    retainedSubpageBegan = common->GetPresentationTime();
+    retainedSubpageUntil = retainedSubpageBegan + ( back ? RETAINED_SUBPAGE_BACK_MSEC : RETAINED_SUBPAGE_DEEPER_MSEC );
+    if ( cvarSystem->GetCVarBool( "ui_retainedTrace" ) ) common->Printf( "RETAINED_DETAIL begin level=%d campaign=%s\n", back ? 3 : 4, campaign );
 #endif
 }
 
@@ -5376,6 +5420,7 @@ void idSessionLocal::DrawRetainedHome( int presentationTime ) {
 // stock selector opens at once.
 void idSessionLocal::BeginRetainedSubpage( idUserInterface *gui, bool deeper ) {
 #ifndef ID_DEDICATED
+	retainedDetailTarget = 0;
 	if ( FindRetainedGui( deeper ? RETAINED_CAMPAIGNS_GUI : RETAINED_SINGLEPLAYER_GUI, true, false ) == NULL ||
 			cvarSystem->GetCVarBool( "ui_retainedReducedMotion" ) ) {
 		// The stock selector, or reduced motion: the other level at once.
@@ -5406,6 +5451,7 @@ void idSessionLocal::UpdateRetainedSubpage() {
 	// Anything else taking the screen abandons the change.
 	if ( guiActive != retainedSubpageFrom ) {
 		retainedSubpageFrom = NULL;
+		retainedDetailTarget = 0;
 		return;
 	}
 	if ( common->GetPresentationTime() < retainedSubpageUntil ) {
@@ -5413,6 +5459,14 @@ void idSessionLocal::UpdateRetainedSubpage() {
 	}
 	const bool deeper = retainedSubpageDeeper;
 	retainedSubpageFrom = NULL;
+	if ( retainedDetailTarget != 0 ) {
+		const int target = retainedDetailTarget;
+		const idStr campaign = retainedDetailCampaign;
+		retainedDetailTarget = 0; retainedDetailCampaign.Clear();
+		if ( target == 2 ) OpenCampaignSelector( true ); else SelectCampaign( campaign );
+		if ( cvarSystem->GetCVarBool( "ui_retainedTrace" ) ) common->Printf( "RETAINED_DETAIL handover level=%d gui=%s\n", target == 2 ? 3 : 4, guiActive ? guiActive->Name() : "-" );
+		return;
+	}
 	// The arriving document's activation fades its backing in; the page
 	// coming back also fades its plates in.
 	OpenCampaignSelector( deeper );
@@ -5448,7 +5502,8 @@ bool idSessionLocal::RetainedSubpageEvent( const sysEvent_t *event ) {
 		const int duration = idMath::ClampInt( 150, 300, ( stepped + 49 ) / 50 * 50 );
 		idUserInterface *page = retainedSubpageFrom;
 		retainedSubpageFrom = NULL;
-		page->HandleNamedEvent( va( "subpageReverse%d", duration ) );
+		page->HandleNamedEvent( va( retainedDetailTarget ? "detailReverse%d" : "subpageReverse%d", duration ) );
+		retainedDetailTarget = 0; retainedDetailCampaign.Clear();
 		PumpApplicationActions( page );
 		if ( cvarSystem->GetCVarBool( "ui_retainedTrace" ) ) {
 			common->Printf( "RETAINED_SUBPAGE reverse duration=%d\n", duration );
@@ -5462,6 +5517,24 @@ bool idSessionLocal::RetainedSubpageEvent( const sysEvent_t *event ) {
 
 void idSessionLocal::HandleRetainedSessionRequest( idUserInterface *gui, const char *request ) {
 #ifndef ID_DEDICATED
+	if ( gui && request && gui == guiActive && !idStr::Icmp( gui->Name(), RETAINED_SKILL_GUI ) ) {
+		if ( retainedSubpageFrom ) return;
+		if ( !idStr::Icmp( request, "campaignSkillBack" ) ) BeginRetainedCampaignSkill( gui, "", true );
+		else if ( !idStr::Icmp( request, "campaignSkillTurbo" ) ) gui->SetStateBool( "turbo", !gui->State().GetBool( "turbo" ) );
+		else if ( !idStr::Icmp( request, "campaignSkillStart" ) ) {
+			cvarSystem->SetCVarInteger( "g_skill", idMath::ClampInt( 0, 4, gui->State().GetInt( "skill", "1" ) ) );
+			cvarSystem->SetCVarBool( "g_turboMode", gui->State().GetBool( "turbo" ) );
+			SelectCampaign( !idStr::Icmp( fileSystem->GetActiveGameDir(), "q4xbase" ) ? "awakening" : "quake4", true );
+			return;
+		} else {
+			static const char *descriptions[] = { "#str_200183", "#str_200019", "#str_200184", "#str_200185", "#str_41118" };
+			for ( int i = 0; i < 5; ++i ) if ( !idStr::Icmp( request, va( "campaignSkill%d", i ) ) ) {
+				gui->SetStateInt( "skill", i ); gui->SetStateString( "skill_description", descriptions[i] ); break;
+			}
+		}
+		gui->StateChanged( common->GetPresentationTime() );
+		return;
+	}
 	if ( gui != NULL && gui == guiRetainedMultiplayer ) {
 		// The multiplayer card's verbs, and only its verbs, reach the game.
 		HandleRetainedMultiplayerRequest( gui, request );
@@ -5472,8 +5545,8 @@ void idSessionLocal::HandleRetainedSessionRequest( idUserInterface *gui, const c
         // A change of level in progress takes no further request.
         if ( retainedSubpageFrom != NULL ) return;
         if ( !idStr::Icmp( request, "campaigns" ) ) BeginRetainedSubpage( gui, true );
-        else if ( !idStr::Icmp( request, "campaignQuake4" ) ) SelectCampaign( "quake4" );
-        else if ( !idStr::Icmp( request, "campaignAwakening" ) ) SelectCampaign( "awakening" );
+        else if ( !idStr::Icmp( request, "campaignQuake4" ) ) BeginRetainedCampaignSkill( gui, "quake4" );
+        else if ( !idStr::Icmp( request, "campaignAwakening" ) ) BeginRetainedCampaignSkill( gui, "awakening" );
         else if ( !idStr::Icmp( request, "campaignArena" ) ) SelectCampaign( "arena" );
         else if ( !idStr::Icmp( request, "campaignBack" ) ) BeginRetainedSubpage( gui, false );
         else if ( !idStr::Icmp( request, "campaignHome" ) ) StartMenu();

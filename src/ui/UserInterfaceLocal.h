@@ -157,6 +157,11 @@ class idUserInterfaceManagerLocal : public idUserInterfaceManager {
 	friend class idUserInterfaceManaged;
 
 public:
+	void CaptureLegacyText(const char* text, const char* family, float scale, float width, float height,
+		int align, bool clip, std::vector<openq4::ui::HudPrimitive>& output) {
+		dc.CaptureLegacyText(text,family,scale,width,height,align,clip,output);
+	}
+
 	virtual void				Init();
 	virtual void				Shutdown();
 	virtual void				Touch( const char *name );

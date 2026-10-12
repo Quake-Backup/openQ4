@@ -554,7 +554,7 @@ void idPhysics_RigidBody_RestorePState( idRestoreGame *savefile, rigidBodyPState
 	savefile->ReadFloat( state.lastTimeStep );
 	savefile->ReadVec3( state.localOrigin );
 	savefile->ReadMat3( state.localAxis );
-	if ( savefile->GetOpenQ4SaveGameCompatibilityVersion() == OPENQ4_SAVEGAME_COMPATIBILITY_VERSION ) {
+	if ( savefile->GetOpenQ4SaveGameCompatibilityVersion() >= OPENQ4_SAVEGAME_TYPED_COMPATIBILITY_VERSION ) {
 		savefile->ReadVec6( state.pushVelocity );
 	} else {
 		savefile->Read( &state.pushVelocity, sizeof( state.pushVelocity ) );

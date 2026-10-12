@@ -1,8 +1,8 @@
 # UI product requirement register
 
-9 September 2026, revised 26, 27, 28 and 29 September and 1 October 2026. The
-[machine-readable register](product-requirements.json) contains **340
-requirements** for the complete UI product: 307 that define acceptance and 33
+9 September 2026, revised 26, 27, 28 and 29 September and 1, 7 and 9 October 2026. The
+[machine-readable register](product-requirements.json) contains **347
+requirements** for the complete UI product: 310 that define acceptance and 37
 superseded rows kept for history. It expands
 the [completion plan](../plans/ui-product-completion.md), the
 [original delivery scope](../plans/idtech5-ui.md) and the normative
@@ -549,8 +549,8 @@ On engine `ded46e92e916a794bb26f028d5059c848ef79de1` the multiplayer Escape card
 
 On engine `7e428ca62d07ec7097215112eaf030545a3916ba` the multiplayer Escape card's Match page gains its Series and Evidence sections, completing the page: the series, the map pool, the veto and map history, the format and the series and veto actions with the stock confirmations, and the evidence with Refresh; only the referee credential opens the stock page. The gate and native screens tests, a mutation pass and live probes qualify it; `FLOW-012` and `FLOW-046` gain partial evidence. Evidence: `.tmp/ui/retained-mp-match-series-evidence/validation-evidence.json`, SHA-256 `6ee747ef06a2c9d6d90984021912bb53e22b4c354be2c6380d5bb9aedbeddf23`.
 
-There are **94 partial, 245 pending and one verified requirement**, counting the
-33 superseded rows at their recorded states. `BEH-002`
+There are **102 partial, 244 pending and one verified requirement**, counting the
+36 superseded rows at their recorded states. `BEH-002`
 remains partial for the implemented settings transaction/service boundary.
 `BEH-005` remains partial for committed action delivery and cancellation; stock
 sounds and the complete device/modal/widget behavior still require implementation
@@ -625,7 +625,7 @@ complete source-bound mappings and evidence.
 | `RES-001`–`005` | Full material/movie/model operations, generated images and actual renderer resource accounting | M3, M4 |
 | `ART-001`–`037` | Measured component/icon libraries, exact visual tokens, panel/plate anatomy, all eight distinct families, complex-image exceptions, device glyphs, modern refinements, detailing, HUD gauge constructions, the crosshair and item icon catalogues, the traced HUD instruments, the title screen's emblem, the initializing screen's layers, the squad patches and The Awakening's icons and crosshairs | M2–M5 |
 | `MOT-001`–`016` | Continuous clocks, normative timing/easing, reversal/ownership, page/modal orchestration, stock choreography, sound, ambient loops/alarms, reduced motion, band motion with the sub-page step, HUD alarms and the translation and transmission effects | M1–M6 |
-| `FLOW-001`–`061` | Every menu/MP flow, HUD, communications, scope/vehicle, cinematic and scripted/world GUI; lifecycle, first-run setup, touch controls and editor, terminal input, modern screen patterns, HUD presets and layouts; the HUD's composition, gauges, strip, crosshair, messages and multiplayer HUD; objectives, boss, vehicle, scope and weapon displays; the scoreboard; the Remastered multiplayer top and chat; the multiplayer menus, the loading screens, the title and pause menus, the initializing screen, the menu levels, the Competitive HUD, the spectator follow camera and The Awakening's vehicle display refinements | M2, M4, M5 |
+| `FLOW-001`–`065` | Every menu/MP flow, HUD, communications, scope/vehicle, cinematic and scripted/world GUI; lifecycle, first-run setup, touch controls and editor, terminal input, modern screen patterns, HUD presets and layouts; the HUD's composition, gauges, strip, crosshair, messages and multiplayer HUD; objectives, boss, vehicle, scope and weapon displays; the scoreboard; the Remastered multiplayer top and chat; the multiplayer menus, loading, title and pause, initialization, four menu levels, Competitive HUD, spectator follow camera, expansion vehicle displays, Medical Labs implant activation, scope focus, recovery and death continuity | M2, M4, M5 |
 | `ED-001`–`030` | Native workspace, canvas/constraints, components, vectors, motion/behavior, persistence/recovery, diagnostics and complete SP/MP delivery | M2, M3 |
 | `PERF-001`–`009` | Named optimized baselines, separate CPU/GPU telemetry, warm/cold runs, budgets, long-run plateau, measured optimization and mobile power limits | M3, M6 |
 | `QUAL-001`–`011` | Display/text/input/refresh/language/world extremes, independent visual review, stock parity, input/profile/device matrix, actual platforms and evidence provenance | M6 |
@@ -760,3 +760,66 @@ that inventory-only refresh did not run a game. The later renderer probes above
 record their own gameplay and warning comparisons.
 
 The source consolidation also preserves ART-036's earlier partial record from `e3e7237a`, carrying the confirmation evidence retained by ART-037 after supersession. No additional requirement or production GUI is accepted.
+
+## 7 October 2026: implant design coverage
+
+Register schema 14 appends `FLOW-062` for the Medical Labs temporary implant
+overlay, now measured in visual specification 1.15 section 14.19 and illustrated
+in the editable atlas. It preserves the 4650 ms activation, separate hurt pulse,
+wide/tall layout and reduced-motion requirements. The row remains pending until
+its retained vehicle-HUD migration and engine acceptance captures exist. Existing
+requirement statuses and acceptance gates remain unchanged.
+
+## 7 October 2026: initialization and view continuity
+
+Register schema 15 follows visual specification 1.16. It supersedes `FLOW-050`
+with `FLOW-063` for four menu levels and campaign setup drafts, and `FLOW-053`
+with `FLOW-064` for soft focus outside all three scopes. It appends `FLOW-065`
+for treatment recovery, death grading and the black loading handover. Existing
+rows remain historical and unchanged; the fourth-level row remains partial and
+carries the earlier sub-page evidence. The two other rows start pending; this
+scope revision preserves the evidence registry. No row gains acceptance evidence.
+
+The separate implementation checkpoint records early vector initialization,
+shared forward/Back transitions, menu drafts, Gaussian optics and view effects.
+Native tests and engine screenshots cover the implemented Windows OpenGL/Vulkan
+paths, portrait layout, reduced motion, localized menus, actual campaign
+progression and terminal loading pixels. See the
+[implementation record](retained-screens.md) and
+`.tmp/ui-continuity/validation-summary.json`. The revision audit is recorded in
+`.tmp/ui-continuity/requirement-audit-ready.json`. Other platforms, physical input,
+future screen migrations and full product acceptance remain outside this
+checkpoint; no migration or final gate is accepted.
+
+## 7 October 2026: playback-driven communication graphs
+
+Register schema 16 follows visual specification 1.17 and supersedes `ART-029`
+with pending `ART-038`. It preserves EKG, Classic, masks, squad emblems and
+talker layouts while replacing synthetic Remastered traces with independent
+decoded audio histories. No existing requirement changes state or gains
+acceptance. [Implementation and evidence](audio-graphs.md) explicitly record
+the unfinished live microphone voice backend and remaining HUD/platform work.
+
+## Revision 17: weapon-wheel placement
+
+Visual specification 1.18 preserves the original 77% horizontal wheel position
+through archived `ui_weaponWheelOffset 27`, with zero centered, signed offsets,
+and safety fitting that does not rewrite the preference. `WID-036` supersedes
+`WID-033`; the complete wheel/quick-chat and motion scope is carried forward.
+The appended row remains pending. [Native weapon-wheel evidence](weapon-wheels.md)
+does not accept the broader product requirement. There are 346 requirements:
+95 partial, 250 pending and one verified; 37 rows are superseded.
+
+## Revision 18: weapon-wheel scene focus
+
+Visual specification 1.19 replaces the former no-blur wheel backing with
+quality Gaussian scene focus below the HUD. `WID-037` appends this requirement
+and depends on the existing full wheel scope in `WID-036`; no existing row or
+supersession is changed. The new row remains pending. There are 347 requirements:
+95 partial, 251 pending and one verified; 37 rows are superseded.
+
+## 9 October 2026: HUD continuation checkpoint
+
+The recovered HUD work now has bounded evidence for the Classic gauges and canvas, individual ammo gains, notice separation, MP edge states and the Marine/Strogg wheels. `ART-026`, `FLOW-031`, `FLOW-051`, `LAY-020`, `FLOW-056`, `WID-034` and `WID-036` move from pending to partial; `MOT-015` gains wheel-motion evidence. All normative requirements, constraints, dependencies, historical rows and acceptance gates remain unchanged. There are 102 partial, 244 pending and one verified requirement.
+
+The source-bound local record is `.tmp/claude-continuation/hud/validation-summary.json`; [HUD](remastered-hud.md) and [wheel](weapon-wheels.md) notes retain the open work. This checkout already contained register revisions 14 through 18 beyond its committed schema-13 baseline. The continuation therefore records a structural/source-binding check against its preserved working checkpoint, not a successful immutable-Git increment audit or product acceptance.

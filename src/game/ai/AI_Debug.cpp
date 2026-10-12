@@ -103,6 +103,14 @@ idAI::GetDebugInfo
 void idAI::GetDebugInfo ( debugInfoProc_t proc, void* userData ) {
 	// Base class first
 	idActor::GetDebugInfo ( proc, userData );
+	proc( "idAI", "freezeFactor", va( "%g", freezeFactor ), userData );
+	proc( "idAI", "frozenSolidTime", va( "%d", frozenSolidTime ), userData );
+	proc( "idAI", "frozenLocation", va( "%d", frozenLocation ), userData );
+	proc( "idAI", "torsoPlaybackRate", va( "%g", animator.CurrentAnim( ANIMCHANNEL_TORSO )->GetPlaybackRate() ), userData );
+	proc( "idAI", "retchBuffOwner", GetRetchBuffOwner() ? GetRetchBuffOwner()->GetName() : "<none>", userData );
+	proc( "idAI", "damageDealtScale", va( "%g", GetDamageDealtScale() ), userData );
+	proc( "idAI", "damageTakenScale", va( "%g", GetDamageTakenScale() ), userData );
+	proc( "idAI", "overlayShader", renderEntity.overlayShader ? renderEntity.overlayShader->GetName() : "<none>", userData );
 	
 	proc ( "idAI", "aifl.damage",			aifl.damage ? "true" : "false", userData );
 	proc ( "idAI", "aifl.undying",			aifl.undying ? "true" : "false", userData );

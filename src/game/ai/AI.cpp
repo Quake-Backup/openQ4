@@ -50,9 +50,13 @@ idAI::idAI ( void ) {
 	projectile_height_to_distance_ratio = 1.0f;
 
 	freezeFactor			= 0.0f;
-	frozenSolidTime			= 0;
+	frozenSolidTime			= -1;
 	frozenLocation			= INVALID_JOINT;
-	freezeOverlay			= false;
+	freezeOverlay			= NULL;
+	retchBuffOverlay		= NULL;
+	statusBaseOverlay		= NULL;
+	retchDamageDealt		= 1.0f;
+	retchDamageTaken		= 1.0f;
 
 	onlyTargetSubstring		= false;
 	ignorePlayer			= false;
@@ -425,6 +429,8 @@ void idAI::Save( idSaveGame *savefile ) const {
 	actionMeleeAttack.Save ( savefile );
 	actionLeapAttack.Save ( savefile );
 	actionJumpBack.Save ( savefile );
+
+	SaveAwakeningState( savefile );
 }
 
 /*
@@ -541,7 +547,7 @@ void idAI::Restore( idRestoreGame *savefile ) {
 	pusher.Restore( savefile );				// cnicholson: Added unrestored var
 	scriptedActionEnt.Restore ( savefile ); // cnicholson: Added unrestored var
 
-	if ( savefile->GetOpenQ4SaveGameCompatibilityVersion() == OPENQ4_SAVEGAME_COMPATIBILITY_VERSION ) {
+	if ( savefile->GetOpenQ4SaveGameCompatibilityVersion() >= OPENQ4_SAVEGAME_TYPED_COMPATIBILITY_VERSION ) {
 		savefile->ReadInt( packedFlags );
 		aifl.awake = ( packedFlags & BIT( 0 ) ) != 0;
 		aifl.damage = ( packedFlags & BIT( 1 ) ) != 0;
@@ -575,7 +581,7 @@ void idAI::Restore( idRestoreGame *savefile ) {
 	savefile->ReadInt ( flagOverrides );
 
 	// Combat variables
-	if ( savefile->GetOpenQ4SaveGameCompatibilityVersion() == OPENQ4_SAVEGAME_COMPATIBILITY_VERSION ) {
+	if ( savefile->GetOpenQ4SaveGameCompatibilityVersion() >= OPENQ4_SAVEGAME_TYPED_COMPATIBILITY_VERSION ) {
 		savefile->ReadInt( packedFlags );
 		combat.fl.ignoreEnemies = ( packedFlags & BIT( 0 ) ) != 0;
 		combat.fl.alert = ( packedFlags & BIT( 1 ) ) != 0;
@@ -625,7 +631,7 @@ void idAI::Restore( idRestoreGame *savefile ) {
 	savefile->ReadInt	 ( passive.idleAnimChangeTime );
 	savefile->ReadInt	 ( passive.fidgetTime );
 	savefile->ReadInt	 ( passive.talkTime );
-	if ( savefile->GetOpenQ4SaveGameCompatibilityVersion() == OPENQ4_SAVEGAME_COMPATIBILITY_VERSION ) {
+	if ( savefile->GetOpenQ4SaveGameCompatibilityVersion() >= OPENQ4_SAVEGAME_TYPED_COMPATIBILITY_VERSION ) {
 		savefile->ReadInt( packedFlags );
 		passive.fl.disabled = ( packedFlags & BIT( 0 ) ) != 0;
 		passive.fl.multipleIdles = ( packedFlags & BIT( 1 ) ) != 0;
@@ -636,7 +642,7 @@ void idAI::Restore( idRestoreGame *savefile ) {
 
 	// Enemy 
 	enemy.ent.Restore ( savefile );
-	if ( savefile->GetOpenQ4SaveGameCompatibilityVersion() == OPENQ4_SAVEGAME_COMPATIBILITY_VERSION ) {
+	if ( savefile->GetOpenQ4SaveGameCompatibilityVersion() >= OPENQ4_SAVEGAME_TYPED_COMPATIBILITY_VERSION ) {
 		savefile->ReadInt( packedFlags );
 		enemy.fl.lockOrigin = ( packedFlags & BIT( 0 ) ) != 0;
 		enemy.fl.dead = ( packedFlags & BIT( 1 ) ) != 0;
@@ -716,13 +722,7 @@ void idAI::Restore( idRestoreGame *savefile ) {
 	SetCombatModel();
 	LinkCombat();
 
-	// freezing is not saved, so drop a freeze overlay the render entity kept
-	if ( renderEntity.overlayShader != NULL &&
-		 ( renderEntity.overlayShader == declManager->FindMaterial( AI_FREEZE_OVERLAY, false ) ||
-		   renderEntity.overlayShader == declManager->FindMaterial( AI_FROZEN_OVERLAY, false ) ) ) {
-		renderEntity.overlayShader = NULL;
-		UpdateVisuals();
-	}
+	RestoreAwakeningState( savefile );
 }
 
 /*
@@ -1423,13 +1423,17 @@ void idAI::UpdateLiquid( void ) {
 
 void idAI::Think( void ) {
 
-	// if we are completely closed off from the player, don't do anything at all
-	if ( CheckDormant() ) {
-		return;
+	// Status lifetimes continue outside the player's PVS.
+	if ( freezeFactor > 0.0f || IsFrozenSolid() ) {
+		UpdateFreeze();
+	}
+	idAI *buffOwner = retchBuffOwner.GetEntity();
+	if ( retchBuffOverlay != NULL && ( buffOwner == NULL || buffOwner->aifl.dead ) ) {
+		ClearRetchBuff( buffOwner );
 	}
 
-	if ( freezeFactor > 0.0f || frozenSolidTime > 0 ) {
-		UpdateFreeze();
+	if ( CheckDormant() ) {
+		return;
 	}
 
 	// Simple think this frame?
@@ -1442,7 +1446,7 @@ void idAI::Think( void ) {
 		aiManager.timerThink.Start ( );
 	}
 
-	if ( thinkFlags & TH_THINK ) {	
+	if ( ( thinkFlags & TH_THINK ) && !IsFrozenSolid() ) {
 		// clear out the enemy when he dies or is hidden
 		idEntity* enemyEnt = enemy.ent;
 		idActor*  enemyAct = dynamic_cast<idActor*>( enemyEnt );
@@ -1872,7 +1876,7 @@ idAI::IsFrozenSolid
 =====================
 */
 bool idAI::IsFrozenSolid ( void ) const {
-	return frozenSolidTime > 0 && frozenSolidTime < gameLocal.time;
+	return frozenSolidTime >= 0;
 }
 
 /*
@@ -1886,9 +1890,7 @@ void idAI::SetFreezeFactor ( float factor ) {
 	// the animation slows with the square of the chill, to a quarter, and stops when frozen solid
 	const float warmth = 1.0f - freezeFactor;
 	const float rate = IsFrozenSolid() ? AI_FROZEN_ANIM_RATE : warmth * warmth * 0.75f + 0.25f;
-	animator.SetPlaybackRate( rate );
-	animator.CurrentAnim( ANIMCHANNEL_TORSO )->SetPlaybackRate( gameLocal.time, rate );
-	animator.CurrentAnim( ANIMCHANNEL_LEGS )->SetPlaybackRate( gameLocal.time, rate );
+	animator.SetPlaybackRateScale( rate );
 }
 
 /*
@@ -1899,16 +1901,105 @@ Clears the overlay only when the freeze put it there.
 =====================
 */
 void idAI::SetFreezeOverlay ( const char *material ) {
-	if ( material != NULL ) {
-		renderEntity.overlayShader = declManager->FindMaterial( material );
-		freezeOverlay = true;
-	} else if ( freezeOverlay ) {
-		renderEntity.overlayShader = NULL;
-		freezeOverlay = false;
-	} else {
+	if ( freezeOverlay == NULL && retchBuffOverlay == NULL ) {
+		statusBaseOverlay = renderEntity.overlayShader;
+	}
+	freezeOverlay = material != NULL ? declManager->FindMaterial( material ) : NULL;
+	UpdateStatusOverlay();
+}
+
+void idAI::UpdateStatusOverlay( void ) {
+	renderEntity.overlayShader = freezeOverlay != NULL ? freezeOverlay :
+		( retchBuffOverlay != NULL ? retchBuffOverlay : statusBaseOverlay );
+	UpdateVisuals();
+}
+
+bool idAI::ApplyRetchBuff( idAI *owner, float dealt, float taken, const idMaterial *overlay ) {
+	if ( owner == NULL || ( retchBuffOwner.GetEntity() != NULL && retchBuffOwner.GetEntity() != owner ) ) {
+		return false;
+	}
+	if ( freezeOverlay == NULL && retchBuffOverlay == NULL ) {
+		statusBaseOverlay = renderEntity.overlayShader;
+	}
+	retchBuffOwner = owner;
+	retchDamageDealt = dealt;
+	retchDamageTaken = taken;
+	retchBuffOverlay = overlay;
+	UpdateStatusOverlay();
+	return true;
+}
+
+void idAI::ClearRetchBuff( idAI *owner ) {
+	if ( retchBuffOwner.GetEntity() != owner ) {
 		return;
 	}
-	UpdateVisuals();
+	retchBuffOwner = NULL;
+	retchDamageDealt = 1.0f;
+	retchDamageTaken = 1.0f;
+	retchBuffOverlay = NULL;
+	UpdateStatusOverlay();
+}
+
+void idAI::SaveAwakeningState( idSaveGame *savefile ) const {
+	savefile->WriteFloat( freezeFactor );
+	savefile->WriteInt( frozenSolidTime );
+	savefile->WriteInt( frozenLocation );
+	savefile->WriteMaterial( freezeOverlay );
+	savefile->WriteMaterial( freezeOverlay != NULL || retchBuffOverlay != NULL ? statusBaseOverlay : renderEntity.overlayShader );
+	retchBuffOwner.Save( savefile );
+	savefile->WriteFloat( retchDamageDealt );
+	savefile->WriteFloat( retchDamageTaken );
+	savefile->WriteMaterial( retchBuffOverlay );
+}
+
+void idAI::RestoreAwakeningState( idRestoreGame *savefile ) {
+	if ( savefile->GetOpenQ4SaveGameCompatibilityVersion() >= 4 ) {
+		savefile->ReadFloat( freezeFactor );
+		savefile->ReadInt( frozenSolidTime );
+		savefile->ReadInt( frozenLocation );
+		savefile->ReadMaterial( freezeOverlay );
+		savefile->ReadMaterial( statusBaseOverlay );
+		retchBuffOwner.Restore( savefile );
+		savefile->ReadFloat( retchDamageDealt );
+		savefile->ReadFloat( retchDamageTaken );
+		savefile->ReadMaterial( retchBuffOverlay );
+		if ( !( freezeFactor >= 0.0f && freezeFactor <= 1.0f ) || frozenSolidTime < -1 || frozenSolidTime > gameLocal.time ||
+			 !( retchDamageDealt >= 0.0f && retchDamageDealt <= 1000.0f ) ||
+			 !( retchDamageTaken >= 0.0f && retchDamageTaken <= 1000.0f ) ) {
+			savefile->Error( "idAI::Restore: invalid Awakening status" );
+		}
+		UpdateStatusOverlay();
+		return;
+	}
+
+	// v3 saved disabled animation states and the ice shader, but omitted the
+	// shatter timer. Recover solid ice with a fresh four-second timer. Partial
+	// chill safely thaws; its original amount and underlying speed are unknown.
+	if ( renderEntity.overlayShader == NULL ) {
+		return;
+	}
+	const bool frozen = renderEntity.overlayShader == declManager->FindMaterial( AI_FROZEN_OVERLAY, false );
+	const bool chilled = renderEntity.overlayShader == declManager->FindMaterial( AI_FREEZE_OVERLAY, false );
+	if ( ( frozen || chilled ) && renderEntity.overlayShader != NULL ) {
+		if ( frozen && health > 0 && !aifl.dead ) {
+			frozenSolidTime = gameLocal.time;
+			freezeFactor = 1.0f;
+			freezeOverlay = renderEntity.overlayShader;
+			animator.SetPlaybackRateScale( AI_FROZEN_ANIM_RATE );
+		}
+		for ( int channel = ANIMCHANNEL_ALL; channel < ANIM_NumAnimChannels; ++channel ) {
+			idAnimBlend *anim = animator.CurrentAnim( channel );
+			const float rate = IsFrozenSolid() ? AI_FROZEN_ANIM_RATE : ( anim->Anim() != NULL ? anim->Anim()->GetPlaybackRate() : 1.0f );
+			anim->SetPlaybackRate( gameLocal.time, rate );
+		}
+		UpdateStatusOverlay();
+	} else if ( renderEntity.overlayShader != NULL &&
+		( renderEntity.overlayShader == declManager->FindMaterial( "common/defense_boost_overlay", false ) ||
+		  renderEntity.overlayShader == declManager->FindMaterial( "common/damage_boost_overlay", false ) ) ) {
+		// Retch restore events reconstruct v3 buffs after all allies restore.
+		renderEntity.overlayShader = NULL;
+		UpdateVisuals();
+	}
 }
 
 /*
@@ -1917,7 +2008,7 @@ idAI::AddFreeze
 =====================
 */
 void idAI::AddFreeze ( float amount ) {
-	if ( frozenSolidTime > 0 ) {
+	if ( IsFrozenSolid() || health <= 0 || aifl.dead ) {
 		return;
 	}
 	SetFreezeFactor( freezeFactor + amount );
@@ -1929,6 +2020,9 @@ idAI::FreezeSolid
 =====================
 */
 void idAI::FreezeSolid ( int location ) {
+	if ( IsFrozenSolid() ) {
+		return;
+	}
 	if ( DebugActions() ) {
 		gameLocal.Printf( "%d %s: frozen solid\n", gameLocal.time, name.c_str() );
 	}
@@ -1956,23 +2050,19 @@ idAI::UpdateFreeze
 void idAI::UpdateFreeze ( void ) {
 	if ( IsFrozenSolid() ) {
 		SetFreezeFactor( 1.0f );
-		if ( gameLocal.time > frozenSolidTime + AI_FROZEN_SHATTER_DELAY || health <= 0 ) {
+		if ( gameLocal.time - frozenSolidTime >= AI_FROZEN_SHATTER_DELAY || health <= 0 ) {
 			if ( DebugActions() ) {
 				gameLocal.Printf( "%d %s: shatters\n", gameLocal.time, name.c_str() );
 			}
-			frozenSolidTime = 0;
-			freezeFactor = 0.0f;
+			frozenSolidTime = -1;
+			SetFreezeFactor( 0.0f );
+			SetFreezeOverlay( NULL );
 			if ( gameLocal.FindEntityDefDict( AI_FROZEN_SHATTER_DAMAGE, false ) ) {
 				Damage( gameLocal.world, gameLocal.world, idVec3( 0.0f, 0.0f, 1.0f ), AI_FROZEN_SHATTER_DAMAGE, 1000.0f, frozenLocation );
 			}
 		}
 		return;
 	}
-	if ( frozenSolidTime > 0 ) {
-		// frozen this frame; solid from the next
-		return;
-	}
-
 	SetFreezeFactor( freezeFactor - AI_FREEZE_THAW_PER_SECOND * MS2SEC( gameLocal.msec ) );
 	SetFreezeOverlay( freezeFactor > AI_FREEZE_OVERLAY_ABOVE ? AI_FREEZE_OVERLAY : NULL );
 }

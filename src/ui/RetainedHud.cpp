@@ -6,6 +6,7 @@
 #include "UserInterfaceLocal.h"
 #include "RetainedUI.h"
 extern idUserInterfaceManagerLocal uiManagerLocal;
+extern idCVar r_skipGuiShaders;
 #ifndef ID_DEDICATED
 #include "../framework/KeyInput.h"
 #include "retained/Runtime.h"
@@ -15,6 +16,8 @@ extern idUserInterfaceManagerLocal uiManagerLocal;
 #include <array>
 #include <map>
 #include <set>
+#include <string_view>
+#include <unordered_map>
 
 namespace {
 constexpr const char* Artwork="guis/hud/artwork.q4ui";
@@ -49,10 +52,16 @@ void idRetainedHud::Precache() {
 	// Game-owned damage numbers use the console atlas outside the GUI font
 	// loader. Prepare its retained alias while image loading is deferred too.
 	RetainedUI_PrecacheImage("fonts/english/bigchars",false);
+	// The Remastered ECG is loaded from the installation and first appears
+	// after map loading. Register its additive wrappers during level precache.
+	for (const char* image : {"gfx/guis/hud/ekg.tga","gfx/guis/hud/s_ekg.tga","gfx/guis/hud/s_ekg2.tga"})
+		RetainedUI_PrecacheImage(std::string("_repeat/")+image,true);
+	RetainedUI_PrecacheImage("_repeat/gfx/guis/hud/waveform.tga",true);
 	std::string source,error; if (!Read(Registry,source)) return;
 	Json::Value data; Json::CharReaderBuilder builder; std::unique_ptr<Json::CharReader> reader(builder.newCharReader());
 	if (!reader->parse(source.data(),source.data()+source.size(),&data,&error) || !data.isObject() || !data["images"].isArray() ||
 		(!data["imageAliases"].isNull() && !data["imageAliases"].isObject())) return;
+	std::set<std::string> precached;
 	for (const auto& image:data["images"]) {
 		if (!image.isString()) continue;
 		std::string name=image.asString();
@@ -60,6 +69,13 @@ void idRetainedHud::Precache() {
 			if (!data["imageAliases"][name].isString()) continue;
 			name=data["imageAliases"][name].asString();
 		}
+		if (!precached.insert(name).second) continue;
+		// These three bitmaps are supplied by The Awakening, never by q4base.
+		// Keep their aliases available without loading absent optional media.
+		if ((name=="gfx/guis/hud/icons/gun_corecannon" || name=="gfx/guis/hud/icons/gun_freezegun" ||
+			name=="gfx/guis/hud/icons/gun_flamegun") &&
+			fileSystem->ReadFile((name+".tga").c_str(),nullptr)<0 &&
+			fileSystem->ReadFile(("dds/"+name+".dds").c_str(),nullptr)<0) continue;
 		const bool additive=name.starts_with("q4-add/");
 		RetainedUI_PrecacheImage(additive?name.substr(7):name,additive);
 	}
@@ -159,6 +175,23 @@ idCVar ui_hudDamageDirection("ui_hudDamageDirection","1",CVAR_GUI|CVAR_BOOL|CVAR
 	"Remastered HUD: show the damage direction indicator");
 idCVar ui_hudPickups("ui_hudPickups","1",CVAR_GUI|CVAR_BOOL|CVAR_ARCHIVE,"Remastered HUD: show pickup messages");
 idCVar ui_hudWeaponStrip("ui_hudWeaponStrip","1",CVAR_GUI|CVAR_BOOL|CVAR_ARCHIVE,"Remastered HUD: show the weapon strip on a weapon change");
+// The accessibility baseline's reduced flashing (section 13.10): every HUD
+// layout caps the damage direction indicator and the vehicle hit glow at 0.40,
+// and the game dims its full-screen white flashes and drops the death
+// afterimage.
+idCVar ui_reducedFlashing("ui_reducedFlashing","0",CVAR_GUI|CVAR_BOOL|CVAR_ARCHIVE,
+	"reduce flashing: cap hit indicators at 0.40, dim full-screen white flashes and drop the death afterimage");
+
+bool idRetainedHud::UsesClassicCanvas(const char* source) {
+	if (ui_hudLayout.GetInteger()!=0 || !cvarSystem->GetCVarBool("ui_retained") ||
+		!idRemasteredHud::DocumentFor(source)) return false;
+	// External mods retain ownership of their stock-named GUI layouts.
+	for (const char* cvar:{"fs_game","fs_game_base"}) {
+		const char* mod=cvarSystem->GetCVarString(cvar);
+		if (mod[0] && idStr::Icmp(mod,"baseoq4") && idStr::Icmp(mod,"q4base") && idStr::Icmp(mod,"q4xbase")) return false;
+	}
+	return true;
+}
 
 namespace {
 struct RemasteredRoute { const char* source; const char* document; };
@@ -204,7 +237,30 @@ struct idRemasteredHud::Impl {
 	// The document's declared application state: 'n'umber, 'b'oolean, 's'tring.
 	// Only these keys cross over, normalized, because one loose legacy value
 	// would otherwise reject the document's whole state batch.
-	std::map<std::string,char> types;
+	struct StateKeyHash {
+		using is_transparent=void;
+		size_t operator()(std::string_view key) const {
+			std::uint64_t hash=14695981039346656037ull;
+			for (unsigned char c:key) { if (c>='A' && c<='Z') c+='a'-'A'; hash=(hash^c)*1099511628211ull; }
+			return static_cast<size_t>(hash);
+		}
+	};
+	struct StateKeyEqual {
+		using is_transparent=void;
+		bool operator()(std::string_view a,std::string_view b) const {
+			if (a.size()!=b.size()) return false;
+			for (size_t i=0;i<a.size();++i) {
+				unsigned char x=a[i],y=b[i];
+				if (x>='A' && x<='Z') x+='a'-'A';
+				if (y>='A' && y<='Z') y+='a'-'A';
+				if (x!=y) return false;
+			}
+			return true;
+		}
+	};
+	struct ForwardValue { char type='s'; bool valid=false,icon=false,weapon=false; std::string raw,normalized; };
+	std::unordered_map<std::string,ForwardValue,StateKeyHash,StateKeyEqual> types;
+	openq4::ui::HudAmmoReadout ammoReadout;
 	bool failed=false,reported=false;
 	int failures=0;
 	// Named events sent before the document loads (a vehicle's boarding
@@ -229,17 +285,20 @@ struct idRemasteredHud::Impl {
 	std::vector<Readback> readbacks;
 	std::map<std::string,float> readbackValues;
 	// ui_hudProfile accumulators
-	double forwardMs=0,eventMs=0,stateMs=0,drawMs=0,unseenMs=0;
+	double forwardMs=0,eventMs=0,stateMs=0,drawMs=0,unseenMs=0,prepareMs=0,readbackMs=0;
 	int forwards=0,events=0,frames=0;
 	std::map<std::string,std::pair<int,double>> eventCost;
 	void Report() {
 		const int wanted=ui_hudProfile.GetInteger();
-		if (wanted<=0) { frames=0; return; }
+		if (wanted<=0) {
+			forwardMs=eventMs=stateMs=drawMs=unseenMs=prepareMs=readbackMs=0;
+			forwards=events=frames=0; eventCost.clear(); return;
+		}
 		if (++frames<wanted) return;
-		common->Printf("HUD_PROFILE document=%s frames=%d forward_ms=%.3f forwards=%.1f event_ms=%.3f events=%.1f state_ms=%.3f draw_ms=%.3f unseen_ms=%.3f\n",
-			document.c_str(),frames,forwardMs/frames,double(forwards)/frames,eventMs/frames,double(events)/frames,stateMs/frames,drawMs/frames,unseenMs/frames);
+		common->Printf("HUD_PROFILE document=%s frames=%d forward_ms=%.3f forwards=%.1f event_ms=%.3f events=%.1f state_ms=%.3f draw_ms=%.3f unseen_ms=%.3f prepare_ms=%.3f readback_ms=%.3f\n",
+			document.c_str(),frames,forwardMs/frames,double(forwards)/frames,eventMs/frames,double(events)/frames,stateMs/frames,drawMs/frames,unseenMs/frames,prepareMs/frames,readbackMs/frames);
 		for (const auto& [name,cost]:eventCost) common->Printf("HUD_PROFILE_EVENT document=%s name=%s count=%d ms=%.3f\n",document.c_str(),name.c_str(),cost.first,cost.second);
-		forwardMs=eventMs=stateMs=drawMs=unseenMs=0; forwards=events=frames=0; eventCost.clear();
+		forwardMs=eventMs=stateMs=drawMs=unseenMs=prepareMs=readbackMs=0; forwards=events=frames=0; eventCost.clear();
 	}
 	~Impl() { if (gui) uiManager->DeAlloc(gui); }
 	bool ReadTypes(const std::string& source) {
@@ -268,7 +327,8 @@ struct idRemasteredHud::Impl {
 			const Json::Value& entry=state[name];
 			if (!entry.isObject() || entry.isMember("cvar")) continue;
 			const std::string type=entry["type"].asString();
-			types[name]=type=="number" ? 'n' : type=="boolean" ? 'b' : 's';
+			auto& field=types[name]; field.type=type=="number" ? 'n' : type=="boolean" ? 'b' : 's';
+			const auto key=Key(name); field.icon=key.size()>=4 && key.ends_with("icon"); field.weapon=key=="weapicon";
 		}
 		return true;
 	}
@@ -300,17 +360,22 @@ struct idRemasteredHud::Impl {
 	void Forward(const char* name,const char* value) {
 		const auto found=types.find(name);
 		if (found==types.end() || !value) return;
-		if (found->second=='s') {
-			const std::string key=Key(name);
-			if (key.size()>=4 && key.ends_with("icon")) gui->SetStateString(name,IconName(value).c_str());
-			else gui->SetStateString(name,PlainText(value).c_str());
-			return;
+		auto& field=found->second;
+		if (!field.valid || field.raw!=value) {
+			if (field.type=='s') field.normalized=field.icon ? IconName(value) : std::string(PlainText(value).c_str());
+			else {
+				char* end=nullptr;
+				const double number=std::strtod(value,&end);
+				const bool parsed=end!=value && std::isfinite(number);
+				if (field.type=='n') field.normalized=parsed ? va("%.9g",number) : "0";
+				else field.normalized=(parsed ? number!=0 : !idStr::Icmp(value,"true")) ? "1" : "0";
+			}
+			field.raw=value; field.valid=true;
 		}
-		char* end=nullptr;
-		const double number=std::strtod(value,&end);
-		const bool parsed=end!=value && std::isfinite(number);
-		if (found->second=='n') gui->SetStateString(name,parsed ? va("%.9g",number) : "0");
-		else gui->SetStateBool(name,parsed ? number!=0 : !idStr::Icmp(value,"true"));
+		// Cache conversion, not publication: an event may have changed the
+		// retained value since the last identical application write.
+		if (field.weapon) gui->SetStateString("oq4.weaponImage",value);
+		gui->SetStateString(found->first.c_str(),field.normalized.c_str());
 	}
 	void Fail(const char* reason) {
 		failed=true;
@@ -319,6 +384,9 @@ struct idRemasteredHud::Impl {
 	// Decoded peaks of a playing channel, oldest first, from its emitter's
 	// own history. Missing, stopped and finished audio stays flat.
 	void PublishAudio(const idDict& state,const char* source,const char* target) {
+		// Preset graphs declare no peak fields. Avoid decoding/copying history
+		// and forwarding forty unused state writes for those documents.
+		if (!types.contains(std::string(target)+".0")) return;
 		float peaks[AudioColumns]={};
 		const int emitterIndex=state.GetInt(va("%s_emitter",source));
 		const int channel=state.GetInt(va("%s_channel",source));
@@ -351,7 +419,11 @@ void idRemasteredHud::ForwardState(const char* name,const char* value) {
 	impl->Forward(name,value);
 	impl->forwardMs+=ProfileNow()-started; ++impl->forwards;
 }
-void idRemasteredHud::ForwardDelete(const char* name) { if (impl->gui && impl->types.count(name)) impl->gui->DeleteStateVar(name); }
+void idRemasteredHud::ForwardDelete(const char* name) {
+	if (!impl->gui) return;
+	if (idStr::Icmp(name,"weapicon")==0) impl->gui->DeleteStateVar("oq4.weaponImage");
+	if (impl->types.count(name)) impl->gui->DeleteStateVar(name);
+}
 void idRemasteredHud::ForwardEvent(const char* name) {
 	if (!impl->gui) {
 		if (!impl->failed && impl->pending.size()<32) impl->pending.emplace_back(name);
@@ -368,6 +440,8 @@ void idRemasteredHud::ProfileUnseen(double milliseconds) { impl->unseenMs+=milli
 
 bool idRemasteredHud::Draw(const idUserInterfaceLocal& legacy,int time) {
 	if (impl->failed) return false;
+	const bool profiling=ui_hudProfile.GetInteger()>0;
+	const double prepareStarted=profiling ? ProfileNow() : 0;
 	if (!impl->gui) {
 		// A restore must never create GUIs outside its serialized stream.
 		if (session && session->IsLoadingSaveGame()) return false;
@@ -424,18 +498,42 @@ bool idRemasteredHud::Draw(const idUserInterfaceLocal& legacy,int time) {
 	// without changing the saved preference.
 	impl->gui->SetStateFloat("hud.centerScale",Min(scale,Max(.25f,span/690.f)));
 	const idDict& state=legacy.State();
+	if (impl->types.contains("player_totalammo")) {
+		using namespace openq4::ui;
+		HudAmmoReadout current;
+		current.weapon=std::string(state.GetString("weapicon"))+":"+state.GetString("player_weapon");
+		current.clip=state.GetInt("player_ammo","-1");
+		current.total=state.GetInt("player_totalammo","-1");
+		current.clipped=!state.GetBool("mp") && state.GetInt("player_clip_size")>=2 && current.clip>=0;
+		const int gains=HudAmmoGains(impl->ammoReadout,current);
+		impl->ammoReadout=current;
+		if (gains & HudAmmoGainClip) impl->gui->HandleNamedEvent("ammoClipGain");
+		if (gains & HudAmmoGainReserve) impl->gui->HandleNamedEvent("ammoReserveGain");
+		if (gains & HudAmmoGainTotal) impl->gui->HandleNamedEvent("ammoTotalGain");
+	}
 	if (state.FindKey("radio_audio_emitter")) impl->PublishAudio(state,"radio_audio","radio.peak");
 	if (state.FindKey("voice_self_audio_emitter")) impl->PublishAudio(state,"voice_self_audio","voice.self.peak");
 	if (state.FindKey("voice_audio_emitter")) impl->PublishAudio(state,"voice_audio","voice.other.peak");
-	const double stateStarted=ProfileNow();
+	const double stateStarted=profiling ? ProfileNow() : 0;
 	impl->gui->StateChanged(time,false);
-	const double drawStarted=ProfileNow();
+	const double drawStarted=profiling ? ProfileNow() : 0;
 	impl->gui->Redraw(time);
-	impl->stateMs+=drawStarted-stateStarted;
-	impl->drawMs+=ProfileNow()-drawStarted;
+	const double readbackStarted=profiling ? ProfileNow() : 0;
+	if (profiling) {
+		impl->prepareMs+=stateStarted-prepareStarted;
+		impl->stateMs+=drawStarted-stateStarted;
+		impl->drawMs+=readbackStarted-drawStarted;
+	}
 	idStr drawn;
 	if (impl->gui->GetPresentationValue("__retained::drawSucceeded",drawn) && drawn=="1") {
 		impl->failures=0;
+		// Width/height/visibility readbacks only change when presentation
+		// relays out. A scrolling bitmap alone cannot change these metrics.
+		idStr layoutChanged;
+		if (impl->readbacks.empty() || (impl->gui->GetPresentationValue("__retained::layoutChanged",layoutChanged) && layoutChanged=="0")) {
+			if (profiling) impl->readbackMs+=ProfileNow()-readbackStarted;
+			return true;
+		}
 		const auto measure=[&](const std::string& node,const char* field,float& value) {
 			idStr text;
 			if (!impl->gui->GetPresentationValue(va("%s::@%s",node.c_str(),field),text)) return false;
@@ -475,6 +573,7 @@ bool idRemasteredHud::Draw(const idUserInterfaceLocal& legacy,int time) {
 			auto& last=impl->readbackValues[name];
 			if ((last!=0)!=wider) { last=wider ? 1.f : 0.f; impl->gui->SetStateBool(name.c_str(),wider); }
 		}
+		if (profiling) impl->readbackMs+=ProfileNow()-readbackStarted;
 		return true;
 	}
 	// A frame that cannot present falls back at once; a persistent failure
@@ -490,6 +589,7 @@ void idRetainedHud::Reset() {}
 bool idRetainedHud::DrawSucceeded() const { return false; }
 void idRetainedHud::Precache() {}
 bool idRetainedHud::Eligible(const char*) { return false; }
+bool idRetainedHud::UsesClassicCanvas(const char*) { return false; }
 bool idRetainedHud::Draw(const char*,const std::vector<openq4::ui::HudPrimitive>&) { return false; }
 struct idRemasteredHud::Impl {};
 idRemasteredHud::idRemasteredHud(const char*) {}
@@ -511,15 +611,14 @@ bool idUserInterfaceLocal::DrawRemasteredHud(int drawTime) {
 	if (!remastered) remastered=new idRemasteredHud(document);
 	if (remastered->Failed() || !remastered->Draw(*this,drawTime)) return false;
 	// The stock windows keep evaluating unseen, so their scripts, timers and
-	// presentation aliases stay exactly where Classic would find them.
-	const auto started=std::chrono::steady_clock::now();
-	std::vector<openq4::ui::HudPrimitive> unseen;
-	uiManagerLocal.dc.BeginHudCapture(unseen);
-	uiManagerLocal.dc.PushClipRect(uiManagerLocal.screenRect);
-	desktop->Redraw(0,0);
-	uiManagerLocal.dc.PopClipRect();
-	uiManagerLocal.dc.EndHudCapture();
-	remastered->ProfileUnseen(std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-started).count());
+	// authored presentation variables stay where Classic would find them.
+	// RunTimeEvents visits every child and updates expressions/transitions.
+	// Layout and paint belong to the replacement; Classic recomputes them on
+	// its next Redraw if the gate changes or the replacement fails.
+	const bool profiling=cvarSystem->GetCVarInteger("ui_hudProfile")>0;
+	const auto started=profiling ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
+	if (r_skipGuiShaders.GetInteger()!=1 && r_skipGuiShaders.GetInteger()!=3) RunTimeEvents(drawTime);
+	remastered->ProfileUnseen(profiling ? std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-started).count() : 0);
 	return true;
 }
 

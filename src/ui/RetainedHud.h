@@ -12,6 +12,8 @@ public:
 	idRetainedHud();
 	~idRetainedHud();
 	static bool Eligible(const char* source);
+	// Classic stays on the centered stock canvas, without edge expansion.
+	static bool UsesClassicCanvas(const char* source);
 	static void Precache();
 	bool Draw(const char* source, const std::vector<openq4::ui::HudPrimitive>& items);
 	void Reset();

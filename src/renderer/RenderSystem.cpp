@@ -1048,9 +1048,14 @@ void idRenderSystemLocal::SetUseUIViewportFor2D( bool enable ) {
 		return;
 	}
 
-	// Viewport selection for 2D is applied when guiModel is emitted.
-	// Flush pending 2D so already-queued surfaces keep the previous mode.
-	FlushGui();
+	// Selection is applied at emission. Preserve a batch when both modes
+	// select precisely the same rectangle (the usual full-window HUD).
+	// Cropped, offscreen and editor views ignore this switch entirely.
+	const renderCrop_t& crop=renderCrops[currentRenderCrop];
+	const bool sameViewport=currentRenderCrop!=0 || activeRenderTexture!=NULL || (viewDef && viewDef->isEditor) ||
+		(glConfig.uiViewportX==crop.x && glConfig.vidHeight-glConfig.uiViewportY-glConfig.uiViewportHeight==crop.y &&
+		 glConfig.uiViewportWidth==crop.width && glConfig.uiViewportHeight==crop.height);
+	if (!sameViewport) FlushGui();
 
 	useUIViewportFor2D = enable;
 }
@@ -1609,6 +1614,7 @@ void idRenderSystemLocal::EndFrame( int *frontEndMsec, int *backEndMsec ) {
 	}
 
 	// start the back end up again with the new command list
+	R_RendererMetrics_MarkFrameSubmitBegin();
 	R_IssueRenderCommands();
 	FinishVRFrame();
 	ProcessPendingRenderTextureDeletes();
@@ -2189,8 +2195,13 @@ bool idRenderSystemLocal::UploadImage( const char *imageName, const byte *data, 
 	if ( !image ) {
 		return false;
 	}
+	// UploadScratch also serves cinematics and selects linear/repeat sampling.
+	// Updating an existing named image must retain its authored sampler (in
+	// particular nearest/clamp for pixel coverage and nearest for lagometers).
+	const textureFilter_t filter = image->GetFilter();
+	const textureRepeat_t repeat = image->GetRepeat();
 	image->UploadScratch( data, width, height );
-	//image->SetImageFilterAndRepeat();
+	image->SetSamplerState( filter, repeat );
 	return true;
 }
 
@@ -2200,6 +2211,19 @@ bool idRenderSystemLocal::UploadImage( const char *imageName, const byte *data, 
 idRenderSystemLocal::BindRenderTexture
 ===============
 */
+void idRenderSystemLocal::BeginGuiRoot() {
+	// Only elide an immediately preceding identical command. No backend work
+	// can have changed the target between these, and pending GUI geometry is
+	// already destined for this same target. Do not infer backend state from
+	// activeRenderTexture alone: scene, resolve and VR commands can affect it.
+	if (!r_deferredCommandHead && frameData && frameData->cmdTail && frameData->cmdTail->commandId==RC_SET_RENDERTEXTURE &&
+		activeRenderTexture==NULL) {
+		const auto* previous=reinterpret_cast<const setRenderTargetCommand_t*>(frameData->cmdTail);
+		if (!previous->renderTexture && !previous->feedbackRenderTexture) return;
+	}
+	BindRenderTexture(NULL,NULL);
+}
+
 void idRenderSystemLocal::BindRenderTexture(idRenderTexture* renderTexture, idRenderTexture* feedbackRenderTexture) {
 	setRenderTargetCommand_t* cmd;
 

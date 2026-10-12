@@ -538,7 +538,7 @@ void idAI::Restore( idRestoreGame *savefile ) {
 	pusher.Restore( savefile );				// cnicholson: Added unrestored var
 	scriptedActionEnt.Restore ( savefile ); // cnicholson: Added unrestored var
 
-	if ( savefile->GetOpenQ4SaveGameCompatibilityVersion() == OPENQ4_SAVEGAME_COMPATIBILITY_VERSION ) {
+	if ( savefile->GetOpenQ4SaveGameCompatibilityVersion() >= OPENQ4_SAVEGAME_TYPED_COMPATIBILITY_VERSION ) {
 		savefile->ReadInt( packedFlags );
 		aifl.awake = ( packedFlags & BIT( 0 ) ) != 0;
 		aifl.damage = ( packedFlags & BIT( 1 ) ) != 0;
@@ -572,7 +572,7 @@ void idAI::Restore( idRestoreGame *savefile ) {
 	savefile->ReadInt ( flagOverrides );
 
 	// Combat variables
-	if ( savefile->GetOpenQ4SaveGameCompatibilityVersion() == OPENQ4_SAVEGAME_COMPATIBILITY_VERSION ) {
+	if ( savefile->GetOpenQ4SaveGameCompatibilityVersion() >= OPENQ4_SAVEGAME_TYPED_COMPATIBILITY_VERSION ) {
 		savefile->ReadInt( packedFlags );
 		combat.fl.ignoreEnemies = ( packedFlags & BIT( 0 ) ) != 0;
 		combat.fl.alert = ( packedFlags & BIT( 1 ) ) != 0;
@@ -622,7 +622,7 @@ void idAI::Restore( idRestoreGame *savefile ) {
 	savefile->ReadInt	 ( passive.idleAnimChangeTime );
 	savefile->ReadInt	 ( passive.fidgetTime );
 	savefile->ReadInt	 ( passive.talkTime );
-	if ( savefile->GetOpenQ4SaveGameCompatibilityVersion() == OPENQ4_SAVEGAME_COMPATIBILITY_VERSION ) {
+	if ( savefile->GetOpenQ4SaveGameCompatibilityVersion() >= OPENQ4_SAVEGAME_TYPED_COMPATIBILITY_VERSION ) {
 		savefile->ReadInt( packedFlags );
 		passive.fl.disabled = ( packedFlags & BIT( 0 ) ) != 0;
 		passive.fl.multipleIdles = ( packedFlags & BIT( 1 ) ) != 0;
@@ -633,7 +633,7 @@ void idAI::Restore( idRestoreGame *savefile ) {
 
 	// Enemy 
 	enemy.ent.Restore ( savefile );
-	if ( savefile->GetOpenQ4SaveGameCompatibilityVersion() == OPENQ4_SAVEGAME_COMPATIBILITY_VERSION ) {
+	if ( savefile->GetOpenQ4SaveGameCompatibilityVersion() >= OPENQ4_SAVEGAME_TYPED_COMPATIBILITY_VERSION ) {
 		savefile->ReadInt( packedFlags );
 		enemy.fl.lockOrigin = ( packedFlags & BIT( 0 ) ) != 0;
 		enemy.fl.dead = ( packedFlags & BIT( 1 ) ) != 0;

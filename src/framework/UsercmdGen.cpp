@@ -43,7 +43,14 @@ static const int MOUSE_FILTER_SAMPLES = 32;
 static const float JOYSTICK_AXIS_LOOK_SCALE = 1.0f / 127.0f;
 static idCVar ui_weaponWheelOffset( "ui_weaponWheelOffset", "27", CVAR_GUI | CVAR_ARCHIVE | CVAR_INTEGER,
 	"weapon wheel horizontal offset in percent of viewport width; 0 centers, 27 preserves the original position", -40, 40 );
-static idCVar in_weaponWheelSensitivity( "in_weaponWheelSensitivity", "4.0", CVAR_SYSTEM | CVAR_ARCHIVE | CVAR_FLOAT, "controller weapon wheel cursor sensitivity (pixels per look degree)", 0.25f, 16.0f );
+static idCVar in_weaponWheelSensitivity( "in_weaponWheelSensitivity", "4.0", CVAR_SYSTEM | CVAR_ARCHIVE | CVAR_FLOAT, "Classic controller weapon wheel cursor sensitivity (pixels per look degree)", 0.25f, 16.0f );
+// Local presentation bridge: radial selectors need stick deflection, not
+// integrated view angles. These never enter a usercmd or the network protocol.
+static idCVar ui_radialStickActive( "ui_radialStickActive", "0", CVAR_SYSTEM | CVAR_BOOL | CVAR_ROM | CVAR_NOCHEAT, "the radial selector's current input is a controller" );
+static idCVar ui_radialStickX( "ui_radialStickX", "0", CVAR_SYSTEM | CVAR_FLOAT | CVAR_ROM | CVAR_NOCHEAT, "local radial selector horizontal stick deflection" );
+static idCVar ui_radialStickY( "ui_radialStickY", "0", CVAR_SYSTEM | CVAR_FLOAT | CVAR_ROM | CVAR_NOCHEAT, "local radial selector vertical stick deflection, independent of look inversion" );
+static idCVar ui_radialOwner( "ui_radialOwner", "0", CVAR_SYSTEM | CVAR_INTEGER | CVAR_ROM | CVAR_NOCHEAT, "local open radial selector: 0 none, 1 weapons, 2 quick chat" );
+static idCVar ui_radialCancel( "ui_radialCancel", "0", CVAR_SYSTEM | CVAR_BOOL | CVAR_ROM | CVAR_NOCHEAT, "local radial Back request, consumed by its owner" );
 // openQ4: the game sets this while the held Remastered scoreboard lists more
 // rows than it shows (ui-visual-design.md 14.14). The weapon-cycle controls
 // and the right stick then scroll it through the game's scoreboardScroll
@@ -1114,6 +1121,7 @@ void idUsercmdGenLocal::JoystickMove( void ) {
 	}
 	const int moveAxisX = joystickAxis[AXIS_YAW];
 	const int moveAxisY = joystickAxis[AXIS_PITCH];
+	cvarSystem->SetCVarBool( "ui_radialStickActive", idKeyInput::LastInputWasController() );
 
 	// openQ4: while the held scoreboard scrolls (ui-visual-design.md 14.14),
 	// the right stick scrolls it a row on each push past half its travel, then
@@ -1484,15 +1492,30 @@ void idUsercmdGenLocal::Key( int keyNum, bool down ) {
 		retainedKeyBlocked[keyNum] = down;
 		return;
 	}
-
 	// Sanity check, sometimes we get double message :(
 	if ( keyState[ keyNum ] == down ) {
+		return;
+	}
+	// A HUD radial selector owns Back while it is open. Quarantine the
+	// matching release too, so an east-button crouch binding cannot leak out
+	// when the selector closes on this press. An already-held binding still
+	// receives its release; a duplicate press must not steal that release.
+	const int radialOwner = cvarSystem->GetCVarInteger( "ui_radialOwner" );
+	if ( down && keyNum == K_JOY4 && radialOwner != 0 ) {
+		retainedKeyBlocked[keyNum] = true;
+		cvarSystem->SetCVarBool( "ui_radialCancel", true );
 		return;
 	}
 	keyState[ keyNum ] = down;
 
 	int action = idKeyInput::GetUsercmdAction( keyNum );
 	if ( action < 0 || action >= UB_MAX_BUTTONS ) {
+		return;
+	}
+	if ( down && ( ( radialOwner == 1 && action == UB_WEAPONWHEEL ) || ( radialOwner == 2 && action == UB_QUICKCHAT ) ) ) {
+		keyState[keyNum] = false;
+		retainedKeyBlocked[keyNum] = true;
+		cvarSystem->SetCVarBool( "ui_radialCancel", true );
 		return;
 	}
 

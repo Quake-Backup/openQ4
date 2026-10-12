@@ -6348,6 +6348,8 @@ void idMultiplayerGame::ProjectClientManagedMatchContext(
 		projectedRevision = &clientMatchHudProjectedViewRevision;
 	}
 	if ( !clientMatchViewValid || !clientMatchControlModel.IsReady() ) {
+		gui->SetStateBool( "match_context_compact", false );
+		gui->SetStateString( "match_context_summary", "" );
 		if ( projectedRevision == NULL || *projectedRevision != 0 ) {
 			MPMatchControlClearManagedContext( *gui );
 		}
@@ -6370,6 +6372,18 @@ void idMultiplayerGame::ProjectClientManagedMatchContext(
 		Max( 0, gameLocal.time ) );
 	MPMatchControlProjectManagedContext( *gui, clientMatchView,
 		clientMatchControlModel, context );
+	// Keep the full record for the scoreboard. During live play the HUD shows
+	// only its phase and the most useful summary: an active proposal, the
+	// series, or the remaining timeout budgets. A pause expands the record.
+	const mpMatchViewLifecycle_t &lifecycle = clientMatchView.publicState.lifecycle;
+	const bool compact = gui->GetStateInt( "match_context_visible" ) != 0 &&
+		( lifecycle.phase == GAMEON || lifecycle.phase == SUDDENDEATH ) &&
+		lifecycle.pauseState == MP_MATCH_VIEW_PAUSE_RUNNING;
+	const char *summary = clientMatchView.publicState.globalProposal.present ||
+		clientMatchView.ownSideProposal.present ? "match_context_proposal" :
+		clientMatchView.publicState.series.present ? "match_context_series" : "match_context_timeouts";
+	gui->SetStateBool( "match_context_compact", compact );
+	gui->SetStateString( "match_context_summary", compact ? gui->GetStateString( summary ) : "" );
 	if ( projectedRevision != NULL ) {
 		*projectedRevision = clientMatchView.publicState.viewRevision;
 	}
@@ -19691,6 +19705,7 @@ void idMultiplayerGame::UpdateHud( idUserInterface* _mphud ) {
 	idStr spectateText0;
 	idStr spectateText1;
 	idStr spectateText2;
+	const char *tourneyRoundName = NULL;
 
 	if( gameLocal.gameType == GAME_TOURNEY ) {
 		// line 1 - why we aren't playing
@@ -19715,6 +19730,11 @@ void idMultiplayerGame::UpdateHud( idUserInterface* _mphud ) {
 				spectateText0 = common->GetLocalizedString( "#str_107709" );
 			} else if( currentArena.IsPlaying( localPlayer ) ) {
 				spectateText0 = va( "%s %d; %s", common->GetLocalizedString( "#str_107716" ), localPlayer->GetArena() + 1, ((rvTourneyGameState*)gameState)->GetRoundDescription() );
+				// The retained bar uses the banner's localized round name. The
+				// separate ROUND / ARENA plate already identifies the arena.
+				static const char *roundNames[] = { "#str_200286", "#str_200287", "#str_200288", "#str_200289" };
+				const int round = ((rvTourneyGameState*)gameState)->GetRound();
+				tourneyRoundName = common->GetLocalizedString( roundNames[ idMath::ClampInt( 1, 4, round ) - 1 ] );
 			} else if( localPlayer->spectating ) {
 				// this should only happen if the player was spectating at start of round, but then decides
 				// to join the tourney
@@ -19777,6 +19797,8 @@ void idMultiplayerGame::UpdateHud( idUserInterface* _mphud ) {
 	_mphud->SetStateString( "spectatetext0", spectateText0 );
 	_mphud->SetStateString( "spectatetext1", spectateText1 );
 	_mphud->SetStateString( "spectatetext2", spectateText2 );
+	_mphud->SetStateString( "oq4_tourney_label", state == COUNTDOWN ? "" :
+		tourneyRoundName != NULL ? tourneyRoundName : spectateText0.c_str() );
 
 	if( gameLocal.gameType == GAME_TOURNEY ) {
 		gameLocal.mpGame.tourneyGUI.UpdateScores();
@@ -19990,7 +20012,8 @@ void idMultiplayerGame::PublishRemasteredCompetitive( idUserInterface *_mphud, i
 		sub = va( common->GetLocalizedString( "#str_231248" ), va( "%d", limit ) );
 	}
 	_mphud->SetStateString( "oq4_mb_sub", sub.c_str() );
-	_mphud->SetStateString( "oq4_mb_ready", va( common->GetLocalizedString( "#str_231250" ), va( "%d", readyPlayerCount ), va( "%d", eligiblePlayerCount ) ) );
+	_mphud->SetStateString( "oq4_mb_ready", eligiblePlayerCount > 0
+		? va( common->GetLocalizedString( "#str_231250" ), va( "%d", readyPlayerCount ), va( "%d", eligiblePlayerCount ) ) : "" );
 	// Remastered Tourney's plate under the message bar: ROUND n beside the arena.
 	_mphud->SetStateString( "oq4_tourney_round", tourney && round > 0
 		? va( common->GetLocalizedString( "#str_41330" ), va( "%d", round ) ) : "" );
@@ -20090,7 +20113,6 @@ void idMultiplayerGame::PublishRemasteredHud( idUserInterface *_mphud, idPlayer 
 	PublishRemasteredChat( _mphud, now );
 
 	_mphud->SetStateBool( "oq4_team_game", teamGame );
-	_mphud->SetStateInt( "oq4_state", (int)state );
 
 	const char *limitLabel = NULL;
 	int limit = 0;
@@ -20105,6 +20127,12 @@ void idMultiplayerGame::PublishRemasteredHud( idUserInterface *_mphud, idPlayer 
 	}
 	idPlayer *viewer = followed ? followed : localPlayer;
 	_mphud->SetStateInt( "oq4_my_team", viewer->team == TEAM_STROGG ? 1 : 0 );
+	const int viewerArena = viewer->GetArena();
+	const bool hasArena = tourney && viewerArena >= 0 && viewerArena < MAX_ARENAS;
+	const bool suddenDeath = state == SUDDENDEATH || ( state == GAMEON && hasArena &&
+		((rvTourneyGameState*)gameState)->GetArena( viewerArena ).GetState() == AS_SUDDEN_DEATH );
+	const int hudState = suddenDeath ? (int)SUDDENDEATH : (int)state;
+	_mphud->SetStateInt( "oq4_state", hudState );
 
 	// Standing: the stock rows (UpdateHud) with ordinals, which row is you,
 	// your lead over 2nd place or your deficit to the leader, and a tie.
@@ -20147,14 +20175,14 @@ void idMultiplayerGame::PublishRemasteredHud( idUserInterface *_mphud, idPlayer 
 	if ( state == COUNTDOWN ) {
 		countdown = true;
 		clockMs = gameState->GetNextMPGameStateTime() - now;
-	} else if ( tourney && ((rvTourneyGameState*)gameState)->GetArena( localPlayer->GetArena() ).GetState() == AS_WARMUP ) {
+	} else if ( hasArena && ((rvTourneyGameState*)gameState)->GetArena( viewerArena ).GetState() == AS_WARMUP ) {
 		countdown = true;
-		clockMs = ((rvTourneyGameState*)gameState)->GetArena( localPlayer->GetArena() ).GetNextStateTime() - now;
+		clockMs = ((rvTourneyGameState*)gameState)->GetArena( viewerArena ).GetNextStateTime() - now;
 	} else {
 		const int matchLength = GetMatchLengthMsec();
 		int startTime = matchStartedTime;
-		if ( tourney ) {
-			startTime = ((rvTourneyGameState*)gameState)->GetArena( localPlayer->GetArena() ).GetMatchStartTime();
+		if ( hasArena ) {
+			startTime = ((rvTourneyGameState*)gameState)->GetArena( viewerArena ).GetMatchStartTime();
 		}
 		clockMs = matchLength > 0 ? matchLength - ( gameLocal.time - startTime ) : gameLocal.time - startTime;
 	}
@@ -20164,7 +20192,8 @@ void idMultiplayerGame::PublishRemasteredHud( idUserInterface *_mphud, idPlayer 
 	_mphud->SetStateBool( "oq4_countdown", countdown );
 	_mphud->SetStateBool( "oq4_timed", timed );
 	// 1 in the last minute, 2 in the last ten seconds of a timed match
-	_mphud->SetStateInt( "oq4_clock_warn", ( countdown || !timed ) ? 0 : clockMs < 10000 ? 2 : clockMs < 60000 ? 1 : 0 );
+	const int clockWarn = ( countdown || !timed || suddenDeath ) ? 0 : clockMs < 10000 ? 2 : clockMs < 60000 ? 1 : 0;
+	_mphud->SetStateInt( "oq4_clock_warn", clockWarn );
 	_mphud->SetStateString( "oq4_clock", va( "%d:%02d", clockSeconds / 60, clockSeconds % 60 ) );
 	_mphud->SetStateInt( "oq4_ping", playerState[ localPlayer->entityNumber ].ping );
 	// Network quality's loss (13.13): this client's incoming packet loss, in
@@ -20276,8 +20305,8 @@ void idMultiplayerGame::PublishRemasteredHud( idUserInterface *_mphud, idPlayer 
 	PublishRemasteredNameTags( _mphud, localPlayer, localPlayer->spectating && followed == NULL && !tourney );
 
 	// The respawn prompt: while you lie dead and CheckRespawns would let you
-	// back in, Respawn on the attack control (1) once the fall is over; while
-	// overtime holds the respawn, the seconds left (2).  Round modes keep the
+	// back in, Respawn on the attack control (1) once the fall is over; during
+	// any server hold, including the normal fall, the seconds left (2). Round modes keep the
 	// eliminated out until the next round (the client never hears who is
 	// eliminated, and everyone dead mid-round is), sudden death in deathmatch
 	// brings back only the leaders, and Tourney only its arena's two players.
@@ -20304,7 +20333,7 @@ void idMultiplayerGame::PublishRemasteredHud( idUserInterface *_mphud, idPlayer 
 		const int held = localPlayer->minRespawnTime - gameLocal.time;
 		if ( held <= 0 ) {
 			respawn = 1;
-		} else if ( GetOvertimeRespawnDelay() > 0 ) {
+		} else {
 			respawn = 2;
 			respawnIn = ( held + 999 ) / 1000;
 		}
@@ -20314,7 +20343,6 @@ void idMultiplayerGame::PublishRemasteredHud( idUserInterface *_mphud, idPlayer 
 
 	// The HUD's looping motion (a taken flag's beat, the last ten seconds'
 	// pulse, the warm-up breathing) starts and stops on these changes only.
-	const int clockWarn = ( countdown || !timed ) ? 0 : clockMs < 10000 ? 2 : clockMs < 60000 ? 1 : 0;
 	if ( flagsChanged ) {
 		_mphud->HandleNamedEvent( "oq4_flags" );
 	}
@@ -20322,8 +20350,8 @@ void idMultiplayerGame::PublishRemasteredHud( idUserInterface *_mphud, idPlayer 
 		hudClockWarn = clockWarn;
 		_mphud->HandleNamedEvent( "oq4_clockWarn" );
 	}
-	if ( (int)state != hudMatchState ) {
-		hudMatchState = (int)state;
+	if ( hudState != hudMatchState ) {
+		hudMatchState = hudState;
 		_mphud->HandleNamedEvent( "oq4_state" );
 	}
 	// The prompt fades in when it appears, not when the countdown gives way
@@ -20434,6 +20462,11 @@ void idMultiplayerGame::PrintChatLine( const char *message, const bool teamChat 
 			const bool teamSuffix = teamChat && ( name.StripTrailingOnce( " (Marine)" ) || name.StripTrailingOnce( " (Strogg)" ) );
 			if ( !teamSuffix && name.Find( " (spectating)" ) >= 0 ) {
 				kind = 3;
+			}
+			if ( !teamChat && !idStr::Icmp( name.c_str(), "server" ) ) {
+				kind = 2;
+				name.Clear();
+				lineTeam = -1;
 			}
 		}
 		body.RemoveEscapes();

@@ -85,6 +85,9 @@ public:
     int BuildCostField(const idVec3& origin,float maxCost,const navFieldTarget_t* targets,int numTargets,int keepBest) const;
     float CostFieldDistance(int node) const;
     float PathCost(int startNode,int goalNode,float maxCost) const;
+    void RankedSettle(int startNode,float maxCost,float startLeg,const navFieldTarget_t* targets,const int* remaining,
+                      int numRemaining,bool ranked,int keepBest,float* best,int& numBest,idList<int>& pricedNode,
+                      idList<float>& pricedCost) const;
 };
 
 // PRODUCTION_FUNCTIONS
@@ -213,8 +216,15 @@ int main() {
             rankedRuns++;
         }
     }
+#ifdef PRICING_FALLBACK_TEST
+    // The budget was forced down, so most pricing fell back to one field: the
+    // answers must still be exact.
+    std::printf("Ranked goal pricing past its budget: %ld runs match the exhaustive top four (%ld pairs, %ld edges, %.0f of %.0f nodes): PASS\n",
+                rankedRuns,checkedPairs,checkedEdges,rankedSettled,fullSettled);
+#else
     CHECK(rankedSettled<fullSettled);
     std::printf("Component reachability and landmark admissibility: %ld pairs, %ld edges consistent: PASS\n",checkedPairs,checkedEdges);
     std::printf("Ranked goal pricing: %ld runs match the exhaustive top four, expanding %.1f%% of the field's nodes: PASS\n",rankedRuns,100.0*rankedSettled/fullSettled);
+#endif
     return 0;
 }

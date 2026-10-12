@@ -11,6 +11,82 @@ stock layout, drawn through the [HUD presentation bridge](hud-coverage.md).
 Settings > Game Options > HUD sets all four (HUD Layout, HUD Size, HUD Width
 and Safe Area Inset); see the [settings structure](../settings-menu-structure.md).
 
+Classic suppresses legacy edge expansion for the stock HUD families and keeps
+their centered 4:3 canvas. Its vector catalog has separate beveled Marine and
+Strogg fills, armor cells, measured traces clipped to the plate, and an inner
+low-health glow. External mods retain their own layout behavior.
+The Classic damage direction uses a soft elliptical glow with transparent
+canvas margins; the missile warning has its own small chevron. Restarting
+either hit-flash timeline restores its initial color before fading, including
+when Reduced Flashing changes between hits. Multiplayer award medals retain
+their approved stock bitmap artwork and are registered during level precache.
+Remastered Strogg gauges tile the installed `s_static` grain across the full
+moving area under each fill mask, with the stock additive `#161616` tint.
+The two-second translation loops without exposing an empty part of the mask;
+reduced motion holds it still. This installed-art exception is recorded in the
+[implementation inventory](inventory-report.md); it adds no extracted asset.
+
+The on-foot ammo, health and armor numbers use the legacy TTF renderer for
+layout. Original text rectangles, per-window Marine shear, proportional
+advances, two-unit inset, atlas selection and gain textscale are preserved
+inside the centered status-bar group. Strogg reserve text retains its 0.26
+scale. The ammo backdrop uses the selected weapon's original installed bitmap
+material, including expansion weapons; no extracted pixels ship in the repo.
+The unseen legacy windows still advance scripts and presentation aliases,
+but discard geometry before allocating primitive records.
+
+The 11 October status-bar parity pass keeps the centered group and the legacy
+125x59 Marine / 129x67 Strogg rectangles, vertical positions and gauge spacing.
+Marine health and armor icons use their original 98-unit inset. Fill artwork
+multiplies the original tint by the measured texture luminance (148/255 Marine,
+171/255 Strogg, 175/255 armor), with a soft bevel and translucent armor dividers.
+Disjoint vector contour bands preserve material alpha; a single silhouette
+mask antialiases the exterior without introducing dark seams between bands.
+The original black 0.50 backing is retained. The same construction serves SP,
+MP and both Awakening variants. Validation evidence is under
+`.tmp/hud-status-parity/`, using native layout checks and engine screenshots.
+
+The ECG uses the installed legacy `ekg`, `s_ekg` and `s_ekg2` bitmaps under
+the existing vector fill mask. Repeating UVs cover each complete scroll period;
+health colours, glow, speed and essential motion are retained. This approved
+bitmap exception removes the repeated waveform/glow tessellation and vertex
+submission without adding extracted assets to the repository.
+
+Radio and voice-chat displays use the installed legacy `waveform.tga`, as
+requested in the 11 October review. The complete recorded trace scrolls at
+0.6 texture widths per second and uses the stock 21-sample `wavTable` for
+centred vertical UV scaling, including its repeated endpoint and wrap interval.
+The bitmap stays in the same vector mask and colours; talker events, names and team
+colours still control the display. It is an activity indicator, not an audio
+level meter. Reduced Motion freezes the graph. Documents without peak fields
+skip audio-history reads and unused state writes in the HUD peer. See
+[measurements](runtime-performance.md#gameplay-instrument-performance).
+
+HUD icons remain editable SVG-derived paths with cached tessellation and
+engine meshes. Completed vector gauge layers reuse their rendered pixels;
+additive instrument images can draw through disjoint mask coverage directly.
+Composition uses artwork bounds and avoids rebinding an unchanged target, so
+small icons and panels can share the engine's existing GUI batches.
+
+Ammo gain events compare complete successive readouts for the same weapon.
+Reloading animates the clip, a reserve pickup animates the reserve, and a
+clipless or multiplayer weapon animates its total; firing, switching weapons,
+unlimited ammunition and unrelated inventory pulses do not count as gains.
+Each readout scales about its own trailing baseline. Boss, exit, save and
+missile notices reserve separate rows when they coexist. The status bar limits
+its effective scale to the safe width on narrow views without changing the
+player's saved preference.
+
+Tourney publishes the viewed arena's sudden-death state, preserves both arena
+instruction lines, and uses translucent banners with nonessential motion.
+Its message bar uses the banner's localized round name; the countdown appears
+only in the timer. Arena sudden death also sends the state and clock-warning
+events that stop the expired timer's pulse. Round modes show their round clock
+throughout a timed live round, while Classic keeps its last-30-second flag.
+The timer shares Competitive's localized readiness text and omits an empty
+eligible-human count. Chat is bounded to eight wrapped lines at rest as well
+as during entry; server notices use their information style.
+
 ## Minimal
 
 `ui_hudLayout 2` is section 13.9's Minimal preset: the same documents, with
@@ -121,7 +197,7 @@ the prompt glyph of section 13.5. A mod that ships its own stock-named GUI
 keeps it.
 
 **Prompt glyphs.** Every control a HUD prompt names (Exit, Boost, Close,
-Respawn, the follow card's keys and the quick-chat wheel's channel switch) is
+Respawn, vote Yes/No, the follow card's keys and the quick-chat wheel's channel switch) is
 a `glyph_chip` (`tools/ui/remastered_hud_mp.py`). The engine resolves the key
 the binding names for the device used last (`KeysFromBinding`) into a kind in
 `<key>.glyph` and a label in the key state (`PromptGlyph`): a keyboard key is
@@ -194,9 +270,16 @@ extra fields beside the stock ones; the stock GUIs ignore them.
   through a wall. `oq4_key_prev` names the control a following spectator steps
   back with: the weapon-cycle controls now step through the followed players
   outside Tourney, as Tourney's do.
+- Managed context (`ProjectClientManagedMatchContext`): the full localized
+  `match_context_*` record stays available to the scoreboard. During live
+  play, `match_context_compact` limits the HUD to its phase and
+  `match_context_summary`: an active proposal, otherwise the series, otherwise
+  the remaining timeout budgets. Warm-up and pauses expand the record again.
 - Respawn (`PublishRemasteredHud`): `oq4_respawn` is 1 while you lie dead
-  and the attack control would bring you back, 2 while overtime holds the
-  respawn with `oq4_respawn_in` seconds left, else 0; the `oq4_respawn` event
+  and the attack control would bring you back, 2 during any server delay,
+  including the normal three-second fall, with `oq4_respawn_in` seconds left,
+  else 0. The control glyph and Respawn label remain beside the countdown on
+  the atlas's y 318 u plate; the `oq4_respawn` event
   fades the prompt in as it appears. It follows `CheckRespawns`: round modes
   keep the eliminated out until the next round, sudden death in deathmatch
   brings back only the leaders, and Tourney only its arena's two players. A
@@ -330,12 +413,42 @@ motion each control tick holds the team's color for a second. A finished
 Tourney arena's blue settles from 1.00 to 0.40 over 500 ms. The hit indicator
 is essential and keeps its 500 ms fade.
 
+Reduced flashing (`ui_reducedFlashing`, Settings > Game Options > HUD,
+sections 13.10 and 14.7) caps the damage direction indicator at 0.40 in every
+layout: the Remastered dome and chevron scale their leaves by 0.40/0.70, and
+the Classic `hud.gui` and `hud_strogg.gui` play a 0.40 copy of the stock
+indicator, which the game selects through the `reducedFlashing` GUI state it
+sets with each hit (The Awakening's own Classic HUD keeps its stock
+indicator). The vehicle hit glow peaks at 0.40, the game's full-screen white
+flashes (teleporters and multiplayer spawns) start at 0.40 instead of white,
+and the red death afterimage is dropped, as under reduced motion.
+
 ## Validation
 
 - `openq4-ui-remastered-hud` loads every document through the real compiler and
   runtime and checks each group's anchors at several aspects, its states and
   its events. `openq4-ui-remastered-hud-generated` checks the generated
   documents are current.
+- `tools/tests/remastered_hud_behavior.py --output .tmp/<dir>` executes the
+  production live-context and respawn projections without devices or a game
+  window. It checks summary priority, phase/pause expansion, preservation of
+  the full record, ordinary and extended delay boundaries, and eliminated,
+  spectator and Tourney eligibility. Both CI verification workflows run it.
+- The October 2026 continuation records its source and staged identities in
+  `.tmp/claude-continuation/hud/mp-followup-validation.json`. The production
+  projection fixture passes 74 cases; MP/Competitive and both Strogg variants
+  pass 13,440,569 native assertions. Fifteen engine screenshots verify normal
+  respawn hold/readiness, active prompt glyphs, the live Clan Arena clock,
+  real Tourney round-to-sudden-death events, and grain coverage with reduced
+  motion. Managed-context compaction is covered by the production fixture
+  and native layout checks; it is not claimed as a gameplay capture.
+- A separate final stage widens Tourney's instructions to the available
+  center-screen width and wraps localized text in vertical flow. Its native
+  MP/Competitive run passes 861,569 assertions, including long instructions
+  and an absent first row; a countdown engine capture confirms both stock
+  instructions remain fully readable. The evidence preserves earlier stage
+  identities and the failed capture-harness attempt. These scoped checks do
+  not complete the broader device, editor or platform requirements.
 - `tools/ui/capture_remastered_hud.py --assets <Quake 4> --output .tmp/<dir>
   --scenario <name>` captures windowed gameplay without host input: `marine`,
   `strogg`, `objectives`, `tank` (convoy1, boarding through the actor's
@@ -391,8 +504,13 @@ is essential and keeps its 500 ms fade.
   `status.error` for a kill over 150 ms; the shipped markers
   (`src/mpgame/HitMarker.cpp`) are tiered, red for a hit and white for a kill,
   over 180-420 ms. One of the two needs a decision.
-- Reduced flashing (section 13.10), which would cap the damage direction at
-  0.40, and subtitles (section 14.8) do not exist yet; nor does the Couch
-  viewing profile, so only Steam Deck (Handheld) starts the HUD at 125%.
+- Subtitles (section 14.8) do not exist yet.
 - The implant overlay (`FLOW-062`) awaits engine captures of the real
   Medical Labs sequence at each aspect.
+- Competitive flag warnings, the connection-warning plate and the Dead
+  Zone holding sub-label still need the reviewed visual treatment. The
+  current chat and kill-feed fades advance in 50 ms steps.
+- Match-summary weapon symbols, controller prompts, and score/team order
+  during review remain outside the wheel and on-foot correction checkpoint.
+  The written specification governs the scoreboard card; its atlas drawing
+  has not yet caught up.

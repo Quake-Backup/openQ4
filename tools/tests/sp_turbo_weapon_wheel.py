@@ -46,7 +46,11 @@ struct idMath {
     static int ClampChar(int v){return ClampInt(-128,127,v);}
     static float ClampFloat(float a,float b,float v){return std::clamp(v,a,b);}
     static float AngleNormalize180(float v){while(v>180)v-=360;while(v<-180)v+=360;return v;}
+    static float Fabs(float v){return std::fabs(v);}
+    static constexpr float TWO_PI=6.2831853071795864769f;
+    static constexpr float PI=TWO_PI*.5f;
 };
+#define DEG2RAD(v) ((v)*idMath::TWO_PI/360.0f)
 struct idStr {
     std::string s;
     idStr(const char* v=""):s(v){}
@@ -64,11 +68,14 @@ struct CVars {
     const char* GetCVarString(const char* n){return values[n].c_str();}
     void SetCVarInteger(const char* n,int v){values[n]=std::to_string(v);}
     void SetCVarBool(const char* n,bool v){SetCVarInteger(n,v);}
+    void SetCVarFloat(const char* n,float v){values[n]=std::to_string(v);}
 } vars, *cvarSystem=&vars;
+struct idKeyInput {static bool controller;static bool LastInputWasController(){return controller;}};
+bool idKeyInput::controller=false;
 struct CVar {float v=0; bool GetBool()const{return v!=0;} float GetFloat()const{return v;}};
 CVar g_turboMode, in_angleSpeedKey{1.5f}, in_yawSpeed{140}, in_pitchSpeed{140};
 struct UserInfo { bool GetBool(const char*)const{return true;} };
-struct Game {bool isMultiplayer=false,isClient=false;int time=1000;UserInfo userInfo[1];} gameLocal;
+struct Game {bool isMultiplayer=false,isClient=false;int time=1000;UserInfo userInfo[1];float aspect=16.0f/9.0f;float GetScreenAspectRatio()const{return aspect;}} gameLocal;
 struct Common {float seconds=1.0f/60;float GetUserCmdSec()const{return seconds;}
     void Printf(const char*,...){} } commonObject,*common=&commonObject;
 @TURBO@
@@ -151,8 +158,16 @@ struct idPlayer {
     Usercmd usercmd;int weaponWheelLastMouseX=0,weaponWheelLastMouseY=0;
     idAngles weaponWheelLastCmdAngles;Vec2 weaponWheelCursor;
     void UpdateWeaponWheelCursor();
+    int weaponWheelHoveredSlot=0,slotCount=11,owned=(1<<13)-1;
+    int GetWeaponWheelSlotCount()const{return slotCount;}
+    bool HasWeaponWheelSlotWeapon(int slot)const{return slot>=0 && slot<slotCount && (owned&(1<<slot));}
+    int GetClosestAvailableWeaponWheelSlot(float angle)const;
 };
-constexpr float WEAPON_WHEEL_MOUSE_SENSITIVITY=.70f,WEAPON_WHEEL_CURSOR_RADIUS=118;
+constexpr float WEAPON_WHEEL_MOUSE_SENSITIVITY=.70f,WEAPON_WHEEL_CURSOR_RADIUS=118,WEAPON_WHEEL_DEADZONE_RADIUS=24;
+template<class T> T Min(T a,T b){return std::min(a,b);}
+template<class T> T Max(T a,T b){return std::max(a,b);}
+using Sint16=short;
+@RADIAL@
 @WHEEL@
 struct idUsercmdGenLocal {
     int joystickAxis[6]{};Usercmd cmd;idAngles viewangles;bool run=false,strafe=false;float zoom=1;
@@ -164,6 +179,21 @@ struct idUsercmdGenLocal {
 };
 @JOYSTICK@
 int main() {
+    // Scale follows the HUD preference, but physical ring bounds stay inside
+    // every safe inset and both viewport dimensions without saving a clamp.
+    for(float aspect:{.5625f,4.0f/3.0f,16.0f/9.0f,32.0f/9.0f})for(float scale:{.5f,1.0f,1.25f,2.0f})for(float inset:{0.0f,2.5f,10.0f})for(float preference:{-40.0f,0.0f,27.0f,40.0f}) {
+        gameLocal.aspect=aspect;vars.SetCVarFloat("ui_hudScale",scale);vars.SetCVarFloat("ui_hudSafeInset",inset);vars.SetCVarFloat("ui_weaponWheelOffset",preference);
+        float offset=0,fit=0;WeaponWheelPlacement(offset,fit);const float width=720*aspect;
+        assert(fit<=scale+.0001f && fit>0);
+        assert(560*fit<=width-2*std::max(16.0f,width*inset*.01f)+.001f);
+        assert(560*fit<=720-2*std::max(16.0f,720*inset*.01f)+.001f);
+        assert(std::fabs(offset)+264*fit<=width*.5f-std::max(16.0f,width*inset*.01f)+.001f);
+        assert(vars.GetCVarFloat("ui_hudScale")==scale && vars.GetCVarFloat("ui_weaponWheelOffset")==preference);
+        if(preference==0)assert(offset==0);
+        if(aspect>1.3f && scale<=1 && inset<=2.5f)assert(std::fabs(fit-scale)<.001f);
+    }
+    gameLocal.aspect=16.0f/9.0f;vars.SetCVarFloat("ui_hudScale",1);vars.SetCVarFloat("ui_hudSafeInset",0);vars.SetCVarFloat("ui_weaponWheelOffset",27);
+    {float offset,fit;WeaponWheelPlacement(offset,fit);assert(std::fabs(offset-345.6f)<.001f && fit==1);}
     // Off is authoritative even if a module-local handle still says On.
     vars.SetCVarBool("g_turboMode",false);g_turboMode.v=1;
     assert(!OpenQ4_TurboModeActive());
@@ -222,6 +252,43 @@ int main() {
     idPlayer mouse;mouse.usercmd.mx=10;mouse.usercmd.my=-20;mouse.usercmd.angles[YAW]=ANGLE2SHORT(-100);
     mouse.UpdateWeaponWheelCursor();assert(mouse.weaponWheelCursor.x==7 && mouse.weaponWheelCursor.y==-14);
     idPlayer wrap;wrap.weaponWheelLastCmdAngles[YAW]=1;wrap.usercmd.angles[YAW]=ANGLE2SHORT(359);wrap.UpdateWeaponWheelCursor();assert(std::fabs(wrap.weaponWheelCursor.x-8)<.1f);
+    // Native controller selection points directly, independently of frame rate,
+    // slow aim, wheel sensitivity and look inversion. Returning to neutral
+    // actually returns to the dead zone so quick chat can decline to send.
+    vars.SetCVarBool("ui_retained",true);idKeyInput::controller=true;
+    for(int hz:{30,60,120})for(bool inverted:{false,true})for(float deadzone:{0.0f,.18f,.5f})for(float curve:{1.0f,1.35f,3.0f}) {
+        common->seconds=1.0f/hz;vars.SetCVarBool("in_joystickInvertLook",inverted);
+        idUsercmdGenLocal gen;idPlayer player;gen.cmd.buttons=BUTTON_WEAPONWHEEL;
+        gen.joystickAxis[AXIS_ROLL]=1;gen.joystickAxis[AXIS_SIDE]=127;
+        auto sampled=[&](Sint16 x,Sint16 y) {
+            SDL3_PublishRadialStick(x,y);
+            SDL3_NormalizeStickAxes(x,y,deadzone,curve,1.0f,gen.joystickAxis[AXIS_SIDE],gen.joystickAxis[AXIS_FORWARD]);
+            if(inverted)gen.joystickAxis[AXIS_FORWARD]=-gen.joystickAxis[AXIS_FORWARD];
+            gen.JoystickMove();player.UpdateWeaponWheelCursor();
+        };
+        sampled(32767,0);
+        for(int frame=0;frame<hz;++frame){gen.JoystickMove();player.UpdateWeaponWheelCursor();assert(std::fabs(player.weaponWheelCursor.x-118)<.001f);}
+        sampled(0,16384);assert(std::fabs(player.weaponWheelCursor.y-118.0f*16384/32767)<.001f);
+        sampled(11466,0);assert(player.weaponWheelCursor.Length()<WeaponWheelDeadzoneRadius()); // 34.99% physical
+        sampled(11472,0);assert(player.weaponWheelCursor.Length()>WeaponWheelDeadzoneRadius()); // 35.01% physical
+        sampled(8108,8108);assert(player.weaponWheelCursor.Length()<WeaponWheelDeadzoneRadius());
+        sampled(8112,8112);assert(player.weaponWheelCursor.Length()>WeaponWheelDeadzoneRadius());
+        sampled(-32768,0);assert(std::fabs(player.weaponWheelCursor.x+118)<.001f);
+        sampled(0,0);assert(player.weaponWheelCursor.Length()==0);
+    }
+    idKeyInput::controller=false;vars.SetCVarBool("ui_radialStickActive",false);
+    assert(WeaponWheelDeadzoneRadius()==32);
+    // Fixed slots do not jump over unowned weapons, and hysteresis extends
+    // four degrees beyond each boundary in either direction, including zero.
+    for(int slots:{11,13}) {
+        idPlayer player;player.slotCount=slots;const float slice=idMath::TWO_PI/slots;
+        assert(player.GetClosestAvailableWeaponWheelSlot(slice*.5f+DEG2RAD(3.9f))==0);
+        assert(player.GetClosestAvailableWeaponWheelSlot(slice*.5f+DEG2RAD(4.1f))==1);
+        player.owned&=~(1<<1);assert(player.GetClosestAvailableWeaponWheelSlot(slice)==0);
+        assert(player.GetClosestAvailableWeaponWheelSlot(idMath::TWO_PI-slice*.5f-DEG2RAD(3.9f))==0);
+        assert(player.GetClosestAvailableWeaponWheelSlot(idMath::TWO_PI-slice*.5f-DEG2RAD(4.1f))==slots-1);
+    }
+    vars.SetCVarBool("ui_retained",false);vars.SetCVarBool("in_joystickInvertLook",false);
     // Normal aiming keeps its sensitivity in either module.
     for(const char* module:{"game_sp","game_mp"}) {
         vars.values["com_activeGameModule"]=module;vars.values["in_joystickLookSensitivity"]="0.5";
@@ -280,9 +347,17 @@ def main():
         "ROCKET_GUARD": f"int RocketReload(const stateParms_t&) {{ {rocket_guard} return -1; }}",
         "HANDOFF": function(session, "static void Session_openQ4StartSingleplayer_f("),
         "MENU_OPTION": function(read(ROOT / "src/framework/Session_menu.cpp"), "static int MainMenuGetNewGameOption("),
-        "WHEEL": function(player, "static void WeaponWheelAdvanceCursor(") + "\n" +
-                 function(player, "void idPlayer::UpdateWeaponWheelCursor("),
+        "WHEEL": function(player, "static void WeaponWheelPlacement(") + "\n" +
+                 function(read(GAME / "src/game/gamesys/WeaponWheelLegacy.inl"), "float WeaponWheelNormalizeAngle(") + "\n" +
+                 function(player, "static float WeaponWheelDeadzoneRadius(") + "\n" +
+                 function(player, "static void WeaponWheelAdvanceCursor(") + "\n" +
+                 function(player, "void idPlayer::UpdateWeaponWheelCursor(") + "\n" +
+                 function(player, "int idPlayer::GetClosestAvailableWeaponWheelSlot("),
         "JOYSTICK": function(read(ROOT / "src/framework/UsercmdGen.cpp"), "void idUsercmdGenLocal::JoystickMove("),
+        "RADIAL": "\n".join(function(read(ROOT / "src/sys/sdl3/sdl3_backend.cpp"), signature) for signature in (
+            "static int SDL3_ClampJoystickValue(", "static float SDL3_ClampRange(", "static float SDL3_ClampUnit(",
+            "static float SDL3_NormalizeSignedAxisFloat(", "static void SDL3_PublishRadialStick(",
+            "static int SDL3_AxisFloatToJoystickValue(", "static void SDL3_NormalizeStickAxes(")),
     }
     source = HARNESS
     for name, value in substitutions.items():

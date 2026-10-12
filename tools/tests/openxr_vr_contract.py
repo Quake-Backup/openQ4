@@ -68,7 +68,7 @@ def check_build() -> None:
 
 def check_abi() -> None:
     api = read("src/renderer/RenderModuleAPI.h")
-    require(api, "#define RENDER_API_VERSION\t\t\t23", "renderer module ABI v23")
+    require(api, "#define RENDER_API_VERSION\t\t\t24", "renderer module ABI v24")
     require(api, "void\t\t\t( *RendererDeviceEvent )( int event );\t// renderDeviceEvent_t\n} renderModuleServices_t;",
             "the device lifetime service is the last services slot")
 
@@ -79,8 +79,8 @@ def check_abi() -> None:
     # the VR slots follow the retained font slots in their original order;
     # later ABI versions only append after them
     if slots[:4] != ["GetVRGraphicsBinding", "SetVRFrame", "SetVRRenderTarget", "GetVRFrameResult"] \
-            or slots[4:] != ["PresentScaledScene"]:
-        raise AssertionError(f"the VR slots must follow the retained font slots, then PresentScaledScene, found {slots}")
+            or slots[4:] != ["PresentScaledScene", "BeginGuiRoot"]:
+        raise AssertionError(f"the VR slots must follow the retained font slots, then PresentScaledScene and BeginGuiRoot, found {slots}")
 
     # game modules call through idVRSystem too: its slots only ever grow at the end
     vr_system = read("src/framework/VRSystem.h")

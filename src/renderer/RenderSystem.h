@@ -807,6 +807,12 @@ public:
 	// bilinear upscale (0 or 1), or the backend has no such presenter; the
 	// caller then presents the scene with its own full-screen material.
 	virtual bool			PresentScaledScene( idRenderTexture *sceneColorTarget ) = 0;
+
+	// Begin a default-target GUI root, preserving a compatible pending GUI
+	// batch when an explicit preceding target command proves it is safe.
+	// BindRenderTexture retains its unconditional flush/barrier semantics.
+	// Appended slot, render API 24; existing game API slots are unchanged.
+	virtual void BeginGuiRoot() { BindRenderTexture(NULL,NULL); }
 };
 
 extern idRenderSystem *		renderSystem;

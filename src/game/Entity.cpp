@@ -914,7 +914,7 @@ void idEntity::Restore( idRestoreGame *savefile ) {
 //	savefile->ReadInt( mLastLongThinkTime );			// Debug vars - don't save
 //	savefile->ReadVec4( mLastLongThinkColor );			// Debug vars - don't save
 
-	if ( savefile->GetOpenQ4SaveGameCompatibilityVersion() == OPENQ4_SAVEGAME_COMPATIBILITY_VERSION ) {
+	if ( savefile->GetOpenQ4SaveGameCompatibilityVersion() >= OPENQ4_SAVEGAME_TYPED_COMPATIBILITY_VERSION ) {
 		savefile->ReadInt( packedFlags );
 		fl.notarget = ( packedFlags & BIT( 0 ) ) != 0;
 		fl.noknockback = ( packedFlags & BIT( 1 ) ) != 0;

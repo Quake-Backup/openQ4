@@ -225,6 +225,7 @@ The Game Options pane is `p_settings_game` and is included from `content/baseoq4
 | Damage Direction | `choiceDef` | `set_game_huddamagedir_value` | `ui_hudDamageDirection` | `0 No`, `1 Yes` | No hides the damage direction indicator in the Remastered and Minimal HUD. |
 | Pickup Messages | `choiceDef` | `set_game_hudpickups_value` | `ui_hudPickups` | `0 No`, `1 Yes` | No hides the pickup messages in the Remastered and Minimal HUD. |
 | Weapon Strip | `choiceDef` | `set_game_hudstrip_value` | `ui_hudWeaponStrip` | `0 No`, `1 Yes` | No keeps the weapon strip hidden on a weapon change in the Remastered and Minimal HUD. |
+| Reduced Flashing | `choiceDef` | `set_game_hudflash_value` | `ui_reducedFlashing` | `0 No`, `1 Yes` | Yes caps the damage direction indicator and the vehicle hit glow at 0.40, dims full-screen white flashes (teleports, spawns) and drops the death afterimage, in every HUD layout. |
 
 ### Corpse, Language, Console
 

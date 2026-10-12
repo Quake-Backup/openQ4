@@ -4,8 +4,12 @@
 
 #ifndef ID_DEDICATED
 #include "LegacyGuiImport.h"
+#include "DeviceContext.h"
+#include "UserInterfaceLocal.h"
+extern idUserInterfaceManagerLocal uiManagerLocal;
 #include "UserInterfaceManaged.h"
 #include "retained/Runtime.h"
+#include "retained/CoverageRaster.h"
 #include "retained/Input.h"
 #include "../renderer/RendererModule.h"
 #include <algorithm>
@@ -65,6 +69,10 @@ idCVar ui_retainedReducedMotion("ui_retainedReducedMotion", "0", CVAR_GUI | CVAR
 	"reduce decorative motion in the retained UI preview");
 idCVar ui_retainedTrace("ui_retainedTrace", "0", CVAR_GUI | CVAR_BOOL | CVAR_NOCHEAT,
 	"trace retained event commits and typed application dispatch for semantic validation");
+idCVar ui_retainedAtlas("ui_retainedAtlas", "1", CVAR_GUI | CVAR_BOOL | CVAR_NOCHEAT,
+	"cache unchanged solid vector coverage in bounded runtime texture pages");
+idCVar ui_retainedReplay("ui_retainedReplay", "1", CVAR_GUI | CVAR_BOOL | CVAR_NOCHEAT,
+	"replay settled presentation geometry while preserving live image sampling");
 idCVar ui_retainedOpaqueBacking("ui_retainedOpaqueBacking", "0", CVAR_GUI | CVAR_BOOL | CVAR_ARCHIVE,
 	"draw the opaque scrim behind retained modals instead of softening the screen beneath");
 // Documents read this to choose between soft focus and its scrim fallback.
@@ -73,6 +81,30 @@ idCVar ui_retainedSoftFocus("ui_retainedSoftFocus", "0", CVAR_GUI | CVAR_BOOL | 
 
 class EngineHost final : public openq4::ui::Host {
 public:
+	bool timingRequested=false;
+	bool CollectTimings() const override { return timingRequested; }
+	// Root submission establishes the target before any retained drawing.
+	// Within that submission an unchanged target needs no GUI flush or render
+	// pass boundary; icons and cached panels can remain in the same batch.
+	void BeginRoot() {
+		renderSystem->BeginGuiRoot(); boundTarget=nullptr;
+		rasterDraws=rasterSavedVertices=0;
+	}
+	unsigned long long rasterDraws=0,rasterSavedVertices=0;
+	size_t RasterPages() const { return atlasPages.size(); }
+	void EndRoot() {
+		for (size_t i=0;i<atlasPages.size();++i) if (atlasPages[i].dirty) {
+			auto& page=atlasPages[i];
+			if (renderSystem->UploadImage(va("_retainedAtlasImage%u",unsigned(i)),page.pixels.data(),AtlasSize,AtlasSize)) {
+				page.dirty=false; page.uploadFailed=false;
+			} else if (!page.uploadFailed) {
+				page.uploadFailed=true; common->Warning("retained UI: coverage upload unavailable; using original geometry");
+			}
+		}
+	}
+	void BindTarget(idRenderTexture* target, bool flush=false) {
+		if (flush || target!=boundTarget) { renderSystem->BindRenderTexture(target,nullptr); boundTarget=target; }
+	}
 	bool ReadFile(const std::string& path, std::string& contents) override {
 		// UI documents and resources resolve only through the engine VFS.
 		if (path.empty() || path.find("..") != std::string::npos || path.find(':') != std::string::npos || path[0] == '/' || path[0] == '\\') return false;
@@ -142,12 +174,30 @@ public:
 		const idMaterial* material = Material(handle);
 		auto& cached = meshes[mesh];
 		if (cached.revision != revision || cached.handle != handle || cached.width != viewportWidth || cached.height != viewportHeight) {
+			DropRaster(cached);
 			Convert(vertices,indices,material,handle,cached);
 			cached.revision = revision; cached.handle = handle; cached.width = viewportWidth; cached.height = viewportHeight;
+			cached.stableFrames=0; cached.rasterTried=false;
+		} else if (cached.lastFrame!=RenderFrame()) {
+			++cached.stableFrames;
 		}
-		Submit(cached,material);
+		cached.lastFrame=RenderFrame();
+		if (ui_retainedAtlas.GetBool() && !handle && !cached.rasterTried && cached.stableFrames>=2 && vertices.size()>=64) {
+			cached.rasterTried=true;
+			CacheRaster(cached,vertices,indices);
+		}
+		if (ui_retainedAtlas.GetBool() && cached.atlasPage>=0 && !atlasPages[cached.atlasPage].dirty) {
+			++rasterDraws; rasterSavedVertices+=vertices.size()-4;
+			auto& page=atlasPages[cached.atlasPage]; page.lastFrame=RenderFrame();
+			renderSystem->SetColor4(1,1,1,1);
+			const glIndex_t quad[6]={0,1,2,0,2,3};
+			renderSystem->DrawStretchPic(cached.rasterQuad.data(),quad,4,6,page.material,false);
+		} else Submit(cached,material);
 	}
-	void ReleaseMesh(std::uint64_t mesh) override { meshes.erase(mesh); }
+	void ReleaseMesh(std::uint64_t mesh) override {
+		const auto found=meshes.find(mesh);
+		if (found!=meshes.end()) { DropRaster(found->second); meshes.erase(found); }
+	}
 	std::uint64_t RenderFrame() const override {
 		renderPresentationState_t state;
 		renderSystem->GetPresentationState(state);
@@ -186,8 +236,25 @@ public:
 				renderSystem->DestroyRenderTexture(layer.target); layer.target = nullptr; return false;
 			}
 		}
-		renderSystem->BindRenderTexture(layer.target,nullptr);
+		BindTarget(layer.target);
 		renderSystem->ClearRenderTarget(true,false,1,0,0,0,0);
+		return true;
+	}
+	bool CanCacheLayers() const override { return true; }
+	bool CanReplayFrames() const override { return ui_retainedReplay.GetBool(); }
+	bool TrimLayer(std::uint32_t id) override {
+		if (!id || id>layers.size()) return false;
+		auto& layer=layers[id-1];
+		if (!layer.target || layer.target==boundTarget) return false;
+		// Scratch images are owned by the image manager. Retire the FBO through
+		// the normal deferred path and shrink its named image through that same
+		// cross-backend allocation API; no renderer-specific deletion here.
+		renderSystem->DestroyRenderTexture(layer.target); layer.target=nullptr;
+		idImageOpts options;
+		options.width=options.height=1; options.format=FMT_RGBA8;
+		options.numLevels=1; options.isPersistant=true;
+		renderSystem->CreateImage(va("_retainedLayerImage%u",id),&options,TF_NEAREST);
+		layer.width=layer.height=1;
 		return true;
 	}
 	void CompositeLayer(std::uint32_t source, std::uint32_t destination, float opacity, const openq4::ui::Bounds& clip) override {
@@ -197,7 +264,7 @@ public:
 		DrawLayer(layers[mask-1].maskMaterial,destination,1,clip);
 	}
 	void DrawLayer(const idMaterial* material, std::uint32_t destination, float opacity, const openq4::ui::Bounds& clip) {
-		renderSystem->BindRenderTexture(destination ? layers[destination-1].target : nullptr,nullptr);
+		BindTarget(destination ? layers[destination-1].target : nullptr);
 		const float x0 = clip.x, y0 = clip.y, x1 = x0+clip.width, y1 = y0+clip.height;
 		// Render textures keep GL row order on every backend: the Vulkan
 		// executor records them lower-origin and marks those writes canonical,
@@ -210,7 +277,7 @@ public:
 			reinterpret_cast<std::uintptr_t>(material));
 	}
 	void EndLayer(std::uint32_t restore) override {
-		renderSystem->BindRenderTexture(restore ? layers[restore-1].target : nullptr,nullptr);
+		BindTarget(restore ? layers[restore-1].target : nullptr);
 	}
 	// Soft focus (REN-016): the base surface behind a modal, blurred by two
 	// separable Gaussian passes and desaturated into the destination layer.
@@ -224,16 +291,16 @@ public:
 		const float y0 = Max(region.y,0.f), y1 = Min(region.y+region.height,bottom);
 		if (!(x0 < x1 && y0 < y1) || captureWidth <= 0 || captureHeight <= 0 || !EnsureBlurTargets()) return false;
 		// The copy reads the whole window; the view sits at its origin within it.
-		renderSystem->BindRenderTexture(nullptr,nullptr);
+		BindTarget(nullptr,true);
 		renderSystem->CaptureRenderToImage("_retainedBackdrop");
 		// The horizontal pass covers every row the vertical pass reads.
 		const float reach = std::ceil(3*sigma), top = Max(y0-reach,0.f), end = Min(y1+reach,bottom);
 		const float w = static_cast<float>(captureWidth), h = static_cast<float>(captureHeight);
-		renderSystem->BindRenderTexture(blurScratch,nullptr);
+		BindTarget(blurScratch);
 		renderSystem->ClearRenderTarget(true,false,1,0,0,0,0);
 		DrawBlurPass(blurBackdropMaterial,{x0,top,x1-x0,end-top},
 			{(viewportX+x0)/w,1-(viewportY+top)/h,(viewportX+x1)/w,1-(viewportY+end)/h},{1/w,0,sigma,1});
-		renderSystem->BindRenderTexture(layers[destination-1].target,nullptr);
+		BindTarget(layers[destination-1].target);
 		DrawBlurPass(blurScratchMaterial,{x0,y0,x1-x0,y1-y0},{x0/right,1-y0/bottom,x1/right,1-y1/bottom},
 			{0,1/bottom,sigma,saturation});
 		return true;
@@ -254,13 +321,13 @@ public:
 			if (!material || material->GetState() == DS_DEFAULTED) return false;
 			blurStreakMaterial = material;
 		}
-		renderSystem->BindRenderTexture(nullptr,nullptr);
+		BindTarget(nullptr,true);
 		renderSystem->CaptureRenderToImage("_retainedBackdrop");
 		const float w = static_cast<float>(captureWidth), h = static_cast<float>(captureHeight);
-		renderSystem->BindRenderTexture(blurScratch,nullptr);
+		BindTarget(blurScratch);
 		DrawBlurPass(blurBackdropMaterial,{0,0,right,bottom},
 			{viewportX/w,1-viewportY/h,(viewportX+right)/w,1-(viewportY+bottom)/h},{1/w,0,0,1});
-		renderSystem->BindRenderTexture(layers[destination-1].target,nullptr);
+		BindTarget(layers[destination-1].target);
 		DrawBlurPass(blurStreakMaterial,{x0,y0,x1-x0,y1-y0},{x0/right,1-y0/bottom,x1/right,1-y1/bottom},{strength,0,0,0});
 		return true;
 	}
@@ -309,6 +376,11 @@ public:
 		renderSystem->DrawStretchPic(vertices,indices,4,6,material,false);
 		renderSystem->SetColor4(1,1,1,1);
 	}
+	bool LayoutLegacyText(const std::string& text, const std::string& family, float scale,
+		float width, float height, int align, bool clip, std::vector<openq4::ui::HudPrimitive>& output) override {
+		uiManagerLocal.CaptureLegacyText(text.c_str(),("fonts/"+FontFamily(family)).c_str(),scale,width,height,align,clip,output);
+		return true;
+	}
 	openq4::ui::FontMetrics GetFontMetrics(const std::string& family, int size) override {
 		renderFontMetrics_t metrics;
 		const std::string key = FontFamily(family);
@@ -354,6 +426,12 @@ public:
 	// gone with it, and only the handles are dropped.
 	void Reset() {
 		meshes.clear();
+		if (renderSystem) for (size_t i=0;i<atlasPages.size();++i) {
+			idImageOpts options; options.width=options.height=1; options.format=FMT_RGBA8;
+			options.numLevels=1; options.isPersistant=true;
+			renderSystem->CreateImage(va("_retainedAtlasImage%u",unsigned(i)),&options,TF_NEAREST);
+		}
+		atlasPages.clear();
 		if (renderSystem) renderSystem->ResetRetainedFontCache();
 		scalableFaces.clear(); fontFallbackReported = false;
 		fonts.clear();
@@ -384,7 +462,71 @@ private:
 		std::uint64_t revision = 0;
 		std::uintptr_t handle = 0;
 		int width = 0, height = 0;
+		int atlasPage=-1;
+		std::array<idDrawVert,4> rasterQuad;
+		unsigned stableFrames=0;
+		std::uint64_t lastFrame=0;
+		bool rasterTried=false;
 	};
+	// Fixed-size pages keep CPU/GPU storage bounded at 32 MiB each. Append-only
+	// packing never changes a live mesh's pixels, including queued SMP draws.
+	// Only an entirely unused page, retired for four frames, can be recycled.
+	static constexpr int AtlasSize=512, AtlasPages=32;
+	struct AtlasPage {
+		std::vector<byte> pixels;
+		const idMaterial* material=nullptr;
+		int x=0,y=0,rowHeight=0,references=0;
+		std::uint64_t lastFrame=0;
+		bool dirty=false,uploadFailed=false;
+	};
+	std::vector<AtlasPage> atlasPages;
+	void DropRaster(HostMesh& mesh) {
+		if (mesh.atlasPage<0) return;
+		auto& page=atlasPages[mesh.atlasPage]; --page.references; page.lastFrame=RenderFrame(); mesh.atlasPage=-1;
+	}
+	void CacheRaster(HostMesh& mesh,const std::vector<openq4::ui::Vertex>& vertices,const std::vector<int>& indices) {
+		openq4::ui::CoverageBitmap bitmap;
+		if (!openq4::ui::RasterizeCoverage(vertices,indices,bitmap,AtlasSize-2)) return;
+		const int w=bitmap.width+2,h=bitmap.height+2;
+		int chosen=-1,x=0,y=0;
+		const auto frame=RenderFrame();
+		for (int i=0;i<=int(atlasPages.size()) && i<AtlasPages;++i) {
+			if (i==int(atlasPages.size())) {
+				idImageOpts options; options.width=options.height=AtlasSize; options.format=FMT_RGBA8;
+				options.numLevels=1; options.isPersistant=true;
+				if (!renderSystem->CreateImage(va("_retainedAtlasImage%u",unsigned(i)),&options,TF_NEAREST)) return;
+				AtlasPage page; page.pixels.resize(AtlasSize*AtlasSize*4);
+				page.material=declManager->FindMaterial(va("_retainedAtlas/%u",unsigned(i)));
+				if (!page.material || page.material->GetState()==DS_DEFAULTED) return;
+				atlasPages.push_back(std::move(page));
+			}
+			auto& page=atlasPages[i];
+			if (!page.references && frame>page.lastFrame && frame-page.lastFrame>4) {
+				std::fill(page.pixels.begin(),page.pixels.end(),0); page.x=page.y=page.rowHeight=0; page.dirty=true;
+			}
+			x=page.x; y=page.y;
+			if (x+w>AtlasSize) { x=0; y+=page.rowHeight; }
+			if (y+h>AtlasSize) continue;
+			chosen=i;
+			if (y!=page.y) page.rowHeight=0;
+			page.x=x+w; page.y=y; page.rowHeight=(std::max)(page.rowHeight,h);
+			++page.references; page.lastFrame=frame; page.dirty=true;
+			for (int row=0;row<bitmap.height;++row)
+				std::memcpy(page.pixels.data()+((y+1+row)*AtlasSize+x+1)*4,bitmap.pixels.data()+row*bitmap.width*4,bitmap.width*4);
+			break;
+		}
+		if (chosen<0) return;
+		mesh.atlasPage=chosen;
+		const float sx=640.f/viewportWidth,sy=480.f/viewportHeight;
+		for (int i=0;i<4;++i) {
+			const bool right=i==1 || i==2,bottom=i>=2;
+			auto& vertex=mesh.rasterQuad[i]; vertex.Clear();
+			vertex.xyz.Set((bitmap.x+(right?bitmap.width:0))*sx,(bitmap.y+(bottom?bitmap.height:0))*sy,0);
+			vertex.st.Set(float(x+1+(right?bitmap.width:0))/AtlasSize,float(y+1+(bottom?bitmap.height:0))/AtlasSize);
+			vertex.normal.Set(0,0,1); vertex.tangents[0].Set(1,0,0); vertex.tangents[1].Set(0,1,0);
+			for (int channel=0;channel<4;++channel) vertex.color[channel]=vertex.color2[channel]=255;
+		}
+	}
 	HostMesh scratchMesh;
 	std::unordered_map<std::uint64_t,HostMesh> meshes;
 	const idMaterial* Material(std::uintptr_t handle) const {
@@ -462,6 +604,7 @@ private:
 	}
 	struct Layer { idRenderTexture* target = nullptr; const idMaterial* material = nullptr; const idMaterial* maskMaterial = nullptr; int width = 0, height = 0; };
 	std::vector<Layer> layers;
+	idRenderTexture* boundTarget=nullptr;
 	idRenderTexture* blurScratch = nullptr;
 	const idMaterial* blurBackdropMaterial = nullptr;
 	const idMaterial* blurScratchMaterial = nullptr;
@@ -548,6 +691,7 @@ std::string currentPath;
 // One bounded developer checkpoint; never a second owner of the document.
 std::string savedCheckpoint;
 int restartGeneration = -1, languageGeneration = -1;
+retainedUIView_t* initializationView = nullptr;
 std::uint64_t languageRevision = 0, loadedLanguageRevision = (std::numeric_limits<std::uint64_t>::max)();
 const std::chrono::steady_clock::time_point epoch = std::chrono::steady_clock::now();
 struct ProfileSample { openq4::ui::RuntimeStatistics statistics; double engineMilliseconds; };
@@ -560,9 +704,15 @@ int profileFrames = 0;
 struct RootProfileSample {
 	std::uint64_t frame = 0;
 	std::chrono::steady_clock::time_point at;
-	double cpu = 0;
+	double cpu = 0, update = 0, render = 0, presentation = 0, layout = 0;
+	double sources = 0, motion = 0, apply = 0, hostDraw = 0;
 	int views = 0;
 	unsigned long long layerComposites = 0, backdropComposites = 0, backdropFallbacks = 0;
+	unsigned long long draws = 0, vertices = 0, cachedLayers = 0, directMasks = 0;
+	unsigned long long layoutUpdates = 0, motionInputs = 0, frameReplays = 0;
+	unsigned long long rasterDraws = 0, rasterSavedVertices = 0;
+	struct View { double cpu=0,apply=0,render=0; unsigned long long vertices=0; };
+	std::map<std::string,View> documents;
 };
 std::vector<RootProfileSample> rootProfile;
 int rootProfileFrames = 0;
@@ -655,12 +805,27 @@ void ReportRootProfile() {
 	std::vector<double> cpu, intervals;
 	unsigned long long layerComposites = 0, backdropComposites = 0, backdropFallbacks = 0;
 	int views = 0;
-	double total = 0;
+	double total = 0, update = 0, render = 0;
+	double presentation = 0, layout = 0;
+	double sources = 0, motion = 0, apply = 0, hostDraw = 0;
+	unsigned long long draws = 0, vertices = 0, cachedLayers = 0, directMasks = 0;
+	unsigned long long layoutUpdates = 0, motionInputs = 0, frameReplays = 0;
+	unsigned long long rasterDraws = 0, rasterSavedVertices = 0;
+	std::map<std::string,RootProfileSample::View> documents;
 	for (int i = 0; i < rootProfileFrames; ++i) {
 		const auto& sample = rootProfile[i];
+		for (const auto& [path,view]:sample.documents) {
+			auto& sum=documents[path]; sum.cpu+=view.cpu; sum.apply+=view.apply; sum.render+=view.render; sum.vertices+=view.vertices;
+		}
 		cpu.push_back(sample.cpu);
 		intervals.push_back(std::chrono::duration<double,std::milli>(rootProfile[i+1].at-sample.at).count());
 		total += intervals.back();
+		update+=sample.update; render+=sample.render; draws+=sample.draws; vertices+=sample.vertices;
+		presentation+=sample.presentation; layout+=sample.layout; layoutUpdates+=sample.layoutUpdates; motionInputs+=sample.motionInputs;
+		sources+=sample.sources; motion+=sample.motion; apply+=sample.apply; hostDraw+=sample.hostDraw;
+		cachedLayers+=sample.cachedLayers; directMasks+=sample.directMasks;
+		frameReplays+=sample.frameReplays;
+		rasterDraws+=sample.rasterDraws; rasterSavedVertices+=sample.rasterSavedVertices;
 		layerComposites += sample.layerComposites; backdropComposites += sample.backdropComposites; backdropFallbacks += sample.backdropFallbacks;
 		views = Max(views,sample.views);
 	}
@@ -669,9 +834,22 @@ void ReportRootProfile() {
 	common->Printf("Retained UI root profile: {\"frames\":%d,\"views\":%d,\"retained_cpu_p50_ms\":%.6f,\"retained_cpu_p95_ms\":%.6f,\"frame_interval_mean_ms\":%.6f,\"frame_interval_p50_ms\":%.6f,\"frame_interval_p95_ms\":%.6f,\"layer_composites\":%llu,\"backdrop_composites\":%llu,\"backdrop_fallbacks\":%llu}\n",
 		rootProfileFrames,views,percentile(cpu,.5),percentile(cpu,.95),total/rootProfileFrames,percentile(intervals,.5),percentile(intervals,.95),
 		layerComposites,backdropComposites,backdropFallbacks);
+	common->Printf("Retained UI root work: {\"update_mean_ms\":%.6f,\"render_mean_ms\":%.6f,\"draws_mean\":%.2f,\"vertices_mean\":%.2f,\"cached_layers_mean\":%.2f,\"direct_masks_mean\":%.2f}\n",
+		update/rootProfileFrames,render/rootProfileFrames,double(draws)/rootProfileFrames,double(vertices)/rootProfileFrames,
+		double(cachedLayers)/rootProfileFrames,double(directMasks)/rootProfileFrames);
+	common->Printf("Retained UI layout work: {\"presentation_mean_ms\":%.6f,\"layout_mean_ms\":%.6f,\"layout_updates_mean\":%.2f,\"motion_inputs_mean\":%.2f}\n",
+		presentation/rootProfileFrames,layout/rootProfileFrames,double(layoutUpdates)/rootProfileFrames,double(motionInputs)/rootProfileFrames);
+	common->Printf("Retained UI phase work: {\"sources_ms\":%.6f,\"motion_ms\":%.6f,\"apply_ms\":%.6f,\"host_draw_ms\":%.6f}\n",
+		sources/rootProfileFrames,motion/rootProfileFrames,apply/rootProfileFrames,hostDraw/rootProfileFrames);
+	common->Printf("Retained UI atlas work: {\"draws_mean\":%.2f,\"saved_vertices_mean\":%.2f,\"pages\":%u}\n",
+		double(rasterDraws)/rootProfileFrames,double(rasterSavedVertices)/rootProfileFrames,unsigned(host.RasterPages()));
+	common->Printf("Retained UI frame replay: {\"views_mean\":%.2f}\n",double(frameReplays)/rootProfileFrames);
+	for (const auto& [path,view]:documents)
+		common->Printf("Retained UI document work: path=%s cpu_ms=%.6f apply_ms=%.6f render_ms=%.6f vertices=%.2f\n",
+			path.c_str(),view.cpu/rootProfileFrames,view.apply/rootProfileFrames,view.render/rootProfileFrames,double(view.vertices)/rootProfileFrames);
 	rootProfileFrames = 0; rootProfile.clear();
 }
-void RecordRootProfile(std::uint64_t frame, std::chrono::steady_clock::time_point started, double cpu, const openq4::ui::RuntimeStatistics& statistics) {
+void RecordRootProfile(std::uint64_t frame, std::chrono::steady_clock::time_point started, double cpu, const openq4::ui::RuntimeStatistics& statistics, const std::string& path) {
 	if (!rootProfileFrames) return;
 	if (rootProfile.empty() || rootProfile.back().frame != frame) {
 		// The frame after the last measured one only closes its interval.
@@ -680,7 +858,19 @@ void RecordRootProfile(std::uint64_t frame, std::chrono::steady_clock::time_poin
 		rootProfile.push_back(sample);
 	}
 	auto& sample = rootProfile.back();
+	auto& document=sample.documents[path];
+	document.cpu+=cpu; document.apply+=statistics.applyMilliseconds; document.render+=statistics.renderMilliseconds;
+	document.vertices+=statistics.submittedVertices;
 	sample.cpu += cpu; ++sample.views;
+	sample.update+=statistics.updateMilliseconds; sample.render+=statistics.renderMilliseconds;
+	sample.presentation+=statistics.presentationMilliseconds; sample.layout+=statistics.layoutMilliseconds;
+	sample.sources+=statistics.sourceMilliseconds; sample.motion+=statistics.motionMilliseconds;
+	sample.apply+=statistics.applyMilliseconds; sample.hostDraw+=statistics.hostDrawMilliseconds;
+	sample.layoutUpdates+=statistics.layoutUpdates; sample.motionInputs+=statistics.motionInputsScanned;
+	sample.draws+=statistics.drawCalls; sample.vertices+=statistics.submittedVertices;
+	sample.cachedLayers+=statistics.layerCacheHits; sample.directMasks+=statistics.directMaskDraws;
+	sample.frameReplays+=statistics.frameReplays;
+	sample.rasterDraws+=host.rasterDraws; sample.rasterSavedVertices+=host.rasterSavedVertices;
 	sample.layerComposites += statistics.layerComposites;
 	sample.backdropComposites += statistics.backdropComposites; sample.backdropFallbacks += statistics.backdropFallbacks;
 }
@@ -1052,6 +1242,7 @@ openq4::ui::Runtime* RetainedUI_ViewRuntime(retainedUIView_t* view) {
 }
 bool RetainedUI_LoadView(retainedUIView_t* view, const std::string& source, const std::string& path,
 	std::vector<openq4::ui::Diagnostic>& diagnostics) {
+	EditCall call;
 	diagnostics.clear();
 	if (!RegisteredView(view) || !RefreshResources() || !RegisteredView(view) || view->edit->destroyPending) {
 		diagnostics.push_back({"","Retained view is unavailable during resource lifecycle changes"}); return false;
@@ -1150,33 +1341,84 @@ bool RetainedUI_DefaultViewport(openq4::ui::Viewport& viewport) {
 }
 double RetainedUI_PresentationTime() { return PresentationTime(); }
 void RetainedUI_FrameSubmitted() { rootSubmissionPending = false; ++submittedFrames; }
+void RetainedUI_EndInitialization() {
+	RetainedUI_DestroyView(initializationView); initializationView = nullptr;
+}
+bool RetainedUI_CanUpdateInitialization() {
+	return std::this_thread::get_id() == editThread && !editCallDepth && !editWorkDepth &&
+		!resourcesRefreshing && !editDraining && initializationView && !initializationView->failed &&
+		cvarSystem->GetCVarBool("ui_retained") && !ui_retainedReducedMotion.GetBool() &&
+		renderSystem && renderSystem->IsOpenGLRunning();
+}
+bool RetainedUI_DrawInitialization(const char* message) {
+	if (!cvarSystem->GetCVarBool("ui_retained")) { RetainedUI_EndInitialization(); return false; }
+	static int failedGeneration = -1;
+	const int generation = renderSystem->GetVideoRestartCount();
+	if (failedGeneration == generation) return false;
+	static bool drawing = false;
+	if (drawing) return false;
+	struct Guard { bool& flag; Guard(bool& f):flag(f){flag=true;} ~Guard(){flag=false;} } guard(drawing);
+	if (!initializationView) {
+		const char* path = "guis/loading/initialization.q4ui";
+		void* bytes = nullptr; const int size = fileSystem->ReadFile(path,&bytes);
+		if (size <= 0 || !bytes) return false;
+		initializationView = RetainedUI_CreateView();
+		std::vector<openq4::ui::Diagnostic> diagnostics;
+		const bool loaded = RetainedUI_LoadView(initializationView,std::string(static_cast<const char*>(bytes),size),path,diagnostics);
+		fileSystem->FreeFile(bytes);
+		if (!loaded) { ReportViewDiagnostics(path,diagnostics); RetainedUI_EndInitialization(); failedGeneration = generation; return false; }
+		openq4::ui::Runtime::EventEffects effects; std::string error;
+		if (!initializationView->runtime->RunEvent("onInit",PresentationTime(),effects,error)) {
+			RetainedUI_EndInitialization(); return false;
+		}
+	}
+	if (!RetainedUI_PrepareView(initializationView)) return false;
+	std::string error;
+	const auto& previous = initializationView->runtime->GetState();
+	const auto oldMessage = previous.find("message");
+	const bool changed = oldMessage == previous.end() || oldMessage->second != openq4::ui::StateValue(std::string(message));
+	if (changed) {
+		int step = 0;
+		for (int i=0; i<6; ++i) {
+			if (!idStr::Icmp(message,common->GetLanguageDict()->GetString(va("#str_%d",104346+i)))) step=i+1;
+		}
+		if (!initializationView->runtime->SetState({{"message",std::string(message)}, {"step",double(step)}},error,PresentationTime())) return false;
+		openq4::ui::Runtime::EventEffects effects;
+		if (!initializationView->runtime->RunEvent("stepChanged",PresentationTime(),effects,error)) return false;
+		if (ui_retainedTrace.GetBool()) common->Printf("RETAINED_INITIALIZATION step=%d message=%s\n",step,message);
+	}
+	openq4::ui::Viewport viewport;
+	if (!RetainedUI_DefaultViewport(viewport)) return false;
+	viewport.canvasHeight = 720; viewport.canvasMinWidth = 960; viewport.fitScale = 1;
+	return RetainedUI_DrawViewRoot(initializationView,viewport);
+}
 bool RetainedUI_DrawViewRoot(retainedUIView_t* view, const openq4::ui::Viewport& viewport) {
+	const auto started = std::chrono::steady_clock::now();
     EditCall call;
 	if (!renderSystem || !renderSystem->IsOpenGLRunning() || viewport.width <= 0 || viewport.height <= 0 || !RetainedUI_PrepareView(view)) return false;
 	const int oldWidth = host.viewportWidth, oldHeight = host.viewportHeight;
 	const float oldX = host.viewportX, oldY = host.viewportY;
 	const bool oldViewport = renderSystem->GetUseUIViewportFor2D();
-	renderSystem->FlushGui();
-	renderSystem->BindRenderTexture(nullptr,nullptr);
+	host.BeginRoot();
 	renderSystem->SetUseUIViewportFor2D(true);
 	host.viewportWidth = viewport.width; host.viewportHeight = viewport.height;
 	host.viewportX = viewport.originX; host.viewportY = viewport.originY;
 	host.captureWidth = renderSystem->GetScreenWidth(); host.captureHeight = renderSystem->GetScreenHeight();
 	host.softFocus = UpdateSoftFocus();
 	rootSubmissionPending = true; rootSubmissionFrame = host.RenderFrame();
-	const auto started = std::chrono::steady_clock::now();
 	const double now = PresentationTime();
 	view->runtime->SetReducedMotion(ui_retainedReducedMotion.GetBool(),now);
-	view->runtime->Frame(viewport,now);
-	renderSystem->FlushGui();
+	host.timingRequested=rootProfileFrames>0 || profileFrames>0;
+	const bool drawn = view->runtime->Frame(viewport,now);
+	host.EndRoot();
 	renderSystem->SetUseUIViewportFor2D(oldViewport);
 	renderSystem->SetColor4(1,1,1,1);
 	host.viewportWidth = oldWidth; host.viewportHeight = oldHeight;
 	host.viewportX = oldX; host.viewportY = oldY;
 	if (rootProfileFrames && view != previewView)
 		RecordRootProfile(submittedFrames,started,std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-started).count(),
-			view->runtime->Statistics());
-	return true;
+			view->runtime->Statistics(),view->path);
+	return drawn;
 }
 
 void RetainedUI_Init() {
@@ -1204,6 +1446,7 @@ void RetainedUI_Shutdown() {
         return;
     }
     editShutdownPending=false;
+    RetainedUI_EndInitialization();
     TouchEditResources();
 	Close();
 	// The manager normally destroys its owners first. Explicitly release any
@@ -1367,6 +1610,9 @@ void RetainedUI_DestroyPreparedEdit(retainedUIPreparedEdit_t*){}
 bool RetainedUI_DefaultViewport(openq4::ui::Viewport&) { return false; }
 double RetainedUI_PresentationTime() { return 0; }
 void RetainedUI_FrameSubmitted() {}
+bool RetainedUI_DrawInitialization(const char*) { return false; }
+bool RetainedUI_CanUpdateInitialization() { return false; }
+void RetainedUI_EndInitialization() {}
 void RetainedUI_Init() {}
 void RetainedUI_Shutdown() {}
 void RetainedUI_Draw() {}

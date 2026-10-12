@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Cross-repository contracts and executable models for savegame format v3."""
+"""Savegame v4 writer, bounded v3 decoder, integrity and transaction contracts."""
 
 from __future__ import annotations
 
@@ -284,15 +284,15 @@ def validate_source_contracts() -> None:
     mp_physics_player = read(GAME_LIBS_ROOT / "src/mpgame/physics/Physics_Player.cpp")
     game_file_h = read(GAME_LIBS_ROOT / "src/framework/File.h")
 
-    if constant(session, "SESSION_OPENQ4_SAVEGAME_COMPATIBILITY_VERSION") != 3:
-        raise AssertionError("Engine current save format must remain v3 until an intentional schema bump")
-    if constant(session, "SESSION_OPENQ4_SAVEGAME_PREVIOUS_COMPATIBILITY_VERSION") != 2:
-        raise AssertionError("Engine previous save reader must remain v2")
+    if constant(session, "SESSION_OPENQ4_SAVEGAME_COMPATIBILITY_VERSION") != 4:
+        raise AssertionError("Engine writer must use v4 for persistent Awakening status")
+    if constant(session, "SESSION_OPENQ4_SAVEGAME_PREVIOUS_COMPATIBILITY_VERSION") != 3:
+        raise AssertionError("Engine must retain its bounded v3 reader")
     for source, context in ((sp_h, "SP GameLib"), (mp_h, "MP GameLib")):
-        if constant(source, "OPENQ4_SAVEGAME_COMPATIBILITY_VERSION") != 3:
-            raise AssertionError(f"{context} current save format differs from engine v3")
-        if constant(source, "OPENQ4_SAVEGAME_PREVIOUS_COMPATIBILITY_VERSION") != 2:
-            raise AssertionError(f"{context} previous save reader differs from engine v2")
+        if constant(source, "OPENQ4_SAVEGAME_COMPATIBILITY_VERSION") != 4:
+            raise AssertionError(f"{context} current save format differs from engine v4")
+        if constant(source, "OPENQ4_SAVEGAME_PREVIOUS_COMPATIBILITY_VERSION") != 3:
+            raise AssertionError(f"{context} previous save reader differs from engine v3")
 
     # A save is only claimed when a verified decoder exists for its layout. The
     # per-snapshot allowlists made that claim for tuples that were never

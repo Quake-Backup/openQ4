@@ -25,6 +25,8 @@ typedef struct rendererMetricsFrame_s {
 	unsigned long long waitPhaseMicroseconds[RENDERER_WAIT_CPU_PHASE_COUNT];
 	unsigned long long uploadRetireMicroseconds;
 	unsigned long long cpuFrameMicroseconds;
+	unsigned long long frameBuildMicroseconds;
+	unsigned long long frameSubmitMicroseconds;
 	int		gpuMsec;
 	int		draw3d;
 	int		draw2d;
@@ -734,6 +736,8 @@ void R_RendererMetrics_EndUploadRetirement( unsigned long long begin ) {
 }
 
 static rendererCpuFrameClock_t::time_point rg_cpuFrameBeginTime;
+static rendererCpuFrameClock_t::time_point rg_frameSubmitBeginTime;
+static bool rg_frameSubmitBeginValid = false;
 static bool rg_cpuFrameBeginValid = false;
 static bool rg_rendererMetricsCaptureEnabledLastFrame = false;
 
@@ -748,19 +752,31 @@ static void R_RendererMetrics_EnsureGpuFrameTimingInitialized( void ) {
 void R_RendererMetrics_MarkCpuFrameBegin( void ) {
 	rg_cpuFrameBeginTime = rendererCpuFrameClock_t::now();
 	rg_cpuFrameBeginValid = true;
+	rg_frameSubmitBeginValid = false;
+}
+
+void R_RendererMetrics_MarkFrameSubmitBegin( void ) {
+	rg_frameSubmitBeginTime = rendererCpuFrameClock_t::now();
+	rg_frameSubmitBeginValid = rg_cpuFrameBeginValid;
 }
 
 static unsigned long long R_RendererMetrics_ConsumeCpuFrameMicroseconds( void ) {
+	rg_rendererMetrics.frameBuildMicroseconds = rg_rendererMetrics.frameSubmitMicroseconds = 0;
 	if ( !rg_cpuFrameBeginValid ) {
 		return 0;
 	}
 	const rendererCpuFrameClock_t::time_point beginTime = rg_cpuFrameBeginTime;
 	rg_cpuFrameBeginValid = false;
-	const long long elapsedMicroseconds = std::chrono::duration_cast<std::chrono::microseconds>(
-		rendererCpuFrameClock_t::now() - beginTime ).count();
+	const auto endTime = rendererCpuFrameClock_t::now();
+	const long long elapsedMicroseconds = std::chrono::duration_cast<std::chrono::microseconds>(endTime - beginTime).count();
 	if ( elapsedMicroseconds <= 0 ) {
 		return 0;
 	}
+	if (rg_frameSubmitBeginValid && rg_frameSubmitBeginTime >= beginTime && rg_frameSubmitBeginTime <= endTime) {
+		rg_rendererMetrics.frameBuildMicroseconds = std::chrono::duration_cast<std::chrono::microseconds>(rg_frameSubmitBeginTime-beginTime).count();
+		rg_rendererMetrics.frameSubmitMicroseconds = elapsedMicroseconds-rg_rendererMetrics.frameBuildMicroseconds;
+	}
+	rg_frameSubmitBeginValid = false;
 	return static_cast<unsigned long long>( elapsedMicroseconds );
 }
 
@@ -1899,6 +1915,8 @@ static void R_RendererMetrics_RecordBenchmarkCapture( void ) {
 	memcpy( sample.waitPhaseMicroseconds, rg_rendererMetrics.waitPhaseMicroseconds, sizeof( sample.waitPhaseMicroseconds ) );
 	sample.uploadRetireMicroseconds = rg_rendererMetrics.uploadRetireMicroseconds;
 	sample.cpuFrameMicroseconds = rg_rendererMetrics.cpuFrameMicroseconds;
+	sample.frameBuildMicroseconds = rg_rendererMetrics.frameBuildMicroseconds;
+	sample.frameSubmitMicroseconds = rg_rendererMetrics.frameSubmitMicroseconds;
 	renderGpuFrameTiming_t gpuFrameTiming;
 	R_RendererMetrics_GetGpuFrameTiming( gpuFrameTiming );
 	sample.gpuFrameTimingValid = gpuFrameTiming.valid && gpuFrameTiming.elapsedMicroseconds > 0;

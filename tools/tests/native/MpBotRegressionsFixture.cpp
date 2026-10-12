@@ -15,6 +15,8 @@ template<class T> T Min(T a, T b) { return std::min(a,b); }
 template<class T> T Max(T a, T b) { return std::max(a,b); }
 float Square(float x) { return x*x; }
 float DEG2RAD(float x) { return x*0.01745329252f; }
+float MS2SEC(int x) { return x*0.001f; }
+int ANGLE2SHORT(float x) { return int(x*65536.0f/360.0f)&65535; }
 struct idMath {
     static constexpr float INFINITY = std::numeric_limits<float>::infinity();
     static constexpr float FLOAT_EPSILON = 0.000001f;
@@ -24,13 +26,17 @@ struct idMath {
     static float Sqrt(float x) { return std::sqrt(x); }
     static float Cos(float x) { return std::cos(x); }
     static float Ceil(float x) { return std::ceil(x); }
+    static int ClampChar(int x) { return std::clamp(x,-128,127); }
+    static float AngleNormalize180(float x) { while(x>180) x-=360; while(x<-180) x+=360; return x; }
 };
 struct idVec3 {
     float x=0,y=0,z=0;
     idVec3() = default;
     idVec3(float a,float b,float c):x(a),y(b),z(c) {}
+    void Set(float a,float b,float c) { x=a; y=b; z=c; }
     idVec3 operator+(const idVec3& b) const { return {x+b.x,y+b.y,z+b.z}; }
     idVec3 operator-(const idVec3& b) const { return {x-b.x,y-b.y,z-b.z}; }
+    idVec3 operator-() const { return {-x,-y,-z}; }
     idVec3 operator*(float f) const { return {x*f,y*f,z*f}; }
     idVec3& operator*=(float f) { x*=f; y*=f; z*=f; return *this; }
     float operator*(const idVec3& b) const { return x*b.x+y*b.y+z*b.z; }
@@ -42,15 +48,33 @@ struct idVec3 {
     const char* ToString(int) const { return "fixture"; }
 };
 const idVec3 vec3_zero;
+struct idAngles {
+    float pitch=0,yaw=0,roll=0;
+    idAngles(float p=0,float y=0,float r=0):pitch(p),yaw(y),roll(r) {}
+    void ToVectors(idVec3* forward,idVec3* right,void*) const {
+        const float angle=DEG2RAD(yaw);
+        *forward={std::cos(angle),std::sin(angle),0}; *right={std::sin(angle),-std::cos(angle),0};
+    }
+    idVec3 ToForward() const { return {std::cos(DEG2RAD(yaw)),std::sin(DEG2RAD(yaw)),0}; }
+};
 struct idBounds {
     idVec3 center;
     float radius=1;
+    idVec3 operator[](int i) const { const float r=i?radius:-radius; return center+idVec3(r,r,r); }
     idVec3 GetCenter() const { return center; }
     float GetRadius() const { return radius; }
     float ShortestDistance(idVec3 p) const { return Max(0.0f,(p-center).Length()-radius); }
     idBounds operator+(idVec3 p) const { return {center+p,radius}; }
+    bool IntersectsBounds(const idBounds& b) const { return (center-b.center).Length()<=radius+b.radius; }
 };
 struct idMat3 { idVec3 forward{1,0,0}; idVec3 operator[](int) const { return forward; } };
+struct idCollisionModel {};
+struct idClipModel {
+    idCollisionModel model;
+    idCollisionModel* GetCollisionModel() const { return const_cast<idCollisionModel*>(&model); }
+    idVec3 GetOrigin() const { return {}; }
+    idMat3 GetAxis() const { return {}; }
+};
 template<class T> struct idList : std::vector<T> {
     int Num() const { return int(this->size()); }
     void SetGranularity(int) {}
@@ -68,17 +92,23 @@ struct Args {
     const char* GetString(const char* k,const char* def) const {
         auto it=values.find(k); return it==values.end() ? def : it->second.c_str();
     }
-    int GetInt(const char* k,const char* def) const { return std::atoi(GetString(k,def)); }
+    int GetInt(const char* k,const char* def="0") const { return std::atoi(GetString(k,def)); }
     bool GetBool(const char* k,const char* def) const { return std::atoi(GetString(k,def))!=0; }
+    float GetFloat(const char* k,const char* def) const { return std::atof(GetString(k,def)); }
 };
+using idDict=Args;
 struct Physics {
     idVec3 origin,velocity,gravity;
+    idClipModel clip;
     float radius=1;
     const idVec3& GetOrigin() const { return origin; }
     const idVec3& GetLinearVelocity() const { return velocity; }
     const idVec3& GetGravity() const { return gravity; }
     idBounds GetAbsBounds() const { return {origin,radius}; }
     idBounds GetBounds() const { return {{},radius}; }
+    const idClipModel* GetClipModel() const { return &clip; }
+    int ClipContents(const idClipModel*) const { return 1; }
+    idMat3 GetAxis() const { return {}; }
 };
 struct idEntity;
 struct Link { idEntity* next=nullptr; idEntity* Next() const { return next; } };
@@ -94,18 +124,39 @@ struct idEntity {
     bool IsHidden() const { return hidden; }
     int GetInstance() const { return instance; }
 };
-enum { NAVTRAVEL_WALK,NAVTRAVEL_JUMP,POWERUP_INVISIBILITY,POWERUP_QUADDAMAGE,POWERUP_DOUBLER,BUTTON_ATTACK,BOTCHAT_ITEM_DENIED };
+enum { NAVTRAVEL_WALK,NAVTRAVEL_JUMP,NAVTRAVEL_JUMPPAD,NAVTRAVEL_DROP,POWERUP_INVISIBILITY,POWERUP_QUADDAMAGE,POWERUP_DOUBLER,BUTTON_ATTACK,BOTCHAT_ITEM_DENIED,BUTTON_RUN,PMOD_SPEED };
 struct idPlayer : idEntity {
+    float deltaViewAngles[3]={};
+    const float* GetDeltaViewAngles() const { return deltaViewAngles; }
+    float speedModifier=1;
+    float PowerUpModifier(int) const { return speedModifier; }
     int health=100,visibilityCalls=0,powerups=0;
     float targetScore=1;
     bool visible=true,invisible=false;
-    bool spectating=false;
+    bool spectating=false,godmode=false;
+    int damageCalculations=0,godCounter=0;
+    struct { bool onGround=true,noFallingDamage=false; } pfl;
     int spectator=-1;
-    struct Inventory { int maxHealth=100; } inventory;
+    struct Inventory { int maxHealth=100,armor=0; } inventory;
     idPlayer() { kind=1; }
     static int GetClassType() { return 1; }
     void GetViewPos(idVec3& eye,idMat3& axis) { eye=physics.origin; axis={}; }
     bool PowerUpActive(int p) const { return p==POWERUP_INVISIBILITY ? invisible : ( powerups & ( 1<<p ) )!=0; }
+    // A deterministic damage service: policy must ask it, not assume that
+    // every pad costs a fixed HP amount or that armour prevents all damage.
+    void CalcDamagePoints(idEntity* inflictor,idEntity* attacker,const idDict* def,float,int,int* damage,int* armor) {
+        CHECK(inflictor==attacker); ++damageCalculations;
+        int raw=def->GetInt("damage","0");
+        if(godmode && !def->GetBool("noGod","0")) { godCounter+=raw; raw=0; }
+        *armor=def->GetBool("noArmor","0") ? 0 : Min(inventory.armor,Min(Max(0,raw-1),int(std::ceil(raw*0.66f))));
+        *damage=raw-*armor;
+    }
+};
+struct rvJumpPad : idEntity {
+    rvJumpPad() { kind=4; }
+    static int GetClassType() { return 4; }
+    bool GetForceFieldBounds(idBounds& out) const { out=physics.GetAbsBounds(); return true; }
+    const idClipModel* GetForceFieldClipModel() const { return &physics.clip; }
 };
 struct idItem : idEntity {
     bool pickedUp=false;
@@ -129,6 +180,7 @@ template<class T> struct idEntityPtr {
 enum { BOTGOAL_NONE,BOTGOAL_ROAM,BOTGOAL_ITEM,BOTGOAL_ENEMY,BOTGOAL_OBJECTIVE };
 enum { BOTOBJ_NONE,BOTOBJ_CAPTURE,BOTOBJ_INTERCEPT,BOTOBJ_RETURN,BOTOBJ_ESCORT,BOTOBJ_FETCH,BOTOBJ_RESCUE,BOTOBJ_CONTROL,BOTOBJ_DEFEND };
 const int MAX_CLIENTS=64;
+const int MAX_GENTITIES=64;
 enum { DEMO_NONE,DEMO_RECORDING,GAME_UNRELIABLE_RECORD_CLIENTNUM,GAME_UNRELIABLE_RECORD_AREAS_INSTANCE,GAME_UNRELIABLE_RECORD_AREAS };
 using byte=unsigned char;
 struct idBitMsg {
@@ -153,7 +205,7 @@ struct Common {
 } commonObject;
 Common* common=&commonObject;
 // PRODUCTION_CONSTANTS
-struct navCorner_t { idVec3 origin; int travelType=NAVTRAVEL_WALK; };
+struct navCorner_t { idVec3 origin; int travelType=NAVTRAVEL_WALK,actionEntityNum=-1; };
 struct navFieldTarget_t { int node; float weight,minWeight,extra; };
 struct rvNavPath {
     std::vector<navCorner_t> corners;
@@ -161,7 +213,7 @@ struct rvNavPath {
     int Num() const { return int(corners.size()); }
     bool IsEmpty() const { return corners.empty(); }
     const navCorner_t& operator[](int i) const { return corners[i]; }
-    void Append(idVec3 p,int type=NAVTRAVEL_WALK) { corners.push_back({p,type}); }
+    void Append(idVec3 p,int type=NAVTRAVEL_WALK,int action=-1) { corners.push_back({p,type,action}); }
     float LengthFrom(idVec3 p) const {
         float result=0; for (auto c:corners) { result+=(c.origin-p).Length(); p=c.origin; } return result;
     }
@@ -171,17 +223,53 @@ struct rvNavPath {
 // distances; x positions in `blocked` refuse routes, in `unreachable` refuse
 // the field too.  A field given targets records how many it was asked for.
 struct Nav {
+    bool IsValid() const { return true; }
     int probes=0,searches=0,fields=0,snaps=0,lastTargets=-1;
     bool roam=false,fieldLive=false;
-    std::vector<float> blocked,unreachable;
+    int transport=-1;
+    bool naturalPad=false;
+    idVec3 padLanding;
+    bool dodgeClear=false;
+    int dodgeChecks=0;
+    idVec3 lastDodgeDirection;
+    float lastDodgeSpeed=0;
+    bool DodgeJumpClear(const idVec3&,const idVec3&,const idVec3& direction,float,float speed) {
+        ++dodgeChecks; lastDodgeDirection=direction; lastDodgeSpeed=speed; return dodgeClear;
+    }
+    int landingChecks=0;
+    float landingImpact=0,lastImpactLimit=idMath::INFINITY;
+    bool LandingSurvivable(const idVec3&,const navCorner_t&,float limit) { ++landingChecks; return landingImpact<=limit; }
+    bool continuationClear=true;
+    bool jumpTakeoffClear=false;
+    int jumpTakeoffChecks=0;
+    idVec3 lastJumpOrigin,lastJumpVelocity,lastJumpLanding,lastJumpFirstWish;
+    float lastJumpSpeed=0,lastJumpFirstSpeed=0;
+    bool JumpTakeoffClear(const idVec3& origin,const idVec3& velocity,const idVec3& landing,float,float speed,const idVec3* firstWish,float firstSpeed) {
+        ++jumpTakeoffChecks; lastJumpOrigin=origin; lastJumpVelocity=velocity;
+        lastJumpLanding=landing; lastJumpSpeed=speed; lastJumpFirstWish=*firstWish;
+        lastJumpFirstSpeed=firstSpeed; return jumpTakeoffClear;
+    }
+    bool recoveryStepClear=false;
+    int recoveryStepChecks=0;
+    bool RecoveryStepClear(const idVec3&,const idVec3&) { ++recoveryStepChecks; return recoveryStepClear; }
+    bool LandingContinuationClear(const idVec3&,const idVec3&) { return continuationClear; }
+    int TransportAt(const idBounds&) const { return transport; }
+    bool NaturalPadLanding(int entity,idVec3& out) const {
+        if(entity!=transport || !naturalPad) return false; out=padLanding; return true;
+    }
+    std::vector<float> blocked,unreachable,hazardous;
     struct Node { int area=1; idVec3 origin; };
     std::vector<idVec3> snapped{ idVec3() };
-    bool FindPath(idVec3,idVec3 goal,rvNavPath& path) {
+    bool FindPath(idVec3,idVec3 goal,rvNavPath& path,bool=false,float limit=idMath::INFINITY) {
+        lastImpactLimit=limit;
         ++searches; fieldLive=false; path.Clear();
         if(std::find(blocked.begin(),blocked.end(),goal.x)!=blocked.end()) return false;
+        if(std::find(hazardous.begin(),hazardous.end(),goal.x)!=hazardous.end() && landingImpact>limit) return false;
         path.Append(goal); return true;
     }
     int FindNearestNode(idVec3 origin,float,bool) { ++probes; return origin.z<0 ? -1 : 0; }
+    // Below -1000 is the void's kill volume.
+    bool IsHazardous(idVec3 floor,bool) const { return floor.z < -1000.0f; }
     int SnapNode(idVec3 point) { ++probes; if(point.z<0) return -1; snapped.push_back(point); return int(snapped.size())-1; }
     int NodeForEntity(const idEntity* e) { ++snaps; return SnapNode(e->physics.origin); }
     Node GetNode(int i) const { Node n; n.origin=snapped[i]; return n; }
@@ -203,17 +291,43 @@ struct Nav {
         if(std::find(unreachable.begin(),unreachable.end(),p.x)!=unreachable.end()) return idMath::INFINITY;
         return (p-snapped[0]).Length();
     }
-    bool RandomReachablePoint(idVec3,idVec3& target,rvNavPath* path) {
+    bool RandomReachablePoint(idVec3,idVec3& target,rvNavPath* path,float limit=idMath::INFINITY) {
+        lastImpactLimit=limit;
         if(!roam) return false; target={800,0,0}; path->Append(target); return true;
     }
 } navMesh;
 struct Command { int buttons=0; };
+struct SpeedCVar { float GetFloat() const { return 320; } } pm_speed;
+struct usercmd_t { int upmove=0,forwardmove=0,rightmove=0,buttons=0; int angles[3]={}; };
+struct idPhysics_Player {
+    bool walking=true; float playerSpeed=320;
+    float CmdScale(const usercmd_t&,bool) const;
+};
+struct rvGameState { bool IsType(int) const { return false; } };
+struct rvFreezeTagGameState : rvGameState {
+    static int GetClassType() { return 1; }
+    bool CanReachToThaw(idPlayer*,idPlayer*,int) { return true; }
+};
 struct idGameLocal {
-    int time=1000,numClients=0;
+    int time=1000,numClients=0,framenum=0;
+    int GetMSec() const { return 16; }
+    Args serverInfo;
+    struct { rvGameState* GetGameState() { return nullptr; } } mpGame;
+    idVec3 GetCurrentGravity(const idPlayer*) const { return {0,0,-800}; }
     idEntity* entities[64]={};
+    idEntity* world=nullptr;
+    std::map<std::string,idDict> damageDefs;
+    const idDict* FindEntityDefDict(const char* name,bool) const {
+        auto found=damageDefs.find(name); return found==damageDefs.end() ? nullptr : &found->second;
+    }
+    idPlayer* GetClientByNum(int i) { return entities[i] && entities[i]->IsType(idPlayer::GetClassType()) ? static_cast<idPlayer*>(entities[i]) : nullptr; }
     Command commands[64];
     Command* usercmds=commands;
     Link spawnedEntities;
+    bool padContact=true;
+    int contactTests=0;
+    bool ContentsModel(const idEntity*,const idVec3&,const idClipModel*,const idMat3&,int,
+                       idCollisionModel*,const idVec3&,const idMat3&) { ++contactTests; return padContact; }
     int localClientNum=-1,demoState=DEMO_NONE,relayed=0;
     bool isRepeater=false;
     idMsgQueue unreliableMessages[MAX_CLIENTS+1];
@@ -264,16 +378,30 @@ struct rvBotManager {
 struct botItemCandidate_t { idItem* item; float utility,score; };
 struct botItemOption_t { idItem* item; float utility; int pendingMsec; int node; };
 struct rvBot {
+    idPlayer* GetPlayer() const { return gameLocal.GetClientByNum(clientNum); }
     idStr name="bot";
     int clientNum=0,pathCorner=0,pathTime=0,goalType=BOTGOAL_ROAM,goalGiveUpTime=0;
     int goalCommitUntil=0,goalProgressTime=1000,objectiveKind=BOTOBJ_NONE,repathFailures=0,combatSteeringTime=0;
     int enemyPathTime=0,nextGoalSelectTime=0,holdUntil=0,noRouteSince=0;
     int traversalCorner=-1,stuckPathCorner=0,goalSelectedTime=0;
+    int padHoldSince=0,stuckTime=0,stuckChecks=0,unstickUntil=0,traversalStartTime=0;
     float goalUtility=0,goalBestDistance=idMath::INFINITY,stuckCornerDistance=idMath::INFINITY;
     bool objectiveHoldPosition=false,traversalEntered=false,goalItemPending=false;
+    bool traversalStarted=false;
+    int landingCheckPathTime=-1,landingCheckCorner=-1;
+    float landingCheckLimit=idMath::INFINITY;
+    bool dodgeHopActive=false,dodgeHopAirborne=false;
+    int dodgeHopStartTime=0;
+    idVec3 dodgeHopDirection;
+    float dodgeHopWishSpeed=0;
+    int recoverSearchTime=0,recoverWanderUntil=0;
+    bool recoverValid=false;
+    idVec3 recoverTarget;
+    float recoverWanderYaw=0;
+    idAngles aimAngles;
     bool outmatched=false,selfStrong=false;
     float advantage=1.0f,weaponPower=1.0f;
-    idVec3 goalOrigin;
+    idVec3 goalOrigin,traversalStartOrigin;
     idEntityPtr<idEntity> goalEntity;
     rvNavPath path;
     idEntityPtr<idPlayer> enemy,lastAttacker;
@@ -288,8 +416,15 @@ struct rvBot {
     } traits;
     int denied=0,abandoned=0;
     std::vector<idEntity*> avoided;
-    void ResetTraversal() { traversalCorner=-1; traversalEntered=false; }
-    bool AtObjectiveHoldPosition(idPlayer*) const { return false; }
+    void ResetTraversal() { traversalCorner=-1; traversalEntered=false; traversalStarted=false; landingCheckPathTime=-1; landingCheckCorner=-1; }
+    void ApplyMove(const idVec3&,usercmd_t&) const;
+    void PressJump(usercmd_t&) const;
+    void TryDodgeJump(idPlayer*,const idVec3&,usercmd_t&);
+    bool HoldDodgeJump(idPlayer*,usercmd_t&);
+    void ResetDodgeJump();
+    bool RecoverToNavMesh(idPlayer*,usercmd_t&);
+    idVec3 AvoidLiquidHazard(const idVec3& direction) const { return direction; }
+    bool AtObjectiveHoldPosition(idPlayer*) const;
     bool WantsHealth(idPlayer* p) const { return p->health < 30; }
     bool Withdrawing(idPlayer* p) const { return outmatched || WantsHealth(p); }
     float CombatAdvantage(idPlayer*,idPlayer*) const { return advantage; }
@@ -317,6 +452,12 @@ struct rvBot {
     void AbandonGoal(int);
     idEntity* PickItemGoal(idPlayer*,rvNavPath&,float&);
     void UpdateGoal(idPlayer*);
+    bool HoldForPad(idPlayer*,idVec3&);
+    bool AlignJumpDropApproach(idPlayer*,usercmd_t&);
+    bool HandleJumpTakeoff(idPlayer*,usercmd_t&);
+    bool GuardLandingContinuation(idPlayer*,usercmd_t&);
+    void AdoptPadLaunch(idPlayer*);
+    bool GuardLandingHealth(idPlayer*,usercmd_t&);
 };
 struct botCombatProjectileImpact_t {
     bool collided=false,terminating=false,hitsSelf=false;
@@ -336,6 +477,11 @@ float BotCombatProjectileDistanceAtTime(const idBounds& bounds,idVec3 sv,idVec3 
 bool BotCombatSplashThreatensPlayer(idPlayer* p,idEntity*,idVec3 impact,float radius,float t) {
     return radius>0 && (p->physics.GetAbsBounds()+p->physics.velocity*t).ShortestDistance(impact)<=radius;
 }
+// A deterministic cliff at x=0. Actual hull/support geometry is exercised by
+// MpBotJumpTrajectoriesFixture; here we verify every recovery command asks the
+// production edge guard, including the nearest-node and wander branches.
+idVec3 lastEdgeProbe;
+bool BotDeadlyDropAt(idPlayer*,const idVec3& point) { lastEdgeProbe=point; return point.x>0; }
 // PRODUCTION_FUNCTIONS
 
 void Reset() {
@@ -395,6 +541,14 @@ void TestGoals() {
     stocked.enemyLastSeenOrigin=foe.physics.origin; stocked.enemyLastSeenTime=gameLocal.time;
     stocked.UpdateGoal(&self);
     CHECK(stocked.goalType==BOTGOAL_ENEMY && stocked.goalEntity.GetEntity()==&foe);
+    // The same foe falling through a kill volume is dying where no route
+    // reaches: it is not chased.
+    Reset(); rvBot doomed; GoalRoute(doomed,&old,BOTGOAL_ITEM);
+    doomed.goalUtility=100; doomed.goalCommitUntil=5000;
+    idPlayer faller; faller.physics.origin={400,0,-2000}; doomed.enemy=&faller;
+    doomed.enemyLastSeenOrigin=faller.physics.origin; doomed.enemyLastSeenTime=gameLocal.time;
+    doomed.UpdateGoal(&self);
+    CHECK(doomed.goalType!=BOTGOAL_ENEMY);
     old.utility=1;
     // A fresh wander must replace the previous goal's distance baseline.
     Reset(); navMesh.roam=true; rvBot wander; wander.goalBestDistance=10;
@@ -604,6 +758,374 @@ void TestNetwork() {
     gameLocal.QueueUnreliableMessage(-1,message); gameLocal.QueueUnreliableMessage(MAX_CLIENTS+1,message);
     std::puts("Bot message queues: no accumulation or PVS work; spectator, broadcast, demo and repeater delivery retained: PASS");
 }
+void TestPadHold() {
+    Reset(); idPlayer self,opposing; rvJumpPad pad;
+    self.physics.origin={0,-80,0}; self.physics.velocity={0,320,0}; self.physics.radius=16;
+    pad.physics.origin={0,0,0}; pad.physics.radius=32;
+    opposing.physics.origin={0,800,128}; opposing.physics.velocity={0,-646,528}; opposing.pfl.onGround=false;
+    gameLocal.entities[0]=&self; gameLocal.entities[1]=&opposing; gameLocal.entities[8]=&pad; gameLocal.numClients=2;
+    rvBot bot; bot.path.Append({0,0,0}); bot.path.corners.push_back({{0,960,0},NAVTRAVEL_JUMPPAD,8});
+    idVec3 move{0,1,0};
+    CHECK(bot.HoldForPad(&self,move) && move.y<0 && bot.stuckTime==gameLocal.time);
+    // Reserving the expanded trigger bounds is not a launch. The former
+    // !traversalEntered guard released the wait at precisely this point.
+    bot.traversalEntered=true; self.physics.origin={0,-55,0};
+    CHECK(bot.HoldForPad(&self,move) && move.y<0);
+    // A long blockage asks for a new route but never grants an unsafe launch.
+    bot.pathTime=900; bot.nextGoalSelectTime=10000; gameLocal.time+=BOT_PAD_HOLD_MSEC+1;
+    CHECK(bot.HoldForPad(&self,move) && bot.pathTime==0 && bot.nextGoalSelectTime==gameLocal.time);
+    self.physics.velocity={0,3,0}; CHECK(bot.HoldForPad(&self,move) && move.LengthSqr()==0);
+    // A launched bot owns its flight; waiting cannot brake it over the pit.
+    bot.traversalStarted=true; move={0,1,0}; CHECK(!bot.HoldForPad(&self,move) && move.y==1);
+    bot.traversalStarted=false;
+    // A leader can rebound from the far pad into its follower (q4ctf5).
+    // Reserve that finite flight too; slow crossings and other corridors
+    // remain free, as do players who have actually landed.
+    opposing.physics.velocity.y=646; CHECK(bot.HoldForPad(&self,move));
+    opposing.physics.velocity.y=40; CHECK(!bot.HoldForPad(&self,move));
+    opposing.physics.velocity.y=-646; opposing.instance=1; CHECK(!bot.HoldForPad(&self,move));
+    opposing.instance=0; opposing.pfl.onGround=true; CHECK(!bot.HoldForPad(&self,move));
+    opposing.pfl.onGround=false; opposing.physics.origin.x=160; CHECK(!bot.HoldForPad(&self,move));
+    opposing.physics.origin={0,-160,128}; CHECK(!bot.HoldForPad(&self,move));
+    CHECK(bot.padHoldSince==0);
+    std::puts("Pad corridor: brake through reserved entry, replan while blocked, retain launched flight and clear traffic: PASS");
+}
+void TestUnexpectedPad() {
+    Reset(); idPlayer self; rvJumpPad pad; idItem goal;
+    self.physics.origin={700,-300,-150}; self.physics.velocity={600,600,600};
+    gameLocal.entities[8]=&pad; navMesh.transport=8; navMesh.naturalPad=true;
+    navMesh.padLanding={1348,308,35};
+    rvBot bot; goal.physics.origin={652,-244,-184}; GoalRoute(bot,&goal,BOTGOAL_ITEM);
+    bot.dodgeHopActive=true; bot.dodgeHopWishSpeed=320;
+    bot.stuckChecks=2; bot.unstickUntil=3000; bot.padHoldSince=100;
+    // An applied launch precedes the next player-physics update, so the
+    // preceding frame's onGround flag must not hide its vertical impulse.
+    bot.AdoptPadLaunch(&self);
+    CHECK(bot.path.Num()==2 && bot.pathCorner==1 && bot.traversalCorner==1);
+    CHECK(bot.path[1].travelType==NAVTRAVEL_JUMPPAD && bot.path[1].actionEntityNum==8);
+    CHECK(bot.path[1].origin.Compare(navMesh.padLanding));
+    CHECK(bot.traversalEntered && bot.traversalStarted && bot.traversalStartTime==gameLocal.time);
+    CHECK(bot.stuckChecks==0 && bot.unstickUntil==0 && bot.padHoldSince==0);
+    CHECK(bot.goalEntity.GetEntity()==&goal && bot.goalType==BOTGOAL_ITEM);
+    CHECK(!bot.dodgeHopActive); // observed pad supersedes a voluntary hop
+    // The normal action commitment keeps goal selection from braking the
+    // flight toward its old WALK goal; touching the same pad is idempotent.
+    gameLocal.time+=100; bot.UpdateGoal(&self); bot.AdoptPadLaunch(&self);
+    CHECK(bot.path[1].origin.Compare(navMesh.padLanding) && bot.traversalStartTime==1000);
+    CHECK(botManager.decisions==0);
+    auto walking=[&]() { rvBot b; GoalRoute(b,&goal,BOTGOAL_ITEM); return b; };
+    rvBot ordinary=walking(); self.physics.velocity={320,0,277};
+    ordinary.AdoptPadLaunch(&self); CHECK(ordinary.pathCorner==0 && gameLocal.contactTests==1);
+    self.physics.velocity={600,600,600};
+    // Broad-phase overlap beside a diagonal brush is not activation.
+    gameLocal.padContact=false; ordinary.dodgeHopActive=true;
+    ordinary.AdoptPadLaunch(&self); CHECK(ordinary.pathCorner==0 && ordinary.dodgeHopActive);
+    gameLocal.padContact=true; pad.instance=1;
+    ordinary.AdoptPadLaunch(&self); CHECK(ordinary.pathCorner==0); pad.instance=0;
+    // A pad whose natural landing is unproven cannot create a recovery path.
+    navMesh.naturalPad=false; ordinary.AdoptPadLaunch(&self); CHECK(ordinary.pathCorner==0);
+    navMesh.naturalPad=true;
+    // The planned pad entry and an airborne planned pad keep their own route,
+    // including intentionally steered landings.
+    rvBot planned; planned.path.Append({0,0,0}); planned.path.Append({0,1000,0},NAVTRAVEL_JUMPPAD,8);
+    planned.dodgeHopActive=true;
+    planned.AdoptPadLaunch(&self); CHECK(planned.pathCorner==0 && planned.path[1].origin.x==0);
+    CHECK(!planned.dodgeHopActive); // planned pad owns its original steered landing
+    planned.pathCorner=1; planned.AdoptPadLaunch(&self); CHECK(planned.path[1].origin.x==0);
+    // An unrelated pad really does replace that flight when its brush owns
+    // the impulse; normal goal identity is retained for after touchdown.
+    planned.path.corners[1].actionEntityNum=9;
+    planned.AdoptPadLaunch(&self); CHECK(planned.path[1].actionEntityNum==8);
+    std::puts("Unexpected pad: exact touch plus launch impulse adopts proven natural arc, preserves goal and planned flights: PASS");
+}
+void TestMoveProjection() {
+    Reset(); idPlayer self; gameLocal.entities[0]=&self;
+    rvBot bot; idPhysics_Player physics;
+    for(float yaw : {0.0f,45.0f,90.0f}) {
+        bot.aimAngles.yaw=yaw;
+        for(float strength : {1.0f,0.25f,-1.0f}) {
+            usercmd_t cmd; bot.ApplyMove({strength,0,0},cmd);
+            idVec3 forward,right; bot.aimAngles.ToVectors(&forward,&right,nullptr);
+            const idVec3 actual=(forward*float(cmd.forwardmove)+right*float(cmd.rightmove))*physics.CmdScale(cmd,false);
+            CHECK(std::fabs(actual.x-strength*320)<1.3f && std::fabs(actual.y)<1.3f);
+            CHECK(cmd.buttons & BUTTON_RUN);
+        }
+        usercmd_t idle; bot.ApplyMove({},idle);
+        CHECK(idle.forwardmove==0 && idle.rightmove==0 && idle.buttons==0 && physics.CmdScale(idle,false)==0);
+    }
+    for(float modifier : {1.3f,1.5f}) {
+        self.speedModifier=modifier; physics.playerSpeed=320*modifier;
+        for(int travel : {NAVTRAVEL_DROP,NAVTRAVEL_JUMP,NAVTRAVEL_JUMPPAD}) {
+            bot.path.Clear(); bot.path.Append({}); bot.path.Append({100,0,0},travel);
+            for(int corner : {0,1}) {
+                bot.pathCorner=corner;
+                for(float yaw : {0.0f,45.0f,90.0f}) {
+                    bot.aimAngles.yaw=yaw; usercmd_t cmd; bot.ApplyMove({1,0,0},cmd);
+                    idVec3 forward,right; bot.aimAngles.ToVectors(&forward,&right,nullptr);
+                    const idVec3 actual=(forward*float(cmd.forwardmove)+right*float(cmd.rightmove))*physics.CmdScale(cmd,false);
+                    CHECK(actual.x<=320.01f && actual.x>316 && std::fabs(actual.y)<1.4f);
+                }
+            }
+        }
+        bot.path.Clear(); bot.pathCorner=0; bot.aimAngles.yaw=0;
+        usercmd_t ordinary; bot.ApplyMove({1,0,0},ordinary);
+        CHECK(std::fabs(ordinary.forwardmove*physics.CmdScale(ordinary,false)-320*modifier)<0.01f);
+    }
+    std::puts("Movement projection: production ApplyMove/CmdScale preserves full and partial world speed at yaw0/45/90: PASS");
+}
+void TestLandingHealth() {
+    Reset(); idPlayer self; idItem goal;
+    self.spawnArgs.Set("soft_fall_delta","40"); self.spawnArgs.Set("hard_fall_delta","60");
+    self.spawnArgs.Set("fatal_fall_delta","0");
+    gameLocal.damageDefs["damage_softfall"].Set("damage","5");
+    gameLocal.damageDefs["damage_hardfall"].Set("damage","10");
+    self.health=3; CHECK(BotMaxSafeFallDelta(&self)==40);
+    self.health=8; CHECK(BotMaxSafeFallDelta(&self)==60);
+    self.health=11; CHECK(BotMaxSafeFallDelta(&self)==idMath::INFINITY);
+    self.inventory.armor=20; self.health=4;
+    CHECK(BotMaxSafeFallDelta(&self)==idMath::INFINITY);
+    self.health=2; CHECK(BotMaxSafeFallDelta(&self)==60);
+    self.health=1; CHECK(BotMaxSafeFallDelta(&self)==40);
+    gameLocal.damageDefs["damage_softfall"].Set("noArmor","1");
+    self.health=4; CHECK(BotMaxSafeFallDelta(&self)==40);
+    gameLocal.damageDefs["damage_softfall"].Set("noArmor","0");
+    gameLocal.damageDefs["damage_softfall"].Set("damage","20");
+    self.inventory.armor=0; self.health=12; CHECK(BotMaxSafeFallDelta(&self)==40);
+    gameLocal.damageDefs["damage_softfall"].Set("damage","5");
+    self.health=3; self.godmode=true; self.damageCalculations=0;
+    CHECK(BotMaxSafeFallDelta(&self)==idMath::INFINITY && self.damageCalculations==0 && self.godCounter==0);
+    gameLocal.damageDefs["damage_hardfall"].Set("noGod","1");
+    CHECK(BotMaxSafeFallDelta(&self)==60 && self.godCounter==0);
+    self.pfl.noFallingDamage=true;
+    CHECK(BotMaxSafeFallDelta(&self)==idMath::INFINITY);
+    self.pfl.noFallingDamage=false; self.godmode=false;
+    auto approach=[&]() {
+        rvBot b; GoalRoute(b,&goal,BOTGOAL_ITEM); b.path.Clear();
+        b.path.Append({0,0,0}); b.path.Append({300,0,0},NAVTRAVEL_JUMPPAD,8); return b;
+    };
+    usercmd_t cmd; rvBot bot=approach(); navMesh.landingImpact=30;
+    for(int i=0;i<120;i++) CHECK(!bot.GuardLandingHealth(&self,cmd));
+    CHECK(navMesh.landingChecks==1); // a stable approach never resimulates per frame
+    self.health=8; CHECK(!bot.GuardLandingHealth(&self,cmd)); CHECK(navMesh.landingChecks==2);
+    self.health=3; bot.pathTime++; navMesh.landingImpact=55; self.physics.velocity={100,0,0}; cmd.upmove=127;
+    CHECK(bot.GuardLandingHealth(&self,cmd));
+    CHECK(bot.path.IsEmpty() && bot.goalEntity.GetEntity()==nullptr && bot.IsAvoided(&goal));
+    CHECK(cmd.forwardmove<0 && cmd.upmove==0 && bot.nextGoalSelectTime==gameLocal.time);
+    // Neither an airborne route nor an observed launch with a stale grounded
+    // flag may lose its controller after damage during the flight.
+    bot=approach(); bot.traversalStarted=true;
+    CHECK(!bot.GuardLandingHealth(&self,cmd) && bot.path.Num()==2);
+    bot.traversalStarted=false; self.pfl.onGround=false;
+    CHECK(!bot.GuardLandingHealth(&self,cmd) && bot.path.Num()==2);
+    self.pfl.onGround=true; self.physics.velocity={0,0,770};
+    CHECK(!bot.GuardLandingHealth(&self,cmd) && bot.path.Num()==2);
+    self.physics.velocity={0,0,0};
+    CHECK(bot.Repath(&self,{100,0,0}) && navMesh.lastImpactLimit==40);
+    idItem valuable,safe; valuable.physics.origin={100,0,0}; valuable.utility=2;
+    safe.physics.origin={200,0,0}; safe.utility=1.5f;
+    botManager.items.clear(); botManager.items.Append(&valuable); botManager.items.Append(&safe); navMesh.hazardous={100};
+    rvNavPath route; float utility=0;
+    CHECK(bot.PickItemGoal(&self,route,utility)==&safe);
+    self.health=11;
+    CHECK(bot.PickItemGoal(&self,route,utility)==&valuable); // graph remains usable when healthy
+    std::puts("Landing health: live damage/armour tiers, immunity without side effects, cached entry brake and retained flight ownership: PASS");
+}
+void TestDropHandoff() {
+    CHECK(!BotPadFlightComplete(true,false,true,1000,false)); // still descending near target
+    CHECK(BotPadFlightComplete(true,true,true,1000,false));
+    CHECK(BotPadFlightComplete(true,true,false,1000,false)); // off-target touchdown still ends flight
+    CHECK(BotPadFlightComplete(true,false,false,1000,true)); // explicit next-pad handoff
+    CHECK(!BotPadFlightComplete(false,true,true,1000,true));
+    Reset(); idPlayer self; gameLocal.entities[0]=&self;
+    rvBot bot; bot.path.Append({0,0,224});
+    bot.path.corners.push_back({{24,0,0},NAVTRAVEL_DROP,-1});
+    bot.path.Append({160,0,0});
+    self.pfl.onGround=true; self.physics.origin={-40,0,224};
+    self.physics.velocity={0,330,0}; usercmd_t cmd;
+    CHECK(bot.AlignJumpDropApproach(&self,cmd) && cmd.rightmove>0 && cmd.upmove==0);
+    self.physics.velocity={320,0,0}; CHECK(!bot.AlignJumpDropApproach(&self,cmd));
+    self.physics.velocity={420,0,0}; cmd={};
+    CHECK(bot.AlignJumpDropApproach(&self,cmd) && cmd.forwardmove<0); // aligned but outside proof speed
+    self.physics.velocity={0,330,0}; self.physics.origin.x=-80;
+    CHECK(!bot.AlignJumpDropApproach(&self,cmd));
+    self.physics.origin.x=-8; bot.pathCorner=1;
+    CHECK(bot.AlignJumpDropApproach(&self,cmd)); // already consumed entry, still on lip
+    self.pfl.onGround=false; CHECK(!bot.AlignJumpDropApproach(&self,cmd));
+    self.pfl.onGround=true; bot.traversalStarted=true;
+    CHECK(!bot.AlignJumpDropApproach(&self,cmd));
+    self.physics.origin={96,32,0}; self.physics.velocity={300,0,0};
+    CHECK(!bot.GuardLandingContinuation(&self,cmd) && bot.path.Num()==3);
+    navMesh.continuationClear=false;
+    self.pfl.onGround=false; CHECK(!bot.GuardLandingContinuation(&self,cmd));
+    self.pfl.onGround=true; cmd={}; bot.nextGoalSelectTime=10000;
+    CHECK(bot.GuardLandingContinuation(&self,cmd));
+    CHECK(bot.path.IsEmpty() && !bot.traversalStarted && cmd.forwardmove<0 && cmd.upmove==0);
+    CHECK(bot.nextGoalSelectTime==gameLocal.time);
+    std::puts("Drop handoff: transverse approach brakes early; aligned/airborne flights retained; unsafe actual continuation brakes and replans: PASS");
+}
+void TestJumpEntry() {
+    Reset(); idPlayer self; gameLocal.entities[0]=&self; self.pfl.onGround=true;
+    rvBot bot; bot.path.Append({-300,372,-32}); bot.path.Append({-300,348,-256},NAVTRAVEL_JUMP);
+    bot.pathCorner=1; bot.traversalStartTime=gameLocal.time;
+    self.physics.origin={-289,377,-32}; self.physics.velocity={-278,-160,0};
+    usercmd_t cmd;
+    CHECK(bot.AlignJumpDropApproach(&self,cmd) && cmd.forwardmove>0 && cmd.upmove==0);
+    CHECK(bot.HandleJumpTakeoff(&self,cmd) && cmd.upmove==0);
+    CHECK(navMesh.jumpTakeoffChecks==1);
+    CHECK(navMesh.lastJumpOrigin.Compare(self.physics.origin));
+    CHECK(navMesh.lastJumpVelocity.Compare(self.physics.velocity));
+    CHECK(navMesh.lastJumpLanding.Compare(bot.path[1].origin));
+    self.physics.velocity={0,-160,0};
+    CHECK(!bot.AlignJumpDropApproach(&self,cmd));
+    navMesh.jumpTakeoffClear=true;
+    idVec3 wanted=bot.path[1].origin-self.physics.origin; wanted.z=0; wanted.Normalize();
+    for(float yaw:{0.0f,45.0f,90.0f}) {
+        bot.aimAngles.yaw=yaw; cmd={}; CHECK(bot.HandleJumpTakeoff(&self,cmd) && cmd.upmove==127);
+        idVec3 forward,right; bot.aimAngles.ToVectors(&forward,&right,nullptr);
+        idVec3 actual=forward*float(cmd.forwardmove)+right*float(cmd.rightmove); actual.Normalize();
+        CHECK((actual-wanted).Length()<0.005f); // actual offset changes first-frame input
+        CHECK((actual-navMesh.lastJumpFirstWish).Length()<0.0001f);
+        idPhysics_Player airborne; airborne.walking=false;
+        const float encodedHorizontal=idVec3(float(cmd.forwardmove),float(cmd.rightmove),0).Length();
+        CHECK(std::fabs(encodedHorizontal*airborne.CmdScale(cmd,false)-navMesh.lastJumpFirstSpeed)<0.001f);
+    }
+    self.speedModifier=1.5f; cmd={}; CHECK(bot.HandleJumpTakeoff(&self,cmd));
+    idPhysics_Player physics; physics.playerSpeed=480;
+    CHECK(std::fabs(navMesh.lastJumpSpeed-480*84.0f/127)<0.01f);
+    physics.walking=false;
+    CHECK(std::fabs(idVec3(float(cmd.forwardmove),float(cmd.rightmove),0).Length()*physics.CmdScale(cmd,false)-navMesh.lastJumpFirstSpeed)<0.01f);
+    idVec3 issued(float(cmd.forwardmove),float(cmd.rightmove),0); cmd.upmove=0;
+    CHECK(std::fabs(issued.Length()*physics.CmdScale(cmd,false)-navMesh.lastJumpSpeed)<0.01f);
+    const int checks=navMesh.jumpTakeoffChecks;
+    gameLocal.framenum=1; cmd={}; CHECK(bot.HandleJumpTakeoff(&self,cmd) && cmd.upmove==0);
+    CHECK(navMesh.jumpTakeoffChecks==checks); // no flight sweep when no fresh press can fire
+    self.pfl.onGround=false; CHECK(!bot.HandleJumpTakeoff(&self,cmd));
+    self.pfl.onGround=true; bot.traversalStarted=true; gameLocal.framenum=0;
+    navMesh.jumpTakeoffClear=false; cmd={};
+    CHECK(bot.HandleJumpTakeoff(&self,cmd) && cmd.upmove==0);
+    CHECK(navMesh.jumpTakeoffChecks==checks+1); // grounded short-landing retry cannot bypass live proof
+    bot.traversalStarted=false; gameLocal.framenum=0; navMesh.jumpTakeoffClear=false;
+    self.physics.velocity={}; bot.aimAngles.yaw=0; self.speedModifier=1; cmd={};
+    CHECK(bot.HandleJumpTakeoff(&self,cmd) && cmd.upmove==0 && cmd.forwardmove<0 && cmd.rightmove>0);
+    navMesh.continuationClear=false; cmd={}; CHECK(bot.HandleJumpTakeoff(&self,cmd));
+    CHECK(cmd.forwardmove==0 && cmd.rightmove==0); // cannot recenter across unsupported floor
+    gameLocal.time+=BOT_TRAVEL_TIMEOUT_MSEC+1;
+    CHECK(bot.HandleJumpTakeoff(&self,cmd) && bot.path.IsEmpty());
+    // Entering an objective's actual hold volume in mid-flight cannot end
+    // landing ownership, even when the foe/aim changes during that crossing.
+    idEntity zone; zone.physics.origin=self.physics.origin; idPlayer foe;
+    GoalRoute(bot,&zone,BOTGOAL_OBJECTIVE); bot.objectiveKind=BOTOBJ_CONTROL;
+    bot.objectiveHoldPosition=true; bot.path.Clear();
+    bot.path.Append(self.physics.origin); bot.path.Append({-300,348,-256},NAVTRAVEL_JUMP);
+    bot.pathCorner=1; bot.traversalCorner=1; bot.traversalStarted=true;
+    self.pfl.onGround=false; bot.enemy=&foe; bot.aimAngles.yaw=90;
+    CHECK(!bot.AtObjectiveHoldPosition(&self)); bot.UpdateGoal(&self);
+    CHECK(bot.path.Num()==2 && bot.pathCorner==1 && bot.path[1].travelType==NAVTRAVEL_JUMP);
+    self.pfl.onGround=true; self.physics.velocity={0,0,1012};
+    CHECK(!bot.AtObjectiveHoldPosition(&self)); // pad impulse before ground flag catches up
+    self.physics.velocity={}; CHECK(bot.AtObjectiveHoldPosition(&self));
+    std::puts("Jump entry: exact live position/momentum, same launch steering, settled recenter, fresh-press cost bound and timeout: PASS");
+}
+
+void TestDodgeOwnership() {
+    Reset(); idPlayer self; gameLocal.entities[0]=&self;
+    rvBot bot; bot.path.Append({500,0,0}); usercmd_t cmd;
+    bot.TryDodgeJump(&self,{1,0,0},cmd);
+    CHECK(!bot.dodgeHopActive && cmd.upmove==0); // failed proof cannot own movement
+    navMesh.dodgeClear=true;
+    gameLocal.framenum=1; bot.TryDodgeJump(&self,{1,0,0},cmd);
+    CHECK(!bot.dodgeHopActive && cmd.upmove==0); // no fresh press on this frame
+    gameLocal.framenum=2; bot.TryDodgeJump(&self,{0.25f,0,0},cmd);
+    CHECK(bot.dodgeHopActive && cmd.upmove==127 && cmd.forwardmove==127);
+    CHECK(navMesh.lastDodgeDirection.Compare({1,0,0}) && navMesh.lastDodgeSpeed==320);
+    const int searches=navMesh.searches;
+    self.pfl.onGround=false; gameLocal.time+=16;
+    // Route/combat decisions and view changes may disagree with the hop.
+    // Production HoldDodgeJump must still emit its original world input.
+    bot.path.Clear(); bot.path.Append({-500,0,0},NAVTRAVEL_DROP);
+    idPlayer foe; foe.physics.origin={0,500,0}; bot.enemy=&foe;
+    bot.UpdateGoal(&self); CHECK(navMesh.searches==searches);
+    idPhysics_Player physics;
+    for(float yaw:{0.0f,45.0f,90.0f}) {
+        bot.aimAngles.yaw=yaw; cmd={127,-127,-127,0};
+        CHECK(bot.HoldDodgeJump(&self,cmd) && bot.dodgeHopAirborne && cmd.upmove==0);
+        idVec3 forward,right; bot.aimAngles.ToVectors(&forward,&right,nullptr);
+        const idVec3 actual=(forward*float(cmd.forwardmove)+right*float(cmd.rightmove))*physics.CmdScale(cmd,false);
+        CHECK(std::fabs(actual.x-320)<2 && std::fabs(actual.y)<2);
+    }
+    self.speedModifier=1.5f; physics.playerSpeed=480;
+    cmd={}; CHECK(bot.HoldDodgeJump(&self,cmd));
+    idVec3 forward,right; bot.aimAngles.ToVectors(&forward,&right,nullptr);
+    const idVec3 capped=(forward*float(cmd.forwardmove)+right*float(cmd.rightmove))*physics.CmdScale(cmd,false);
+    CHECK(capped.x<=320 && capped.x>316 && std::fabs(capped.y)<2);
+    self.pfl.onGround=true; CHECK(!bot.HoldDodgeJump(&self,cmd) && !bot.dodgeHopActive);
+    bot.aimAngles.yaw=0; bot.ApplyMove({-1,0,0},cmd); CHECK(cmd.forwardmove<0);
+    self.speedModifier=1; bot.path.Clear(); cmd={}; bot.TryDodgeJump(&self,{1,0,0},cmd);
+    gameLocal.time+=BOT_DODGE_LAUNCH_MSEC; CHECK(!bot.HoldDodgeJump(&self,cmd));
+    cmd={}; bot.TryDodgeJump(&self,{1,0,0},cmd); self.pfl.onGround=false;
+    gameLocal.time+=BOT_DODGE_FLIGHT_MSEC; CHECK(!bot.HoldDodgeJump(&self,cmd));
+    self.pfl.onGround=true; cmd={}; bot.TryDodgeJump(&self,{1,0,0},cmd); self.health=0;
+    CHECK(!bot.HoldDodgeJump(&self,cmd) && !bot.dodgeHopActive);
+    self.health=100; cmd={}; bot.TryDodgeJump(&self,{1,0,0},cmd);
+    bot.ResetDodgeJump(); CHECK(!bot.dodgeHopActive && !bot.dodgeHopAirborne && bot.dodgeHopWishSpeed==0);
+    std::puts("Dodge ownership: fixed world command through route/combat/yaw changes; boost cap, touchdown, failed launch, death and expiry release: PASS");
+}
+
+void TestRecoveryEdge() {
+    Reset(); idPlayer self; gameLocal.entities[0]=&self;
+    rvBot bot; bot.recoverSearchTime=gameLocal.time; bot.recoverValid=true;
+    bot.recoverTarget={100,0,0}; self.physics.origin={-8,0,0}; self.physics.velocity={100,0,0};
+    usercmd_t cmd; CHECK(bot.RecoverToNavMesh(&self,cmd));
+    CHECK(cmd.forwardmove<0 && cmd.upmove==0 && navMesh.dodgeChecks==0);
+    self.physics.velocity={}; cmd={}; CHECK(bot.RecoverToNavMesh(&self,cmd));
+    CHECK(cmd.forwardmove==0 && cmd.upmove==0);
+    self.physics.origin={16,0,0}; bot.recoverTarget={-28,63,0}; cmd={};
+    CHECK(bot.RecoverToNavMesh(&self,cmd) && cmd.forwardmove==0 && cmd.rightmove==0);
+    navMesh.recoveryStepClear=true; cmd={}; cmd.upmove=127;
+    bot.stuckChecks=2; bot.stuckTime=0; bot.unstickUntil=gameLocal.time+1000;
+    CHECK(bot.RecoverToNavMesh(&self,cmd));
+    CHECK(cmd.forwardmove<0 && cmd.rightmove<0 && cmd.upmove==0);
+    CHECK(bot.stuckChecks==0 && bot.unstickUntil==0 && bot.stuckTime==gameLocal.time);
+    idPhysics_Player creepPhysics;
+    idVec3 creep(float(cmd.forwardmove),-float(cmd.rightmove),0);
+    creep*=creepPhysics.CmdScale(cmd,false);
+    CHECK(creep.Length()>28 && creep.Length()<=BOT_RECOVER_EDGE_SPEED);
+    for(float modifier:{1.3f,1.5f}) {
+        self.speedModifier=modifier; creepPhysics.playerSpeed=320*modifier;
+        cmd={}; bot.RecoverToNavMesh(&self,cmd);
+        creep={float(cmd.forwardmove),-float(cmd.rightmove),0};
+        creep*=creepPhysics.CmdScale(cmd,false);
+        CHECK(creep.Length()>26 && creep.Length()<=BOT_RECOVER_EDGE_SPEED);
+    }
+    self.speedModifier=1;
+    self.physics.velocity={100,0,0}; cmd={}; bot.RecoverToNavMesh(&self,cmd);
+    CHECK(cmd.forwardmove<0 && cmd.rightmove==0); // momentum outside the proof still brakes
+    self.physics.velocity={};
+    // An outer hull rim can still support a bot whose center is over the edge.
+    // Recovery toward supported floor must remain possible from that position.
+    self.physics.origin={8,0,0}; bot.recoverTarget={-100,0,0}; cmd={};
+    CHECK(bot.RecoverToNavMesh(&self,cmd) && cmd.forwardmove<0);
+    bot.recoverValid=false; bot.recoverWanderUntil=gameLocal.time+1000; bot.recoverWanderYaw=0;
+    self.physics.origin={-8,0,0}; cmd={}; CHECK(!bot.RecoverToNavMesh(&self,cmd));
+    CHECK(cmd.forwardmove==0);
+    idVec3 ordinaryMove(1,0,0); CHECK(BotBrakeAtEdge(&self,ordinaryMove) && ordinaryMove.LengthSqr()==0);
+    self.physics.origin={-200,0,0}; cmd={}; CHECK(!bot.RecoverToNavMesh(&self,cmd));
+    CHECK(cmd.forwardmove>0);
+    bot.recoverWanderYaw=60; self.deltaViewAngles[1]=-37;
+    cmd.angles[1]=ANGLE2SHORT(bot.aimAngles.yaw-self.deltaViewAngles[1]);
+    bot.RecoverToNavMesh(&self,cmd);
+    const float actualYaw=cmd.angles[1]*360.0f/65536.0f+self.deltaViewAngles[1];
+    CHECK(std::fabs(idMath::AngleNormalize180(actualYaw-bot.aimAngles.yaw))<0.006f);
+    CHECK(bot.aimAngles.yaw>2 && bot.aimAngles.yaw<3);
+    idVec3 forward,right; idAngles(0,actualYaw,0).ToVectors(&forward,&right,nullptr);
+    idPhysics_Player physics;
+    idVec3 actual=(forward*float(cmd.forwardmove)+right*float(cmd.rightmove))*physics.CmdScale(cmd,false);
+    idVec3 checked=lastEdgeProbe-self.physics.origin; actual.Normalize(); checked.Normalize();
+    CHECK((actual-checked).Length()<0.005f);
+    self.physics.origin={-8,0,0}; self.pfl.onGround=false; cmd={}; bot.RecoverToNavMesh(&self,cmd);
+    CHECK(cmd.forwardmove>0); // ground guard cannot take over an airborne recovery
+    std::puts("Recovery edge: nearest-node and wander commands brake before void; rescue toward support and broad floor remain usable: PASS");
+}
 int main(int argc,char** argv) {
     if(argc==1 || !std::strcmp(argv[1],"goals")) TestGoals();
     if(argc==1 || !std::strcmp(argv[1],"perception")) TestPerception();
@@ -611,4 +1133,12 @@ int main(int argc,char** argv) {
     if(argc==1 || !std::strcmp(argv[1],"items")) TestItems();
     if(argc==1 || !std::strcmp(argv[1],"threats")) TestThreats();
     if(argc==1 || !std::strcmp(argv[1],"network")) TestNetwork();
+    if(argc==1 || !std::strcmp(argv[1],"pads")) TestPadHold();
+    if(argc==1 || !std::strcmp(argv[1],"pads")) TestUnexpectedPad();
+    if(argc==1 || !std::strcmp(argv[1],"landings")) TestLandingHealth();
+    if(argc==1 || !std::strcmp(argv[1],"landings")) TestDropHandoff();
+    if(argc==1 || !std::strcmp(argv[1],"landings")) TestJumpEntry();
+    if(argc==1 || !std::strcmp(argv[1],"movement")) TestMoveProjection();
+    if(argc==1 || !std::strcmp(argv[1],"movement")) TestDodgeOwnership();
+    if(argc==1 || !std::strcmp(argv[1],"movement")) TestRecoveryEdge();
 }

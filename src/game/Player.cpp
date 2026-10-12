@@ -2726,7 +2726,7 @@ void idPlayer::Restore( idRestoreGame *savefile ) {
  	savefile->ReadInt( foo );
 	savefile->ReadInt( lastSavingThrowTime );
 
-	if ( savefile->GetOpenQ4SaveGameCompatibilityVersion() == OPENQ4_SAVEGAME_COMPATIBILITY_VERSION ) {
+	if ( savefile->GetOpenQ4SaveGameCompatibilityVersion() >= OPENQ4_SAVEGAME_TYPED_COMPATIBILITY_VERSION ) {
 		savefile->ReadInt( packedFlags );
 		pfl.forward = ( packedFlags & BIT( 0 ) ) != 0;
 		pfl.backward = ( packedFlags & BIT( 1 ) ) != 0;
@@ -9864,6 +9864,10 @@ idPlayer::HandleESC
 ==============
 */
 bool idPlayer::HandleESC( void ) {
+	if ( weaponWheelActive || weaponWheelBlend > 0.0f ) {
+		ResetWeaponWheel( false );
+		return true;
+	}
 
 // jdischler: Straight from the top, cinematic skipping on xenon is OFFICIALLY OUT.  Too many problems with it and not enough time to properly address them.
 #ifndef _XENON
@@ -15622,6 +15626,10 @@ void idPlayer::ClientDamageEffects ( const idDict& damageDef, const idVec3& dir,
 		// Let the hud know about the hit
 		if ( hud ) {
 			hud->SetStateFloat ( "hitdir", localDir.ToAngles()[YAW] + 180.0f );
+// openQ4 BEGIN
+			// The Classic HUD caps its indicator at 0.40 under reduced flashing.
+			hud->SetStateBool ( "reducedFlashing", cvarSystem->GetCVarBool( "ui_reducedFlashing" ) );
+// openQ4 END
 			hud->HandleNamedEvent ( "playerHit" );
 		}
  	}

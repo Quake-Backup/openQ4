@@ -218,7 +218,7 @@ def validate_game_wiring() -> None:
     item_goal = bot[bot.index("idEntity *rvBot::PickItemGoal") :]
     item_goal = item_goal[: item_goal.index("\n}\n") + 3]
     require(item_goal, "navMesh.FindPath(", "rvBot::PickItemGoal")
-    require(item_goal, "candidates[i].item->GetPhysics()->GetOrigin(), goalPath )", "rvBot::PickItemGoal")
+    require(item_goal, "candidates[i].item->GetPhysics()->GetOrigin(), goalPath, false, BotMaxSafeFallDelta( self ) )", "rvBot::PickItemGoal")
 
     # A special link is an action.  q4dm1's crate links are only one 24-unit
     # cell apart but rise 32-48 units; the ordinary 28x72 proximity test used
@@ -263,6 +263,12 @@ def validate_game_wiring() -> None:
     require(movement, "transportInProgress", "rvBot::UpdateMovement authored transport progress")
     require(movement, "BOT_TRAVEL_TIMEOUT_MSEC", "rvBot::UpdateMovement traversal timeout")
     require(movement, "BotMoveDirectionSafe", "rvBot::UpdateMovement safe combat steering")
+    require_order(movement, "AlignJumpDropApproach( self, cmd )", "bool routing = AdvancePath( self );",
+                  "jump/drop approach brakes before consuming the takeoff")
+    require_order(movement, "HandleJumpTakeoff( self, cmd )", "corner.travelType == NAVTRAVEL_JUMP || climbHop",
+                  "the exact-state jump gate owns grounded launch before generic press handling")
+    require_order(movement, "GuardLandingContinuation( self, cmd )", "bool routing = AdvancePath( self );",
+                  "actual landing continuation is checked before the flight releases control")
     require(movement, "gameLocal.time - noRouteSince", "rvBot::UpdateMovement no-route recovery")
     # A bot knocked or carried onto another floor replaces its route at once
     # instead of pressing toward a corner overhead until the stuck detector
@@ -277,14 +283,57 @@ def validate_game_wiring() -> None:
             "rvBot::UpdateMovement off-route goal re-decision")
     # A drop landing under its own ledge lip must not collapse the steering.
     require(movement, "moveDir * across < BOT_CORNER_REACH", "rvBot::UpdateMovement drop push-through")
+    # A pad or teleporter entry steers into the volume itself.
+    require(movement, "bounds.GetCenter() - origin", "rvBot::UpdateMovement volume entry steering")
+    # Grounded movement never walks off into the void or a kill volume.
+    require(movement, "BotBrakeAtEdge( self, moveDir )", "rvBot::UpdateMovement void-edge guard")
+    require_order(movement, "BotBrakeAtEdge( self, moveDir )", "ApplyMove( moveDir, cmd );",
+                  "rvBot::UpdateMovement guards before it moves")
+    # A bot waits short of a pad while someone flies its corridor the other way.
+    require(movement, "HoldForPad( self, moveDir )", "rvBot::UpdateMovement pad hold owns movement")
+    require(movement, "hasMoveDir && !holdForPad && self->pfl.onGround",
+            "rvBot::UpdateMovement cannot climb-hop into a blocked pad")
+    require(movement, "flat * moveDir < 0.0f && flat.LengthSqr() > Square( BOT_PAD_LAUNCH_SPEED * 1.25f )",
+            "rvBot::UpdateMovement coasts when thrown away from its landing")
+    require(advance, "BotTouchesTravelVolume( self, path[pathCorner + 1] )", "rvBot::AdvancePath chained pad takes over")
+    require(movement, "BotRidesPadArc( origin, velocity, corner, gravity )", "rvBot::UpdateMovement rides a natural pad arc")
+    # In a pad's flight or a drop's fall the bot steers like PadLanding predicts.
+    require(movement, "NavAirSteer( origin, velocity, corner.origin, gravity, wish )",
+            "rvBot::UpdateMovement arrival air steering")
+    # Pressing along the route toward a corner above without closing in hops,
+    # on any leg including the committed approach to an action.
+    require(movement, "steeringIntoVolume || corner.origin.z - origin.z > BOT_CLIMB_RISE",
+            "rvBot::UpdateMovement climb hop rise or volume entry")
+    require(movement, "climbHop = gameLocal.time - climbCheckTime >= BOT_CLIMB_HOP_MSEC",
+            "rvBot::UpdateMovement climb hop window")
+    require(movement, "if ( corner.travelType == NAVTRAVEL_JUMP || climbHop )",
+            "rvBot::UpdateMovement climb hop ignores committed travel")
     off_route = bot[bot.index("bool rvBot::OffRoute") :]
     off_route = off_route[: off_route.index("\n}\n") + 3]
     require(off_route, "self->pfl.onGround", "rvBot::OffRoute grounded only")
     require(off_route, "path.RouteStart()", "rvBot::OffRoute first-leg start")
+    require(off_route, "BOT_OFF_ROUTE_LATERAL", "rvBot::OffRoute carried far from the leg")
+    # A volume entry only suspends the check beside the entry itself.
+    require(off_route, "if ( traversalEntered && traversalCorner == pathCorner + 1 ) {", "rvBot::OffRoute stale volume entry")
     require(off_route, "-BOT_OFF_ROUTE_BELOW", "rvBot::OffRoute fallen below the leg")
+    # A drop or jump that came down below its takeoff without completing landed
+    # somewhere else, and is replanned from there.
+    require(off_route, "traversalStartOrigin.z - pm_stepsize.GetFloat()", "rvBot::OffRoute action landed elsewhere")
     require(off_route, "corner.travelType == NAVTRAVEL_WALK && offHeight > BOT_OFF_ROUTE_ABOVE",
             "rvBot::OffRoute above only on walks")
-    require(advance, "corner.travelType == NAVTRAVEL_DROP &&", "rvBot::AdvancePath long-drop overshoot")
+    require(advance, "( past - direction * ahead ).LengthSqr() <= Square( BOT_CORNER_REACH * 2.0f )",
+            "rvBot::AdvancePath long-drop and level-jump overshoot")
+    # Only real launch speed takes a pad, and a pad flight ends on landing.
+    require(advance, "traversalEntered && padLaunched", "rvBot::AdvancePath pad launch evidence")
+    require(advance, "BotPadFlightComplete( traversalStarted", "rvBot::AdvancePath pad flight ends on landing")
+    # A jump that fell short goes back to its run-up and tries again.
+    require(advance, "jumpRetries < BOT_JUMP_RETRIES", "rvBot::AdvancePath failed jump retry")
+    # Only a jump that came down on the takeoff's side of its link fell short;
+    # jumps and drops alike complete ahead of their landing on its floor.
+    require(advance, "travelled * direction < linkLength * 0.5f", "rvBot::AdvancePath retry only short of the link")
+    require_order(advance, "const float linkLength = direction.Normalize();", "jumpRetries++;",
+                  "rvBot::AdvancePath overshoot completion precedes the retry")
+    require(advance, "stuckPathCorner		= pathCorner;", "rvBot::AdvancePath retry resets the stuck window")
     safe = bot[bot.index("static bool BotMoveDirectionSafe") :]
     safe = safe[: safe.index("\n}\n") + 3]
     require(safe, "navMesh.TransportAt( swept ) >= 0", "BotMoveDirectionSafe refuses jump pads and teleporters")
@@ -298,6 +347,27 @@ def validate_game_wiring() -> None:
     jump = jump[: jump.index("\n}\n") + 3]
     require(jump, "self->pfl.onGround", "rvBot::PressJump")
     require(jump, "gameLocal.framenum + clientNum", "rvBot::PressJump")
+
+    # Newly observed pad impulses must own movement before a goal refresh can
+    # restore a stale walking route. Voluntary hops use the touchdown proof.
+    think = bot[bot.index("void rvBot::Think(") :]
+    require_order(think, "AdoptPadLaunch( self );", "UpdateGoal( self );",
+                  "rvBot::Think adopts a real pad launch before goal selection")
+    require(movement, "TryDodgeJump( self, moveDir, cmd );", "rvBot::UpdateMovement proves discretionary jumps")
+    require(bot, "navMesh.DodgeJumpClear(", "rvBot::TryDodgeJump uses the production touchdown proof")
+    require_order(movement, "HoldDodgeJump( self, cmd )", "GuardLandingHealth( self, cmd )",
+                  "accepted hop input precedes every movement branch")
+    think = bot[bot.index("void rvBot::Think("):bot.index("void rvBot::Think(") + 9000]
+    require_order(think, "AdoptPadLaunch( self )", "UpdateMovement( self, cmd )",
+                  "observed pad launch supersedes a discretionary hop")
+    spawn = bot[bot.index("void rvBot::OnSpawn("):bot.index("void rvBot::OnSpawn(") + 5000]
+    require(spawn, "ResetDodgeJump();", "respawn clears the voluntary flight")
+    traversal_reset = bot[bot.index("void rvBot::ResetTraversal("):bot.index("void rvBot::ResetTraversal(") + 600]
+    if "ResetDodgeJump" in traversal_reset:
+        raise AssertionError("route replacement must not cancel an accepted hop")
+
+    # A foe falling into a kill volume is not chased.
+    require(bot, "!navMesh.IsHazardous( enemyLastSeenOrigin, true )", "rvBot::UpdateGoal no chase into the void")
 
     # Bots outlive a map change, the navmesh does not.
     require(bot, "!navMesh.IsValid() && NumBots() > 0", "rvBotManager::Think")
@@ -338,18 +408,24 @@ def validate_navmesh() -> None:
     step = nav[nav.index("bool rvNavMesh::TryStep") :][:3000]
     require(step, "pm_stepsize.GetFloat()", "rvNavMesh::TryStep")
     require(step, "pm_jumpheight.GetFloat()", "rvNavMesh::TryStep")
+    # A jump lands only where floor reaches the middle of the box, not on a
+    # node that merely clips a platform's edge.
+    require(step, "!NavLandingSupported( toFloor )", "rvNavMesh::TryStep supported jump landing")
+    require(nav, "NavLandingSupported( nodes[landing].origin )", "rvNavMesh::AddGapJumpLinks supported landing")
 
     # Closed proximity doors are usable traversal, not permanent holes in a
     # graph that happens to be generated before the first player approaches.
     # Every probe sweeps the world and solid entities but never a body: MP
     # players carry CONTENTS_SOLID for their combat box, and a bot's own box
     # overlaps every sweep that starts where it stands.
-    door_trace = nav[nav.index("static bool NavAgentTranslation") :]
+    door_trace = nav[nav.index("static bool NavTraceTranslation") :]
     door_trace = door_trace[: door_trace.index("\n}\n") + 3]
-    require(door_trace, "CONTENTS_BODY | CONTENTS_CORPSE", "NavAgentTranslation ignores bodies")
-    require(door_trace, "idActor::GetClassType()", "NavAgentTranslation ignores actors")
-    require(door_trace, "GetWorldCollisionModel()", "NavAgentTranslation world sweep")
-    require(door_trace, "NavDoorIsWalkActivated", "NavAgentTranslation usable door filter")
+    require(door_trace, "CONTENTS_BODY | CONTENTS_CORPSE", "NavTraceTranslation ignores bodies")
+    require(door_trace, "idActor::GetClassType()", "NavTraceTranslation ignores actors")
+    require(door_trace, "GetWorldCollisionModel()", "NavTraceTranslation world sweep")
+    require(door_trace, "NavDoorIsWalkActivated", "NavTraceTranslation usable door filter")
+    require(nav, "return NavTraceTranslation( trace, start, end, navAgentTrace, navAgentBounds );",
+            "NavAgentTranslation sweeps the agent box")
     door_filter = nav[nav.index("static bool NavDoorIsWalkActivated") :]
     door_filter = door_filter[: door_filter.index("\n}\n") + 3]
     require(door_filter, "idDoor::GetClassType()", "NavDoorIsWalkActivated")
@@ -359,10 +435,29 @@ def validate_navmesh() -> None:
     require(step, "NavAgentTranslation", "rvNavMesh::TryStep door traversal")
 
     # Off-mesh links are what keep a Quake 4 multiplayer map one component.
-    links = nav[nav.index("void rvNavMesh::AddOffMeshLinks") :][:2500]
+    links = nav[nav.index("void rvNavMesh::AddOffMeshLinks") :]
+    links = links[: links.index("\n}\n") + 3]
     require(links, "rvJumpPad::GetClassType()", "rvNavMesh::AddOffMeshLinks")
     require(links, "idTrigger_Multi::GetClassType()", "rvNavMesh::AddOffMeshLinks")
     require(links, "idPlayerStart::GetClassType()", "rvNavMesh::AddOffMeshLinks")
+    # A pad's target is its arc's apex: link where the arc really lands.
+    require(links, "PadLandings( ent, from, entryBounds, to, landings, costs );", "rvNavMesh::AddOffMeshLinks pad landings")
+    landings_fn = nav[nav.index("bool rvNavMesh::PadLandings") :]
+    landings_fn = landings_fn[: landings_fn.index("\n}\n") + 3]
+    require(landings_fn, "PadLanding( pad, launch, NULL, landing, &flight )", "rvNavMesh::PadLandings natural landing first")
+    require(nav, "bool rvNavMesh::IsSteeredPadLanding", "rvNavMesh::IsSteeredPadLanding")
+    require(landings_fn, "standing.IntersectsBounds( entryBounds )", "rvNavMesh::PadLandings no trampoline landings")
+    require(landings_fn, "NAV_PAD_LEVEL_BAND", "rvNavMesh::PadLandings one candidate per floor level")
+    require(landings_fn, "NavLandingSupported( node.origin )", "rvNavMesh::PadLandings supported candidates")
+    require(landings_fn, "NAV_PAD_LANDING_REACH", "rvNavMesh::PadLandings keeps only landings the flight makes")
+    require(landings_fn, "for ( int l = 0; l < numLaunches && everyLaunch; l++ )",
+            "rvNavMesh::PadLandings air-control landings hold from every side a bot enters by")
+    pad = nav[nav.index("bool rvNavMesh::PadLanding") :]
+    pad = pad[: pad.index("\n}\n") + 3]
+    require(pad, "GetCurrentGravity( pad )", "rvNavMesh::PadLanding pad gravity")
+    require(pad, "NAV_PAD_AIR_ACCELERATE", "rvNavMesh::PadLanding steers like a bot in flight")
+    require(pad, "NavAirSteer( position, velocity, *steerTo, g, wish )", "rvNavMesh::PadLanding shares the bot's air steering")
+    require(pad, "NavAgentTranslation( trace, position, next )", "rvNavMesh::PadLanding swept arc")
 
     # Smoothing may never skip a link that has to be entered deliberately.
     pull = nav[nav.index("void rvNavMesh::StringPull") :]
@@ -375,6 +470,7 @@ def validate_navmesh() -> None:
         "rvNavMesh::StringPull action entry and exit",
     )
     require(pull, "LinkActionEntity(", "rvNavMesh::StringPull volume identity")
+    require(pull, "rise > pm_stepsize.GetFloat() * 2.0f", "rvNavMesh::StringPull run-up for tall jumps")
 
     # Pads and teleporters carry whoever touches them, so the ground under a
     # live volume keeps the transport as its only exit; no route walks across
@@ -386,9 +482,16 @@ def validate_navmesh() -> None:
     seal = nav[nav.index("void rvNavMesh::SealTransportVolumes") :]
     seal = seal[: seal.index("\n}\n") + 3]
     require(seal, "standing.IntersectsBounds( volume )", "rvNavMesh::SealTransportVolumes standing box test")
+    # The bounding box only approximates a pad: the box against the brush decides.
+    require(seal, "collisionModelManager->Contents( nodes[n].origin, &navAgentTrace", "rvNavMesh::SealTransportVolumes exact touch")
     require(seal, "nodes[n].flags |= NAVNODE_TRANSPORT;", "rvNavMesh::SealTransportVolumes flag")
     require(seal, "nodes[n].firstLink = -1;", "rvNavMesh::SealTransportVolumes exits")
-    require(seal, "transport.destination", "rvNavMesh::SealTransportVolumes transport exit")
+    require(seal, "transport.destinations[d]", "rvNavMesh::SealTransportVolumes transport exits")
+    require(seal, "transport.costs[d]", "rvNavMesh::SealTransportVolumes per-landing price")
+    enters = nav[nav.index("bool rvNavMesh::LineEntersTransport") :]
+    enters = enters[: enters.index("\n}\n") + 3]
+    require(enters, "NavLineTouchesVolumeBrush( from, to, clip )", "rvNavMesh::LineEntersTransport exact brush test")
+    require(nav, "static float NavPadFlightCost", "pad links priced by flight time")
     require(links, "IsActive( TH_THINK )", "rvNavMesh::AddOffMeshLinks only live pads seal")
     nearest = nav[nav.index("int rvNavMesh::FindNearestNode") :]
     nearest = nearest[: nearest.index("\n}\n") + 3]
@@ -454,7 +557,7 @@ def validate_navmesh() -> None:
     # search itself lives in FindPathInternal.
     wrapper = nav[nav.index("bool rvNavMesh::FindPath(") :]
     wrapper = wrapper[: wrapper.index("\n}\n") + 3]
-    require(wrapper, "FindPathInternal( start, goal, path )", "rvNavMesh::FindPath wrapper")
+    require(wrapper, "FindPathInternal( start, goal, path, nearGoal, maxImpactDelta )", "rvNavMesh::FindPath wrapper")
     require(wrapper, "stats.pathSearches++", "rvNavMesh::FindPath profiling")
 
     find_path = nav[nav.index("bool rvNavMesh::FindPathInternal") :]
@@ -490,6 +593,9 @@ def validate_navmesh() -> None:
     require(ranked, "Heuristic( startNode, node )", "rvNavMesh::BuildCostField landmark bound per target")
     require(ranked, "PathCost( startNode, node, maxCost )", "rvNavMesh::BuildCostField exact pricing")
     require(ranked, "best[keepBest - 1] >= bound[i]", "rvNavMesh::BuildCostField branch and bound stop")
+    # Weak bounds must not let exact searches cost more than one field.
+    require(ranked, "spent > budget", "rvNavMesh::BuildCostField pricing work budget")
+    require(ranked, "RankedSettle( startNode, maxCost, startLeg,", "rvNavMesh::BuildCostField ranked field fallback")
     heuristic = nav[nav.index("float rvNavMesh::Heuristic") :]
     heuristic = heuristic[: heuristic.index("\n}\n") + 3]
     require(heuristic, "heuristicScale", "rvNavMesh::Heuristic transport-safe straight-line bound")
@@ -499,9 +605,18 @@ def validate_navmesh() -> None:
     require(heuristic, "return NAV_INFINITE_COST;", "rvNavMesh::Heuristic unreachable proof")
     require(find_path, "rejectedLinks", "rvNavMesh::FindPath blocked-edge repair")
     require(find_path, "LinkTraversable(", "rvNavMesh::FindPath live route validation")
+    require(find_path, "idList<int> rejectedLinks", "rvNavMesh::FindPath local repair exclusions")
+    require(find_path, "LandingSurvivable( nodes[nodePath[i]].origin, landing, maxImpactDelta )", "rvNavMesh::FindPath health-aware selected-edge validation")
     require(find_path, "SetTravelCost(", "rvNavMesh::FindPath weighted route cost")
     # A goal beside a pad cannot be stood on; its nearest node is the arrival.
     require(find_path, "TransportAt( standing ) >= 0", "rvNavMesh::FindPath transport-side goals")
+    # A chased player in a spot no node fits is approached, not refused.
+    require(find_path, "goalNode == -1 && nearGoal", "rvNavMesh::FindPath pursuit near-goal")
+    # A refused final leg stands when the goal's snap proved the walk the other
+    # way, or when the box stops within touch of a goal set against a wall.
+    require(find_path, "WalkableLine( routeGoal, last )", "rvNavMesh::FindPath reverse-proven final leg")
+    require(find_path, "LegTouchesGoal( last, routeGoal, touch )", "rvNavMesh::FindPath goal within touch")
+    require(find_path, "TransportAt( goalBox ) < 0", "rvNavMesh::FindPath no reverse proof into a pad")
     if find_path.count("path.routeStart = routeStart;") != find_path.count("return true;") + 1:
         raise AssertionError(
             "FindPathInternal must record the grounded route start on every success path; "
@@ -641,6 +756,9 @@ def validate_cvars() -> None:
 
 def main() -> int:
     try:
+        from mp_bot_audit import world_deaths
+        sample = "Kane was killed by world\nRhodes drowned\nKane was railed by Rhodes\nObserver died\n"
+        assert world_deaths(sample, {"Kane", "Rhodes"}) == ["Rhodes", "Kane"]
         validate_engine()
         validate_game_wiring()
         validate_navmesh()

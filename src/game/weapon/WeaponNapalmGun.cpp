@@ -282,9 +282,9 @@ stateResult_t WeaponNapalmGun::State_Idle( const stateParms_t& parms ) {
 	switch ( parms.stage ) {
 		case STAGE_INIT:
 			if ( AmmoAvailable ( ) ) {
-				SetStatus ( WP_OUTOFAMMO );
-			} else {
 				SetStatus ( WP_READY );
+			} else {
+				SetStatus ( WP_OUTOFAMMO );
 			}
 		
 			if ( wsfl.zoom )

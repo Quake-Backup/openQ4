@@ -197,10 +197,10 @@ public:
 	const char *			GetDamageGroup( int location );
 
 							// Scales on the damage this actor deals and takes (1 = unchanged).
-							// Not saved: whatever buffs an actor re-applies it after a restore.
+							// AI status modifiers are composed by the virtual accessors.
 	void					SetDamageScales( float dealt, float taken ) { damageDealtScale = dealt; damageTakenScale = taken; }
-	float					GetDamageDealtScale( void ) const { return damageDealtScale; }
-	float					GetDamageTakenScale( void ) const { return damageTakenScale; }
+	virtual float			GetDamageDealtScale( void ) const { return damageDealtScale; }
+	virtual float			GetDamageTakenScale( void ) const { return damageTakenScale; }
 	void					ClearPain( void );
 	virtual bool			Pain( idEntity *inflictor, idEntity *attacker, int damage, const idVec3 &dir, int location );
 	virtual void			AddDamageEffect( const trace_t &collision, const idVec3 &velocity, const char *damageDefName, idEntity* inflictor );

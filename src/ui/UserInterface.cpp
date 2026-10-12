@@ -955,6 +955,7 @@ idUserInterface *idUserInterfaceManagerLocal::FindGui( const char *qpath, bool a
 		idUserInterface *gui = UI_CreateForPath( qpath );
 		if ( gui != NULL && gui->InitFromFile( qpath ) ) {
 			gui->SetUniqued( forceNOTUnique ? false : needUnique );
+			openQ4_UpdateInitialization();
 			return gui;
 		} else {
 			delete gui;

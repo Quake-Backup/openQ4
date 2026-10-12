@@ -27,9 +27,16 @@ The [Remastered HUD](../ui/remastered-hud.md) now lays out the on-foot,
 multiplayer, vehicle, objectives and scoreboard HUDs on the section 14.4
 anchors; the remaining displays and world-surface migration requirements remain.
 
-The 7 October scope increment supplies the three retained weapon scopes through
-the shared SP/MP preference gate. Source, tests and engine capture evidence are
-recorded in [retained screens](../ui/retained-screens.md).
+The 11 October status-bar review retains centered placement while matching
+legacy gauge dimensions, internal offsets, background saturation and shading.
+The [Remastered HUD record](../ui/remastered-hud.md) documents the vector
+construction and validation location.
+
+The 7 October scope and screen increment removes pointer-driven vector
+recompilation from the title's framing, anchors loading furniture to the
+leading/trailing screens (including portrait), and supplies the three retained
+weapon scopes through the shared SP/MP preference gate. Source, tests and
+engine capture evidence are recorded in [retained screens](../ui/retained-screens.md).
 Visual specification 1.15 and the editable implant atlas sheet explicitly cover
 Medical Labs `medchange`, including its full-view wide/tall composition and
 activation/hurt timing. Its vector presentation now routes through the HUD bridge;
@@ -666,8 +673,8 @@ commands across the compatibility menu and opt-in retained presentation.
 `singleplayer.q4ui` and `campaigns.q4ui` are generated with the existing editable
 Marine vector plates, docked 45-degree bands, typed readiness bindings and
 localized text. The compatibility selector remains available with `ui_retained=0`.
-Campaign setup, Chapters and Arena retain their existing presentation pending
-the wider retained-screen migration. This completes campaign selection only;
+Campaign setup now uses the fourth retained level described below. Chapters
+and Arena remain part of the wider retained-screen migration. This completes campaign selection only;
 it does not claim the complete UI/editor/migration programme is finished.
 
 ## Retained screens on by default (1 October 2026)
@@ -688,14 +695,47 @@ remaining stock pages, the editor and every migration and final gate stay open;
 `SHIP-001` and `GATE-007` still require every stock route to have a qualified
 retained replacement.
 
-## View effects and the HUD (7-8 October 2026)
+## Startup and view continuity (7 October 2026)
+
+The 11 October refinement adds one settling focus swell and delayed inner
+shade to death, and follows the three Air Defense crash wake-ups and two
+blackouts with warm soft focus and feathered eyelids. Stock camera and script
+timing remain authoritative. Reduced motion/flashing removes the transient
+focus/afterimage accents. Qualification is recorded in
+[retained screens](../ui/retained-screens.md) under `.tmp/view-effects-refinement/`;
+this does not close the wider migration or platform gates.
+
+11 October follow-up: initialization now redraws at cooperative startup
+checkpoints, with a 30 Hz ceiling, measured-cost backoff and cached rotating
+fill geometry. Reduced Motion skips optional frames. Native checks and staged
+OpenGL/SP and Vulkan/MP gameplay entry pass; long synchronous operations still
+limit continuity. [Performance evidence and limits](../ui/runtime-performance.md#initialization-animation-11-october-2026)
+record this incremental qualification.
+
+The engine's first initialization frames now use the layered vector design,
+including localized stages and reduced motion. Shared menu-level helpers extend
+the retained hierarchy to a fourth level: both campaigns open difficulty and
+Turbo setup through the same reversible transition, and commit those drafts
+only on Start Game. The route audit classifies settings tabs and Arena selection
+as edits in place, multiplayer browser/create/demos as third-level pages, and
+dialogs as modals. Future qualifying children, including Chapters, use the same
+level helper.
 
 All three scopes soften the view beyond a feathered optical aperture. The
 `mcc_2` treatment gains gradual focus recovery tied to its original white fades;
 death gains restrained color loss, peripheral shading and a brief afterimage.
-These effects fill wide and tall views without stretching the optical center or
-obscuring HUD text. The shared SP/MP implementation preserves the original
-game-state timing.
+Loading begins after a short smooth fade has reached full black. These effects
+fill wide and tall views without stretching the optical center or obscuring HUD
+text. The shared SP/MP implementation preserves the original game-state timing.
+
+The [implementation record](../ui/retained-screens.md) links native geometry,
+menu-routing and adapter checks, and engine screenshots from windowed OpenGL
+and Vulkan gameplay. Evidence under `.tmp/ui-continuity/` also covers portrait,
+German labels, reduced motion, real campaign progression and native 4K mesh
+checks. Oversized engine screenshots expose a separate retained-effect tiling
+defect and are excluded from visual acceptance. This is bounded development
+evidence; the editor, outstanding screen
+migrations, portable qualification and final product gates remain open.
 
 ### 7 October 2026: playback-driven graphs
 
@@ -736,3 +776,54 @@ day multiplayer gained the respawn prompt, the Minimal preset arrived
 air-defence cannon gained its Remastered optic with the transmission display
 and the HUD prompt. The match summary, the chat entry and The Awakening's
 vehicle displays remain on the stock layout.
+
+### 11 October 2026: legacy instruments and retained HUD cost
+
+The follow-up review approves the installed `waveform.tga` for radio and
+voice displays, with the stock scroll and complete 21-sample height table.
+This supersedes the approximate preset. The ECG also uses a stationary
+repeating bitmap quad. Masks, colours, labels and Reduced Motion semantics
+remain authored in the editable document.
+
+Icons already originate as SVG and compile into retained native paths. Warm
+icons reuse their tessellation and engine mesh. The current optimization
+keeps those sources, caches completed vector panels, defers mask snapshots,
+draws additive traces through disjoint mask coverage, limits composites to
+artwork bounds and avoids redundant target binds. Application state parsing
+and presentation layout also skip unchanged work. Hidden branches keep
+advancing authored time without updating visible layout, and presentation-only
+RmlUi updates defer their descendants until shown. Native qualification and
+OpenGL/Vulkan engine captures pass. Isolated 720p SP/Vulkan and MP/OpenGL
+comparisons still add 0.60 and 1.25 ms respectively; negligible-overhead
+acceptance remains open in
+[the release checklist](../release-completion.md).
+
+The next optimization pass adds bounded runtime coverage atlases, settled-frame
+replay with live bitmap UV sampling, direct opacity for disjoint image/glyph
+quads, and deferred hidden CSS writes. Editable SVG sources remain canonical.
+Allocation recovery and same-frame legacy fallback close implementation gaps;
+the HUD state bridge also preserves case-insensitive keys and avoids repeated
+normalization. Fourteen native suites, including full screens, all HUD families,
+interactive widgets, document replacement and masked animation replay, pass.
+The compiled production adapter and its 17 rejected mutations also pass.
+The coordinated visible-window retry eliminates the former presentation stalls
+but still measures +0.343 ms SP/Vulkan and +0.570 ms MP/OpenGL. Further fixes
+preserve crosshair coverage quads for atlasing, replay unchanged captured HUD
+packets, resolve isolated opacity without document layout, read HUD geometry
+only after layout changes, and advance the stock peer's scripts without its
+discarded layout/paint. Leaf opacity now remains live through replay, with
+overlapping text retaining its composed target after an earlier-frame warm-up.
+The warm-up closes a Vulkan first-draw font-upload gap; six opacity levels match
+ordinary composition pixel-for-pixel on OpenGL and Vulkan. HUD forwarding uses
+case-insensitive hash lookup. Detailed retained stopwatches run only on a profiler
+request. Leaf-opacity reuse also skips redundant CSS formatting. Eight native
+suites pass; seven sequential opacity samples, including returning to an earlier
+value and crossing zero/full opacity, match ordinary composition exactly on
+both APIs. After background jobs were paused, whole-window comparisons add
+0.049 ms SP and 0.358 ms MP. The updated build's near-zero MP aggregate hides
+opposing block differences; a longer-settled MP repeat still adds 0.218 ms
+(+4.93%). The negligible-overhead requirement remains open. Work pauses at the
+user's request after this validation checkpoint; the test reservation is released.
+Current gameplay evidence and acceptance limits are recorded in
+[coverage atlases and presentation replay](../ui/runtime-performance.md#coverage-atlases-and-presentation-replay-11-october-2026)
+and `.tmp/ui-negligible-overhead/REPORT.md`.

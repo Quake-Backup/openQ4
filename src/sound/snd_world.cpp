@@ -452,11 +452,34 @@ idSoundWorldLocal::CurrentShakeAmplitude
 */
 float idSoundWorldLocal::CurrentShakeAmplitude()
 {
+	return ShakeAmplitudeForPosition( listener.pos );
+}
+
+float idSoundWorldLocal::ShakeAmplitudeForPosition( const idVec3& listenerPosition )
+{
 	if( s_constantAmplitude.GetFloat() >= 0.0f )
 	{
-		return s_constantAmplitude.GetFloat();
+		return 0.0f;
 	}
-	return shakeAmp;
+	const int currentTime = GetSoundTime();
+	float amplitude = 0.0f;
+	// Slot zero is this world's localSound emitter, not an unused sentinel.
+	for( int i = 0; i < emitters.Num(); ++i )
+	{
+		if( emitters[i] != NULL )
+		{
+			amplitude += emitters[i]->ShakeAmplitudeForPosition( currentTime, listenerPosition );
+		}
+	}
+	return amplitude;
+}
+
+float idSoundSystemLocal::CurrentShakeAmplitudeForPosition( int worldId, const int time, const idVec3& listenerPosition )
+{
+	// The sound world's playback clock also covers shifted and slow-motion sounds.
+	(void)time;
+	idSoundWorldLocal* world = static_cast<idSoundWorldLocal*>( GetSoundWorldFromId( worldId ) );
+	return world != NULL ? world->ShakeAmplitudeForPosition( listenerPosition ) : 0.0f;
 }
 
 /*
@@ -798,7 +821,7 @@ void idSoundWorldLocal::Update()
 	// ------------------
 	// Update Hardware
 	// ------------------
-	shakeAmp = 0.0f;
+	shakeAmp = CurrentShakeAmplitude();
 	rumbleAmp = 0.0f;
 
 	idStr showVoiceTable;
@@ -844,14 +867,13 @@ void idSoundWorldLocal::Update()
 			showVoiceTable += voiceLine;
 		}
 
-		// Calculate shakes
+		// Controller rumble follows the audible mix; camera shake is queried separately.
 		if( chan->hardwareVoice == NULL )
 		{
 			continue;
 		}
 
 		const float channelAmplitude = chan->hardwareVoice->GetGain() * chan->currentAmplitude;
-		shakeAmp += chan->parms.shakes * chan->shakeScale * chan->currentAmplitude;
 
 		float channelRumble = idMath::Fabs( chan->parms.shakes ) * channelAmplitude;
 		if( ( chan->parms.soundShaderFlags & SSF_CAUSE_RUMBLE ) != 0 )

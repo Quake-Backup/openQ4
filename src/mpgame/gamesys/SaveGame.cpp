@@ -2626,19 +2626,7 @@ void idRestoreGame::ReadBuildNumber( void ) {
 		return;
 	}
 
-	if ( openQ4SaveGameCompatibilityVersion == OPENQ4_SAVEGAME_PREVIOUS_COMPATIBILITY_VERSION ) {
-		// No v2 snapshot has a verified decoder: every one that was tested against
-		// a real save desynced part way through the restore. The engine preflight
-		// already refuses these before a map is torn down; this is the second line
-		// of defence for a payload that reaches the game module anyway.
-		openQ4SaveGameCompatibilityError = va(
-			"v%d payload from build %d (%s, %d files) has no verified decoder",
-			openQ4SaveGameCompatibilityVersion,
-			buildNumber,
-			openQ4SaveGameCompatibilityStamp.c_str(),
-			openQ4SaveGameCompatibilitySourceFileCount );
-		return;
-	} else {
+	{
 		idStr savedWireABI;
 		ReadString( savedWireABI );
 		if ( savedWireABI.Icmp( OpenQ4SaveGameWireABI() ) != 0 ) {
@@ -2709,7 +2697,7 @@ void idRestoreGame::ReadSaveGameFooter( void ) {
 			savedSyncCount, openQ4SaveGameNextSyncId );
 	}
 
-	if ( openQ4SaveGameCompatibilityVersion == OPENQ4_SAVEGAME_COMPATIBILITY_VERSION ) {
+	if ( openQ4SaveGameCompatibilityVersion >= OPENQ4_SAVEGAME_TYPED_COMPATIBILITY_VERSION ) {
 		const int integrityOffset = file->Tell();
 		int integrityMarker;
 		int integrityVersion;
@@ -2820,7 +2808,7 @@ idRestoreGame::HasOpenQ4PlayerLiquidSaveFieldForBuild
 */
 bool idRestoreGame::HasOpenQ4PlayerLiquidSaveFieldForBuild( int firstBuildWithField ) const {
 	if ( !openQ4SaveGameHasCompatibilityStamp ||
-		 openQ4SaveGameCompatibilityVersion != OPENQ4_SAVEGAME_COMPATIBILITY_VERSION ) {
+		 openQ4SaveGameCompatibilityVersion < OPENQ4_SAVEGAME_TYPED_COMPATIBILITY_VERSION ) {
 		return false;
 	}
 

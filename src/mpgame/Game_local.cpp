@@ -4979,6 +4979,8 @@ escReply_t idGameLocal::HandleESC( idUserInterface **gui ) {
 //RAVEN END
 
 	if ( isMultiplayer ) {
+		idPlayer *localPlayer = GetLocalPlayer();
+		if ( localPlayer && localPlayer->HandleESC() ) return ESC_IGNORE;
 		*gui = StartMenu();
 		// we may set the gui back to NULL to hide it
 		return ESC_GUI;

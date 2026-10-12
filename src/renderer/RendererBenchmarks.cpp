@@ -409,10 +409,10 @@ bool RendererBenchmarks_WriteTimingTrace( const char *path ) {
 	const int count = RendererBenchmarks_CopyOrderedSamples( samples, RENDERER_BENCHMARK_HISTORY );
 	// GPU results arrive asynchronously. Preserve their original frame and
 	// generation rather than attributing them to the CPU row that collected them.
-	file->Printf( "cpuFrame,cpuUs,frontEndMs,submitMs,backendMs,presentMs,gpuValid,gpuFrame,gpuGeneration,gpuUs,finishUs,finalPostUs,windowStateUs,contextUs,swapUs,uploadRetireUs,frameFenceWaitUs,acquireImageUs\n" );
+	file->Printf( "cpuFrame,cpuUs,frontEndMs,submitMs,backendMs,presentMs,gpuValid,gpuFrame,gpuGeneration,gpuUs,finishUs,finalPostUs,windowStateUs,contextUs,swapUs,uploadRetireUs,frameFenceWaitUs,acquireImageUs,frameBuildUs,frameSubmitUs\n" );
 	for ( int i = 0; i < count; ++i ) {
 		const rendererBenchmarkFrameSample_t &sample = samples[i];
-		file->Printf( "%d,%llu,%d,%d,%d,%d,%d,%d,%u,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu\n",
+		file->Printf( "%d,%llu,%d,%d,%d,%d,%d,%d,%u,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu\n",
 			sample.cpuFrameNumber, sample.cpuFrameMicroseconds,
 			sample.frontEndMsec, sample.submitMsec, sample.backEndMsec, sample.presentMsec,
 			sample.gpuFrameTimingValid ? 1 : 0, sample.gpuFrameNumber,
@@ -423,7 +423,7 @@ bool RendererBenchmarks_WriteTimingTrace( const char *path ) {
 			sample.presentPhaseMicroseconds[RENDERER_PRESENT_CONTEXT],
 			sample.presentPhaseMicroseconds[RENDERER_PRESENT_SWAP], sample.uploadRetireMicroseconds,
 			sample.waitPhaseMicroseconds[RENDERER_WAIT_FRAME_FENCE],
-			sample.waitPhaseMicroseconds[RENDERER_WAIT_SWAPCHAIN_IMAGE] );
+			sample.waitPhaseMicroseconds[RENDERER_WAIT_SWAPCHAIN_IMAGE], sample.frameBuildMicroseconds, sample.frameSubmitMicroseconds );
 	}
 	fileSystem->CloseFile( file );
 	common->Printf( "Renderer timing trace: %d samples written to %s\n", count, path );

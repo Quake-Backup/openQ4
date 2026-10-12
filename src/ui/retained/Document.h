@@ -183,6 +183,8 @@ struct ModalSpec {
 	std::string backEvent; // Empty consumes Back; otherwise a canonical event name.
 };
 struct Node {
+	// Use the original 640x480 GUI text layout inside this fixed text window.
+	bool legacyText = false, legacyTextClip = false;
 	std::string id, type;
 	std::map<std::string, Value> properties;
 	std::vector<Node> children;
@@ -193,6 +195,8 @@ struct Node {
 	std::optional<Control> control;
 	std::optional<ModalSpec> modal;
 };
+// UV translation and centre scaling use normalized texture coordinates.
+bool HasImageCoordinates(const Node& node);
 struct Easing {
 	double x1 = 0, y1 = 0, x2 = 1, y2 = 1;
 	double Evaluate(double fraction) const;

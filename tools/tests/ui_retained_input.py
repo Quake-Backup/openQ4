@@ -45,6 +45,11 @@ int SDL3_MapGamepadButton(Uint8 button) { return K_JOY3+button; }
 int SDL3_JoyKeyFromOrdinal(int button) { return K_JOY3+button; }
 void SDL3_PostControllerKeyEvent(int key,bool down,int time);
 std::map<int,int> inputKeys;
+struct RadialCvars {
+    int owner=0; bool canceled=false;
+    int GetCVarInteger(const char* name) { assert(std::strcmp(name,"ui_radialOwner")==0);return owner; }
+    void SetCVarBool(const char* name,bool value) { assert(std::strcmp(name,"ui_radialCancel")==0);canceled=value; }
+} radialCvars,*cvarSystem=&radialCvars;
 struct idKeyInput {
     static inline bool held[K_LAST_KEY]={};
     static inline int bindings[K_LAST_KEY]={};
@@ -208,6 +213,36 @@ int main() {
     idKeyInput::held[K_ENTER]=false;retainedOpen=false;usercmd.RetainedInputChanged();
     usercmd.Key(K_ENTER,true);assert(usercmd.buttonState[2]==1);
     usercmd.Clear();
+    // East/Back cancels either gameplay radial selector without pressing its
+    // crouch binding. Quarantine lasts until release, then normal play resumes.
+    idKeyInput::bindings[K_JOY4]=3;
+    for(int owner:{1,2}) {
+        radialCvars.owner=owner;radialCvars.canceled=false;
+        usercmd.Key(K_JOY4,true);
+        assert(radialCvars.canceled && usercmd.buttonState[3]==0 && !usercmd.keyState[K_JOY4]);
+        radialCvars.owner=0;radialCvars.canceled=false;
+        usercmd.Key(K_JOY4,true); // Repeat after the wheel has closed.
+        assert(!radialCvars.canceled && usercmd.buttonState[3]==0);
+        usercmd.Key(K_JOY4,false);usercmd.Key(K_JOY4,true);
+        assert(usercmd.buttonState[3]==1);
+        // A crouch held before opening must get its release even if repeated.
+        radialCvars.owner=owner;usercmd.Key(K_JOY4,true);usercmd.Key(K_JOY4,false);
+        assert(!radialCvars.canceled && usercmd.buttonState[3]==0);
+        radialCvars.owner=0;
+    }
+    // A second bound control cancels without releasing the original hold or
+    // introducing a second action count. Its release is consumed exactly once.
+    for(int owner:{1,2}) {
+        const int action=owner==1?UB_WEAPONWHEEL:UB_QUICKCHAT;
+        idKeyInput::bindings['q']=idKeyInput::bindings['v']=action;
+        usercmd.Key('q',true);assert(usercmd.buttonState[action]==1);
+        radialCvars.owner=owner;radialCvars.canceled=false;
+        usercmd.Key('q',true);assert(!radialCvars.canceled);
+        usercmd.Key('v',true);assert(radialCvars.canceled && usercmd.buttonState[action]==1);
+        radialCvars.owner=0;usercmd.Key('v',false);usercmd.Key('q',false);
+        assert(usercmd.buttonState[action]==0);
+    }
+    radialCvars.canceled=false;usercmd.Clear();
     // While the held scoreboard scrolls, the weapon-cycle impulses scroll it and
     // never reach the game as a weapon change; otherwise they are impulses.
     usercmd.scoreboardScrolls=true; usercmd.cmd.impulse=0; usercmd.cmd.flags=0;

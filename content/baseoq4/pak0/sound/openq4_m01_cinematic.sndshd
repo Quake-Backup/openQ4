@@ -1,0 +1,54 @@
+// Original mixes; samples are supplied by the player's Quake 4/Awakening install.
+// Global mix cues bypass room occlusion at the helper entity's origin.
+// No shakeData: actor reactions carry impacts without adding camera shake.
+sound oq4_m01_cabin {
+    global
+    no_occlusion
+    looping
+    volumeDb -18
+    sound/ambience/m03/dropship_interior.ogg
+}
+sound oq4_m01_wind {
+    global
+    no_occlusion
+    looping
+    volumeDb -22
+    sound/ambience/m03/wind_high1.ogg
+}
+sound oq4_m01_hit {
+    global
+    no_occlusion
+    volumeDb -14
+    sound/ambience/m01/mcc_impact_1.ogg
+}
+sound oq4_m01_breach {
+    global
+    no_occlusion
+    volumeDb -10
+    sound/vehicles/dropship/space_explo_ship.ogg
+}
+sound oq4_m01_engine_fail {
+    global
+    no_occlusion
+    volumeDb -17
+    sound/ambience/m03/dropship_loseeng.ogg
+}
+sound oq4_m01_alarm {
+    global
+    no_occlusion
+    volumeDb -25
+    sound/ambience/m01/incoming_alarm.ogg
+}
+sound oq4_m01_harness {
+    global
+    no_occlusion
+    volumeDb -17
+    sound/ambience/m03/harness_open.ogg
+}
+sound oq4_m01_weld {
+    global
+    no_occlusion
+    looping
+    volumeDb -24
+    sound/effects/generic/weld_loop.ogg
+}

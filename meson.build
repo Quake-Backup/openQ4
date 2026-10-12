@@ -910,11 +910,15 @@ if build_engine or get_option('build_native_tests')
              meson.project_source_root() / 'content/baseoq4/pak0/guis/weapons/machinegun_scope.q4ui',
              meson.project_source_root() / 'content/baseoq4/pak0/guis/weapons/railgun_scope.q4ui',
              meson.project_source_root() / 'content/baseoq4/pak0/guis/weapons/nailgun_scope.q4ui',
+             meson.project_source_root() / 'content/baseoq4/pak0/guis/loading/initialization.q4ui',
+             meson.project_source_root() / 'content/baseoq4/pak0/guis/menu/campaign_skill.q4ui',
              meson.project_source_root() / 'content/baseoq4/pak0/guis/hud/view_effects.q4ui',
              meson.project_source_root() / 'content/baseoq4/pak0/guis/hud/weapon_wheel_marine.q4ui',
              meson.project_source_root() / 'content/baseoq4/pak0/guis/hud/weapon_wheel_marine_awakening.q4ui',
              meson.project_source_root() / 'content/baseoq4/pak0/guis/hud/weapon_wheel_strogg.q4ui',
              meson.project_source_root() / 'content/baseoq4/pak0/guis/hud/weapon_wheel_strogg_awakening.q4ui'], timeout: 240)
+    test('openq4-ui-view-effects', openq4_ui_retained_screens_test,
+      args: ['--view-effects', meson.project_source_root() / 'content/baseoq4/pak0/guis/hud/view_effects.q4ui'], timeout: 60)
     # The match summary card (ui-visual-design.md 14.14).
     test('openq4-ui-retained-summary', openq4_ui_retained_screens_test,
       args: ['--summary', meson.project_source_root() / 'content/baseoq4/pak0/guis/menu/mp_summary.q4ui'], timeout: 240)

@@ -267,7 +267,6 @@ public:
 
 	float					volumeDB;			// last volume at which this channel will play (calculated in UpdateVolume)
 	float					currentAmplitude;	// the sample's envelope at the current playback position
-	float					shakeScale;			// linear volume before s_volume: shakes do not follow the volume setting
 	float					lastFrequencyShift;
 	float					elapsedFrequencyShiftTime;
 
@@ -316,6 +315,7 @@ public:
 
 	// query data from all emitters in the world
 	virtual float			CurrentShakeAmplitude();
+	float					ShakeAmplitudeForPosition( const idVec3& listenerPosition );
 	float					CurrentRumbleAmplitude() const { return rumbleAmp; }
 
 	// where is the camera
@@ -446,6 +446,7 @@ public:
 	virtual bool	CurrentlyPlaying( const s_channelType channel = SCHANNEL_ANY ) const;
 
 	virtual	float	CurrentAmplitude();
+	float			ShakeAmplitudeForPosition( const int currentTime, const idVec3& listenerPosition );
 	virtual void	AmplitudeHistory( s_channelType channel, float *peaks, int count );
 
 	virtual	int		Index() const;
@@ -590,6 +591,7 @@ public:
 	virtual idSoundWorld* 	GetPlayingSoundWorld();
 
 	virtual idSoundWorld* GetSoundWorldFromId(int worldId);
+	virtual float			CurrentShakeAmplitudeForPosition( int worldId, const int time, const idVec3& listenerPosition );
 	virtual void			FreeSoundEmitter(int worldId, int handle, bool immediate);
 
 	// sends the current playing sound world information to the sound hardware

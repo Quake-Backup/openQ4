@@ -114,7 +114,7 @@ void riReticuleEffect::Update( const idDict &args, idEntity *newTarget, idPlayer
 		return;
 	}
 
-	const idVec3 targetPoint = newTarget->GetPhysics()->GetAbsBounds().GetCenter();
+	const idVec3 targetPoint = AwakeningProjectileTargetPoint( newTarget );
 	if ( newTarget != target.GetEntity() ) {
 		glideFrom = target.GetEntity() ? position : targetPoint;
 		glideStart = gameLocal.time;
@@ -221,8 +221,7 @@ protected:
 	idEntity *				GetAimedEntity( float range, idVec3 &point ) const;
 	bool					IsFriendly( idEntity *ent ) const;
 							// the living enemy nearest the middle of the crosshair, within coneDegrees of it
-	idActor *				FindEnemyNearCrosshair( float coneDegrees ) const;
-	float					DistanceTo( idEntity *ent ) const;
+	idActor *				FindEnemyNearCrosshair( float coneDegrees, float range, bool &outOfRange ) const;
 
 	float					reticuleScaleDistance;
 	int						reticuleInterpolationTime;
@@ -452,19 +451,11 @@ bool riVehicleCockpitWeapon::IsFriendly( idEntity *ent ) const {
 
 /*
 ================
-riVehicleCockpitWeapon::DistanceTo
-================
-*/
-float riVehicleCockpitWeapon::DistanceTo( idEntity *ent ) const {
-	return ( ent->GetPhysics()->GetAbsBounds().GetCenter() - position->GetEyeOrigin() ).Length();
-}
-
-/*
-================
 riVehicleCockpitWeapon::FindEnemyNearCrosshair
 ================
 */
-idActor *riVehicleCockpitWeapon::FindEnemyNearCrosshair( float coneDegrees ) const {
+idActor *riVehicleCockpitWeapon::FindEnemyNearCrosshair( float coneDegrees, float range, bool &outOfRange ) const {
+	outOfRange = false;
 	idActor *driver = position->GetDriver();
 	if ( driver == NULL ) {
 		return NULL;
@@ -475,20 +466,36 @@ idActor *riVehicleCockpitWeapon::FindEnemyNearCrosshair( float coneDegrees ) con
 	const float minDot = idMath::Cos( DEG2RAD( coneDegrees ) );
 
 	idActor *best = NULL;
+	idActor *bestOutOfRange = NULL;
 	float bestDot = minDot;
+	float bestOutOfRangeDot = minDot;
 	for ( idActor *actor = aiManager.GetEnemyTeam( (aiTeam_t)driver->team ); actor != NULL; actor = actor->teamNode.Next() ) {
 		if ( actor->health <= 0 || actor->IsHidden() || actor->fl.notarget ) {
 			continue;
 		}
-		idVec3 dir = actor->GetPhysics()->GetAbsBounds().GetCenter() - eye;
-		dir.Normalize();
+		const idVec3 point = AwakeningProjectileTargetPoint( actor );
+		idVec3 dir = point - eye;
+		const float distance = dir.Normalize();
 		const float dot = dir * forward;
-		if ( dot > bestDot ) {
+		const bool tooFar = range > 0.0f && distance > range;
+		if ( dot <= ( tooFar ? bestOutOfRangeDot : bestDot ) ) {
+			continue;
+		}
+		trace_t tr;
+		gameLocal.TracePoint( parent.GetEntity(), tr, eye, point, MASK_SHOT_RENDERMODEL, parent.GetEntity() );
+		if ( tr.fraction < 1.0f && tr.c.entityNum != actor->entityNumber ) {
+			continue;
+		}
+		if ( tooFar ) {
+			bestOutOfRange = actor;
+			bestOutOfRangeDot = dot;
+		} else {
 			best = actor;
 			bestDot = dot;
 		}
 	}
-	return best;
+	outOfRange = best == NULL && bestOutOfRange != NULL;
+	return best != NULL ? best : bestOutOfRange;
 }
 
 /*
@@ -712,8 +719,8 @@ void riVCWPulseCannon::UpdateTargeting( void ) {
 
 	idVec3 point;
 	idEntity *aimed = GetAimedEntity( range, point );
-	idActor *enemy = FindEnemyNearCrosshair( COCKPIT_TARGET_CONE );
-	const bool outOfRange = enemy != NULL && DistanceTo( enemy ) > range;
+	bool outOfRange;
+	idActor *enemy = FindEnemyNearCrosshair( COCKPIT_TARGET_CONE, range, outOfRange );
 
 	if ( IsFriendly( aimed ) ) {
 		crosshair = CROSSHAIR_FRIENDLY;
@@ -1104,8 +1111,8 @@ void riVCWMissileTurret::UpdateTargeting( void ) {
 	}
 
 	idEntity *aimed = GetAimedEntity( lockRange > 0.0f ? lockRange : 8192.0f, aimPoint );
-	idActor *enemy = FindEnemyNearCrosshair( COCKPIT_TARGET_CONE );
-	const bool outOfRange = enemy != NULL && lockRange > 0.0f && DistanceTo( enemy ) > lockRange;
+	bool outOfRange;
+	idActor *enemy = FindEnemyNearCrosshair( COCKPIT_TARGET_CONE, lockRange, outOfRange );
 	idActor *candidate = ( enemy != NULL && !outOfRange ) ? enemy : NULL;
 
 	if ( candidate == NULL ) {

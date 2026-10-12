@@ -16,6 +16,7 @@ need one active human, and this one never fights or blocks anything.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -23,6 +24,8 @@ import statistics
 import subprocess
 import time
 from pathlib import Path
+
+from mp_round_remote_smoke import verify_runtime_is_current
 
 try:
     import psutil
@@ -33,10 +36,16 @@ ROOT = Path(__file__).resolve().parents[2]
 NAMES = ("Cortez", "Rhodes", "Sledge", "Voss", "Strauss", "Kane", "Morris", "Tetzlaff",
          "Marsh", "Hollenbeck", "Sorg", "Gunner")
 
+# player.def's obituary texts and openQ4's liquid deaths (strings/*_openq4.lang).
+OBITUARY_KILLED_BY = (r"^(\S+) was (?:pummeled|machinegunned|hyperblasted|nailed|railed|toasted|killed|"
+                      r"telefragged|compressed into a singularity) by (\S+)$")
+OBITUARY_POSSESSIVE = r"^(\S+) (?:ate|rode|accepted) (\S+?)'s (?:boomstick|pineapple|rocket|discharge)$"
+OBITUARY_WORLD = r"^(\S+) (?:died|drowned|dissolved in slime|burned in lava)$"
+
 NAV_EVENTS = {
     "no_route": re.compile(r"^bot [^:]+: no route from", re.M),
     "stuck": re.compile(r"^bot [^:]+: stuck at", re.M),
-    "traversal_timeout": re.compile(r"^bot [^:]+: traversal timed out", re.M),
+    "traversal_timeout": re.compile(r"^bot [^:]+: (?:[a-z ]+ )?traversal timed out", re.M),
     "goal_give_up": re.compile(r"^bot [^:]+: giving up on goal", re.M),
     "pickup_refused": re.compile(r"^bot [^:]+: '[^']*' did not pick up", re.M),
     "traversal_done": re.compile(r"^bot [^:]+: completed (?:jump|drop|jump pad|teleport)", re.M),
@@ -54,11 +63,36 @@ def strip_colours(text: str) -> str:
     return re.sub(r"\^[0-9a-zA-Z]", "", text)
 
 
+def world_deaths(text: str, bot_names: set[str]) -> list[str]:
+    direct = [name for name in re.findall(OBITUARY_WORLD, text, re.M) if name in bot_names]
+    killed = re.findall(OBITUARY_KILLED_BY, text, re.M)
+    return direct + [victim for victim, killer in killed if killer == "world" and victim in bot_names]
+
+
 def percentile(values: list[float], fraction: float) -> float:
     if not values:
         return 0.0
     ordered = sorted(values)
     return ordered[min(len(ordered) - 1, int(fraction * len(ordered)))]
+
+
+def file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        for block in iter(lambda: source.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def log_has_fatal(log_path: Path) -> bool:
+    try:
+        with log_path.open("rb") as source:
+            source.seek(0, os.SEEK_END)
+            source.seek(max(0, source.tell() - 16384))
+            tail = source.read().decode("utf-8", errors="replace")
+    except OSError:
+        return False
+    return re.search(r"^FATAL:", strip_colours(tail), re.M) is not None
 
 
 def main() -> int:
@@ -71,11 +105,17 @@ def main() -> int:
     parser.add_argument("--map", dest="map_name", default="mp/q4dm1")
     parser.add_argument("--bots", type=int, default=8)
     parser.add_argument("--skill", type=int, choices=range(1, 6), default=4)
+    parser.add_argument("--debug", type=int, choices=range(1, 3), default=1,
+                        help="2 includes bot status, damage and movement diagnostics")
+    parser.add_argument("--max-world-deaths", type=int, default=None,
+                        help="fail the audit if deaths to the map exceed this limit")
     parser.add_argument("--seconds", type=int, default=120)
     parser.add_argument("--port", type=int, default=28972)
     parser.add_argument("--timeout", type=int, default=0, help="defaults to seconds + 150")
     parser.add_argument("--profile-period", type=int, default=10)
     parser.add_argument("--speeds", action="store_true", help="log com_speeds frame timings")
+    parser.add_argument("--set", action="append", default=[], metavar="CVAR=VALUE",
+                        help="extra server cvar, e.g. si_warmup=1 for Tourney's bracket; repeatable")
     parser.add_argument("--team-order", default="",
                         help="team chat the observer says once the window opens, e.g. 'everyone follow me'; "
                              "the report then tracks how far its bot team-mates keep from it")
@@ -87,6 +127,12 @@ def main() -> int:
     exe = runtime / args.executable_name
     if not exe.is_file() or not (args.basepath / "q4base").is_dir():
         parser.error("the staged client and retail q4base assets are required")
+    verify_runtime_is_current(runtime, args.executable_name)
+    identity_paths = [exe, *sorted((runtime / "baseoq4").glob("game-mp*")),
+                      runtime / "baseoq4/pak0.pk4", runtime / "baseoq4/pak1.pk4"]
+    runtime_identity = {str(path): file_sha256(path)
+                        for path in identity_paths
+                        if path.is_file() and path.suffix.lower() not in (".pdb", ".lib", ".exp")}
 
     save = output / "save"
     game = save / "baseoq4"
@@ -95,7 +141,7 @@ def main() -> int:
     if log_path.exists():
         log_path.unlink()
 
-    script = ["notarget", "god", "set bot_debug 1", f"set bot_profile {args.profile_period}",
+    script = ["notarget", "god", f"set bot_debug {args.debug}", f"set bot_profile {args.profile_period}",
               *[f"addbot {name} {args.skill} exact" for name in NAMES[:args.bots]],
               "waitMsec 5000", "botlist", "navmesh info", "echo MP_BOT_AUDIT_BEGIN"]
     if args.team_order:
@@ -129,6 +175,11 @@ def main() -> int:
         "com_skipLoadingContinue": "1", "g_autoExecAfterMapLoad": "bot_audit.cfg",
         "g_autoExecAfterMapLoadDelayMs": "500",
     }
+    for extra in args.set:
+        name, _, value = extra.partition("=")
+        if not name or not _:
+            parser.error(f"--set expects CVAR=VALUE, not {extra!r}")
+        cvars[name] = value
     command = [str(exe)]
     for name, value in cvars.items():
         command += ["+set", name, value]
@@ -150,6 +201,13 @@ def main() -> int:
             try:
                 code = process.wait(timeout=0.5)
             except subprocess.TimeoutExpired:
+                # The fatal-error UI can keep a hidden process alive forever.
+                # Its own engine log is sufficient evidence; stop only this
+                # audit's child instead of waiting out the startup timeout.
+                if log_has_fatal(log_path):
+                    process.kill()
+                    code = process.wait()
+                    break
                 if time.time() > deadline:
                     process.kill()
                     process.wait()
@@ -164,7 +222,8 @@ def main() -> int:
 
     log = log_path.read_text(encoding="utf-8", errors="replace") if log_path.exists() else ""
     clean = strip_colours(log)
-    sample = clean.partition("\nMP_BOT_AUDIT_BEGIN")[2].partition("\nMP_BOT_AUDIT_END")[0]
+    warmup, _, measured = clean.partition("\nMP_BOT_AUDIT_BEGIN")
+    sample = measured.partition("\nMP_BOT_AUDIT_END")[0]
 
     failures = []
     if code != 0 or "\nMP_BOT_AUDIT_END" not in clean:
@@ -173,9 +232,24 @@ def main() -> int:
     failures.extend(errors)
 
     bot_names = set(NAMES[:args.bots])
-    died = [m for m in re.findall(r"^(\S+) died$", sample, re.M) if m in bot_names]
+    # Console obituaries come from player.def's per-weapon texts ("was railed
+    # by", "rode X's rocket", ...), its generic "was killed by" - which names
+    # "world" as the killer of a fall or a kill volume - and openQ4's liquid
+    # texts.  Matching the generic text alone counted every death to the map
+    # as a kill and missed every weapon kill.
+    obituaries = re.findall(OBITUARY_KILLED_BY, sample, re.M) + re.findall(OBITUARY_POSSESSIVE, sample, re.M)
+    died = world_deaths(sample, bot_names)
+    warmup_died = world_deaths(warmup, bot_names)
+    all_died = world_deaths(clean, bot_names)
+    # Rates remain tied to the measured window. Safety qualification includes
+    # startup too: a lethal route is no safer because a bot took it before BEGIN.
+    if args.max_world_deaths is not None and len(all_died) > args.max_world_deaths:
+        failures.append(f"{len(all_died)} complete-run world deaths "
+                        f"({len(warmup_died)} during warmup, {len(died)} measured) "
+                        f"exceed the limit of {args.max_world_deaths}")
     suicides = [m for m in re.findall(r"^(\S+) committed suicide$", sample, re.M) if m in bot_names]
-    kills = re.findall(r"^(\S+) was killed by (\S+)$", sample, re.M)
+    suicides += [victim for victim, killer in obituaries if killer == victim and victim in bot_names]
+    kills = [(victim, killer) for victim, killer in obituaries if killer not in ("world", victim)]
 
     nav = {name: len(pattern.findall(sample)) for name, pattern in NAV_EVENTS.items()}
 
@@ -241,11 +315,14 @@ def main() -> int:
     report = {
         "map": args.map_name, "gametype": args.gametype, "bots": args.bots, "skill": args.skill,
         "seconds": args.seconds, "exit_code": code, "elapsed_seconds": round(time.time() - started, 1),
+        "runtime_identity": runtime_identity,
         "navmesh": {"nodes": int(navmesh.group(1)), "links": int(navmesh.group(2)),
                     "build_ms": int(navmesh.group(3))} if navmesh else None,
         "navmesh_line": next(iter(re.findall(r"^rvNavMesh: [^\n]*nodes[^\n]*$", clean, re.M)), ""),
         "kills": len(kills),
         "world_deaths": len(died), "suicides": len(suicides),
+        "warmup_world_deaths": len(warmup_died),
+        "complete_run_world_deaths": len(all_died),
         "world_deaths_per_bot_minute": round(len(died) / bot_minutes, 3),
         "suicides_per_bot_minute": round(len(suicides) / bot_minutes, 3),
         "kills_per_bot_minute": round(len(kills) / bot_minutes, 3),
@@ -269,7 +346,8 @@ def main() -> int:
     }
     (output / "report.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
     summary = {key: report[key] for key in ("map", "gametype", "bots", "navmesh_line", "kills",
-                                             "world_deaths", "suicides", "nav_events",
+                                             "world_deaths", "warmup_world_deaths", "complete_run_world_deaths",
+                                             "suicides", "nav_events",
                                              "nav_failures_per_bot_minute", "sim_speed", "cpu_cores_busy",
                                              "main_loop_frame_ms", "failures")}
     summary["think_avg_ms"] = [row["think_avg_ms"] for row in profile_rows]

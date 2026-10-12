@@ -1561,7 +1561,11 @@ bool idRenderWorldLocal::ModelTrace( modelTrace_t &trace, qhandle_t entityHandle
 
 	renderEntity_t *refEnt = &def->parms;
 
-	model = R_EntityDefDynamicModel( def );
+	// MD5/MD5R render snapshots omit collision-only meshes. Those meshes
+	// carry the retail per-pixel flesh/armour maps, so hitscan must request
+	// their posed collision snapshot. The helper falls back to visible
+	// geometry for models without an explicit collision surface.
+	model = R_EntityDefDynamicModel( def, true );
 	if ( !model ) {
 		return false;
 	}

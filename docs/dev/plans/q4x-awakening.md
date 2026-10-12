@@ -82,8 +82,10 @@ harness `.tmp/awakening/run_q4x.py` (local, untracked) used to boot each map.
   thaws at 0.3 a second and shows `common/freeze_overlay1` above 0.15. `filter_freeze`
   damage that would kill it freezes it solid instead: `common/freeze_death_overlay`,
   `snd_freezeDeathBegin`, animation stopped, and four seconds later (or when anything
-  else kills it) `damage_freezegib` shatters it with `fx_freezegib`. The state is not
-  saved; a restored AI has thawed.
+  else kills it) `damage_freezegib` shatters it with `fx_freezegib`. Version 4 saves
+  preserve the status, timer and animation modifiers; v3 solid ice recovers with
+  a fresh shatter timer and partial chill thaws. See the
+  [status and targeting regression record](../awakening-status-targeting.md).
 - **Turrets** (done, `riMonsterTurret` substituted for `rvMonsterTurret`):
   `dynamicAccuracy` (spread tightens over `accuracyLerpTime` of firing),
   `delayedTracking` / `lockDelay` (turn sounds, and a pause before firing again),

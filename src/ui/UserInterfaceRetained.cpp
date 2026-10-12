@@ -11,6 +11,7 @@
 #include "../sys/KeyEventMetadata.h"
 #include "application/SettingsTransaction.h"
 #include <algorithm>
+#include <array>
 #include <charconv>
 #include <cmath>
 #include <cstdlib>
@@ -167,29 +168,37 @@ bool ConvertState(const char* text, size_t type, StateValue& value) {
 	return ValidStateValue(value);
 }
 
-bool ApplicationState(const DocumentModel& model, const idDict& dictionary, StateValues& result, std::string& error) {
-	for (const auto& [name,declaration] : model.state) {
-		if (!declaration.cvar.empty() || name.starts_with("settings.") || NumberDraftState(name.c_str())) continue;
+bool ApplicationState(const DocumentModel& model, const idDict& dictionary, StateValues& result, std::string& error,
+	const std::set<std::string>* fields = nullptr) {
+	const auto read = [&](const std::string& name, const StateDeclaration& declaration) {
+		if (!declaration.cvar.empty() || name.starts_with("settings.") || NumberDraftState(name.c_str())) return true;
 		StateValue value = declaration.initial;
 		// A key state's glyph, and the key state as its label.
 		if (name.ends_with(".glyph") && declaration.initial.index() == 0) {
 			const int key = FirstKeyEscape(dictionary.GetString(name.substr(0,name.size() - 6).c_str()));
 			result.emplace(name,static_cast<double>(key >= 0 ? PromptGlyph(key).kind : 0));
-			continue;
+			return true;
 		}
 		const auto* entry = dictionary.FindKey(name.c_str());
 		if (entry && declaration.initial.index() == 2 && model.state.contains(name + ".glyph")) {
 			const int key = FirstKeyEscape(entry->GetValue().c_str());
 			if (key >= 0) {
 				result.emplace(name,PromptGlyph(key).label);
-				continue;
+				return true;
 			}
 		}
 		if (entry && !ConvertState(entry->GetValue().c_str(),declaration.initial.index(),value)) {
 			error = "Invalid application state: " + name; return false;
 		}
 		result.emplace(name,std::move(value));
-	}
+		return true;
+	};
+	if (fields) {
+		for (const auto& name : *fields) {
+			const auto found = model.state.find(name);
+			if (found != model.state.end() && !read(found->first,found->second)) return false;
+		}
+	} else for (const auto& [name,declaration] : model.state) if (!read(name,declaration)) return false;
 	return true;
 }
 
@@ -199,6 +208,8 @@ bool SessionMenuCommand(const std::string& command) {
 	static const std::set<std::string> commands = {"continue","singlePlayer","loadGame","saveGame","multiplayer","settings",
 		"mods","demos","updates","credits","quit","resume","restartLevel","quitToMenu",
         "campaigns","campaignQuake4","campaignAwakening","campaignArena","campaignBack","campaignHome",
+        "campaignSkill0","campaignSkill1","campaignSkill2","campaignSkill3","campaignSkill4",
+        "campaignSkillTurbo","campaignSkillStart","campaignSkillBack",
         "mpClose","mpMainMenu","mpDisconnect","mpStockPage","mpTeamAction",
         "mpSelectPlayer","mpMute","mpFriend","mpWelcomeAction","mpVoteYes","mpVoteNo","mpCallVote",
         "mpRail","mpSettingsControls","mpSettingsGame","mpSettingsSystem","mpMatch","mpMatchSelect","mpSummaryChat"};
@@ -416,7 +427,8 @@ void PrecacheImages(const Node& node) {
 	const auto image = node.properties.find("image");
 	if (image != node.properties.end() && image->second.type == ValueType::Image && !image->second.text.empty()) {
 		const auto blend = node.properties.find("image-blend");
-		RetainedUI_PrecacheImage(image->second.text,blend != node.properties.end() && blend->second.text == "additive");
+		RetainedUI_PrecacheImage((HasImageCoordinates(node) ? "_repeat/" : "")+image->second.text,
+			blend != node.properties.end() && blend->second.text == "additive");
 	}
 	for (const auto& child : node.children) PrecacheImages(child);
 }
@@ -459,6 +471,57 @@ bool WriteString(idFile& file, const std::string& value) {
 
 struct idUserInterfaceRetained::Impl {
 	idDict state;
+	// The public dictionary is a pending batch. Keep it intact for saves and
+	// legacy callers, but only parse fields written since the last commit.
+	std::map<std::string,std::string> applicationNames;
+	std::set<std::string> dirtyApplication, promptApplication;
+	std::array<int,5> promptAppearance{-1,0,0,0,0};
+	bool fullApplication = true, hasControls = false;
+	void IndexApplication() {
+		applicationNames.clear(); promptApplication.clear(); dirtyApplication.clear(); fullApplication = true;
+		promptAppearance[0] = -1;
+		for (const auto& [name,declaration] : document.Model().state) {
+			idStr folded(name.c_str()); folded.ToLower(); applicationNames.emplace(folded.c_str(),name);
+			// Device glyphs can change without the binding string changing.
+			if (name.ends_with(".glyph")) { promptApplication.insert(name); promptApplication.insert(name.substr(0,name.size()-6)); }
+		}
+		hasControls = HasControls(document.Model().root);
+	}
+	void DirtyApplication(const char* name) {
+		if (fullApplication) return;
+		idStr folded(name); folded.ToLower();
+		const auto found = applicationNames.find(folded.c_str());
+		if (found != applicationNames.end()) {
+			dirtyApplication.insert(found->second);
+			// A binding string and its generated glyph form one input. Either
+			// write must refresh both, including deletion and program writes.
+			if (promptApplication.contains(found->second)) dirtyApplication.insert(found->second.ends_with(".glyph") ?
+				found->second.substr(0,found->second.size()-6) : found->second+".glyph");
+		}
+	}
+	void SetDictionary(const char* name, const char* value) {
+		const auto* before = state.FindKey(name);
+		if (before && before->GetValue() == value) return;
+		state.Set(name,value); DirtyApplication(name);
+	}
+	bool ReadApplication(StateValues& values, std::string& error) {
+		if (!promptApplication.empty()) {
+			std::array<int,5> appearance{};
+#if defined(USE_SDL3)
+			appearance[0] = idMath::ClampInt(0,4,Sys_SDL_GamepadGlyphFamily(appearance.data()+1));
+#else
+			// Older platform backends can map printable keys through a live OS
+			// layout without publishing a generation. Keep their original polling.
+			dirtyApplication.insert(promptApplication.begin(),promptApplication.end());
+#endif
+			if (appearance != promptAppearance) {
+				dirtyApplication.insert(promptApplication.begin(),promptApplication.end());
+				promptAppearance = appearance;
+			}
+		}
+		return ApplicationState(document.Model(),state,values,error,fullApplication ? nullptr : &dirtyApplication);
+	}
+	void ApplicationCommitted() { fullApplication = false; dirtyApplication.clear(); }
 	idStr path;
 	ID_TIME_T stamp = 0;
 	Document document;
@@ -560,6 +623,7 @@ struct idUserInterfaceRetained::Impl {
 		}
 		if (event == retainedUIViewEvent_t::BeforeResourceReset) self.Quarantine(false,false,true);
 		else if (event == retainedUIViewEvent_t::Failed) self.Quarantine(false,false,true);
+		if (event == retainedUIViewEvent_t::Restored) self.promptAppearance[0] = -1; // Localized labels may have changed.
 		if (event != retainedUIViewEvent_t::BeforeResourceReset) common->Printf("RETAINED_GUI_RESOURCE path=%s event=%s\n",
 			self.path.c_str(),event == retainedUIViewEvent_t::Restored ? "restored" : "failed");
 	}
@@ -659,6 +723,7 @@ struct idUserInterfaceRetained::Impl {
 			else if (std::holds_alternative<bool>(value)) { text.type = PresentationType::Boolean; text.data[0] = std::get<bool>(value) ? 1 : 0; }
 			else text.data[0] = std::get<double>(value);
 			state.Set(id.c_str(),FormatPresentationValue(text).c_str());
+			if (promptApplication.contains(id)) DirtyApplication(id.c_str());
 		}
 	}
 	bool RunEvent(const std::string& name) {
@@ -666,16 +731,17 @@ struct idUserInterfaceRetained::Impl {
 		// local draft status before deciding whether Back may close the page.
 		if (!SyncNumberDrafts()) return false;
 		StateValues application; std::string error;
-		if (!ApplicationState(document.Model(),state,application,error)) { Error(error); return false; }
+		if (!ReadApplication(application,error)) { Error(error); return false; }
 		Runtime::EventEffects effects;
 		if (!RuntimeView()->RunEvent(name,RetainedUI_PresentationTime(),effects,error,application,ValidInvocation,256-actions.size())) {
 			Error(error); return false;
 		}
+		ApplicationCommitted();
 		PublishWrites(effects.stateChanges);
 		const auto count = effects.actions.size();
 		for (auto& action : effects.actions) actions.push_back({std::move(action),false});
 		if (!interactiveSet) {
-			const bool nextInteractive = HasControls(document.Model().root) && !NonInteractive(state);
+			const bool nextInteractive = hasControls && !NonInteractive(state);
 			if (nextInteractive != interactive) openq4::NativeInputBeforeUiChange(0,textBackend);
 			interactive = nextInteractive;
 			if (!interactive) Quarantine();
@@ -883,6 +949,7 @@ bool idUserInterfaceRetained::InitFromFile(const char* qpath, bool rebuild, bool
 	RetainedUI_DestroyView(impl->view); impl->view = view;
 	impl->RuntimeView()->ReleaseInputSources();
 	impl->document = std::move(candidate); impl->path = path.c_str(); impl->stamp = stamp;
+	impl->IndexApplication();
 	if (!same) {
 		impl->initialized = false;
 		UI_SettingsReleaseOwner(impl->settingsOwner); impl->settingsOwner = UI_SettingsCreateOwner();
@@ -891,7 +958,7 @@ bool idUserInterfaceRetained::InitFromFile(const char* qpath, bool rebuild, bool
 		[](const auto& field) { return field.first.starts_with("settings."); });
 	UI_SettingsConfirmationDocument(impl->settingsOwner,impl->document.Model());
 	impl->state.Set("name",path.c_str()); impl->lastError.clear();
-	if (!impl->interactiveSet) impl->interactive = HasControls(impl->document.Model().root) && !NonInteractive(impl->state);
+	if (!impl->interactiveSet) impl->interactive = impl->hasControls && !NonInteractive(impl->state);
 	RegisterLoaded(); RefreshThinking();
 	PrecacheImages(impl->document.Model().root);
 	common->Printf("RETAINED_GUI_LOADED %s\n",path.c_str());
@@ -899,12 +966,12 @@ bool idUserInterfaceRetained::InitFromFile(const char* qpath, bool rebuild, bool
 }
 
 const idDict& idUserInterfaceRetained::State() const { return impl->state; }
-void idUserInterfaceRetained::DeleteStateVar(const char* name) { if (impl->CallerState(name)) impl->state.Delete(name); }
-void idUserInterfaceRetained::SetStateString(const char* name, const char* value) { if (impl->CallerState(name)) impl->state.Set(name,value); }
-void idUserInterfaceRetained::SetStateBool(const char* name, bool value) { if (impl->CallerState(name)) impl->state.SetBool(name,value); }
-void idUserInterfaceRetained::SetStateInt(const char* name, int value) { if (impl->CallerState(name)) impl->state.SetInt(name,value); }
-void idUserInterfaceRetained::SetStateFloat(const char* name, float value) { if (impl->CallerState(name)) impl->state.SetFloat(name,value); }
-void idUserInterfaceRetained::SetStateVec4(const char* name, const idVec4& value) { if (impl->CallerState(name)) impl->state.SetVec4(name,value); }
+void idUserInterfaceRetained::DeleteStateVar(const char* name) { if (impl->CallerState(name)) { impl->state.Delete(name); impl->DirtyApplication(name); } }
+void idUserInterfaceRetained::SetStateString(const char* name, const char* value) { if (impl->CallerState(name)) impl->SetDictionary(name,value); }
+void idUserInterfaceRetained::SetStateBool(const char* name, bool value) { SetStateString(name,value ? "1" : "0"); }
+void idUserInterfaceRetained::SetStateInt(const char* name, int value) { SetStateString(name,va("%i",value)); }
+void idUserInterfaceRetained::SetStateFloat(const char* name, float value) { SetStateString(name,va("%f",value)); }
+void idUserInterfaceRetained::SetStateVec4(const char* name, const idVec4& value) { SetStateString(name,value.ToString()); }
 const char* idUserInterfaceRetained::GetStateString(const char* name, const char* fallback) const { return impl->state.GetString(name,fallback); }
 bool idUserInterfaceRetained::GetStateBool(const char* name, const char* fallback) const { return impl->state.GetBool(name,fallback); }
 int idUserInterfaceRetained::GetStateInt(const char* name, const char* fallback) const { return impl->state.GetInt(name,fallback); }
@@ -912,12 +979,13 @@ float idUserInterfaceRetained::GetStateFloat(const char* name, const char* fallb
 void idUserInterfaceRetained::StateChanged(int time, bool redraw) {
 	if (!impl->Prepare()) return;
 	StateValues values; std::string error;
-	if (!ApplicationState(impl->document.Model(),impl->state,values,error) ||
+	if (!impl->ReadApplication(values,error) ||
 		!impl->RuntimeView()->SetState(values,error,RetainedUI_PresentationTime())) impl->Error(error);
 	else {
+		impl->ApplicationCommitted();
 		impl->lastError.clear();
 		if (!impl->interactiveSet) {
-			const bool nextInteractive = HasControls(impl->document.Model().root) && !NonInteractive(impl->state);
+			const bool nextInteractive = impl->hasControls && !NonInteractive(impl->state);
 			if (nextInteractive != impl->interactive) openq4::NativeInputBeforeUiChange(0,impl->textBackend);
 			impl->interactive = nextInteractive;
 			if (!impl->interactive) impl->Quarantine();
@@ -931,6 +999,9 @@ bool idUserInterfaceRetained::GetPresentationValue(const char* name, idStr& valu
 	// Read-only renderer receipt for game-owned overlays. A failed draw must
 	// leave the legacy presentation available in the very same frame.
 	if (!idStr::Icmp(name,"__retained::drawSucceeded")) { value = impl->drawSucceeded ? "1" : "0"; return true; }
+	if (!idStr::Icmp(name,"__retained::layoutChanged")) {
+		value = impl->RuntimeView()->Statistics().layoutUpdates ? "1" : "0"; return true;
+	}
 	std::string exported;
 	if (impl->RuntimeView()->GetPresentationAlias(name,exported)) { value = exported.c_str(); return true; }
 	const std::string alias(name); const auto separator = alias.find("::");
@@ -1391,6 +1462,7 @@ bool idUserInterfaceRetained::ReadFromSaveGame(idFile* file) {
 	openq4::NativeInputBeforeUiChange(0,impl->textBackend);
 	impl->textDocument = textDocument;
 	impl->Quarantine(false,false,true); impl->state = state; impl->state.Set("name",Name());
+	impl->fullApplication = true;
 	impl->settingsClosePending = false;
 	// Save restoration suppresses automatic initialization just as legacy load
 	// does. Lifecycle/program side effects never replay while restoring a GUI.

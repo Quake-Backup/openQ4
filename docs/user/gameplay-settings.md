@@ -346,7 +346,11 @@ seta g_corpseRemoveDelayMP -1
 
 ## Gameplay Status Bar
 
-The new UI (`ui_retained 1`, the default) shows a centered ammo, health and armor
+The classic UI is the default (`ui_retained 0`) because the new UI still adds
+gameplay overhead. To try it, enter `seta ui_retained 1`; return to the default
+with `seta ui_retained 0`. Saved preferences from earlier versions are preserved.
+
+The optional new UI (`ui_retained 1`) shows a centered ammo, health and armor
 bar, with Marine and Strogg artwork matching the campaign. Multiplayer shows
 total ammo in the current weapon's color. Armor reaching zero leaves the other
 gauges in place.
@@ -366,20 +370,21 @@ delays your respawn.
 whether the objectives open while you hold the scores button or with one
 press, the HUD's opacity, and whether the damage direction indicator, the
 pickup messages and the weapon strip appear (these four apply to the Remastered
-and Minimal layouts). The same settings are console variables, saved
-automatically:
+and Minimal layouts), and Reduced Flashing, which works in every layout. The
+same settings are console variables, saved automatically:
 
 | Setting | Default | Range | Effect |
 | --- | --- | --- | --- |
 | `ui_hudLayout` | `1` | `0`–`3` | `1` Remastered layout, `2` Minimal (health, armor, ammunition and the crosshair, keeping prompts, chat and votes), `3` Competitive (multiplayer: a match bar at the top with both sides' scores, the timer and network quality, your team's health and armor at the left edge and a larger status bar), `0` Classic (the original Quake 4 positions) |
 | `ui_hudWidth` | `1` | `0`–`2` | How far edge HUD items spread on wide screens: `0` 16:9, `1` 21:9, `2` the full width |
-| `ui_hudScale` | `1` (`1.25` on Steam Deck) | `0.5`–`2` | HUD size, independent of menu size |
+| `ui_hudScale` | `1` (`1.25` on Steam Deck and with the [Couch profile](display-settings.md#television-viewing-couch-profile)) | `0.5`–`2` | HUD size, independent of menu size |
 | `ui_hudSafeInset` | `0` | `0`–`10` | Distance inward, as a percentage of the viewport |
 | `g_objectivesToggle` | `0` | `0`–`1` | Toggle Objectives: `0` shows the objectives while the scores button is held, `1` opens and closes them with each press (the Remastered display then shows a Close prompt) |
 | `ui_hudOpacity` | `1` | `0.25`–`1` | HUD Opacity: fades the whole HUD |
 | `ui_hudDamageDirection` | `1` | `0`–`1` | Damage Direction: `0` hides the indicator pointing toward damage |
 | `ui_hudPickups` | `1` | `0`–`1` | Pickup Messages: `0` hides the item lines |
 | `ui_hudWeaponStrip` | `1` | `0`–`1` | Weapon Strip: `0` keeps the strip of weapons hidden when you change weapon |
+| `ui_reducedFlashing` | `0` | `0`–`1` | Reduced Flashing: `1` keeps the damage direction indicator and the vehicle hit glow at 40% at most, dims the white flash of teleporters and multiplayer spawns, and drops the red flash when you die |
 
 For example, `ui_hudScale 1.25` enlarges the HUD by 25%. On narrow screens the
 status bar's size is limited to keep every gauge visible. `ui_retained 0`

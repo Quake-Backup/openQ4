@@ -25,7 +25,7 @@ from remastered_hud_base import (AND, NOT, OR, S, U, HudDocument, anchor, beyond
                                  cancel, pts_path,
                                  rgb, rounded_rect, sel, shadowed, shear_group, sheared_points, stroke, svg_path, text_box,
                                  tr, transform_value, u, vec)
-from remastered_hud_groups import boss_bar, missile_chevron, notices, transmission
+from remastered_hud_groups import boss_bar, flash_cap, missile_chevron, notices, transmission
 from remastered_hud_mp import bound_label, flex_row, glyph_chip, label, plate_vec
 from remastered_hud_status import BACK, ST_BACK, backing_nodes, clip_polygon, full, scaled
 
@@ -301,7 +301,7 @@ def hit_flash(doc: HudDocument) -> dict:
         paint = {"type": "linear", "from": a, "to": b, "stops": stops}
         path = rect_path("glow", paint)
         path["blend"] = "additive"
-        node = vec(ident, [path], props)
+        node = vec(ident, [path], {**props, "opacity": num(1)})
         # A strip held by its trailing or bottom edge drops the full box's
         # leading and top offsets, which would otherwise win.
         for side, opposite in (("right", "left"), ("bottom", "top")):
@@ -317,6 +317,8 @@ def hit_flash(doc: HudDocument) -> dict:
         strip("vhit-b", {**ui.absolute(left=0, bottom=0, height=deep_y), "width": ui.length(100, "%")}, [0, deep_y], [0, 0]),
     ]
     group = full("vhit", strips, opacity=num(0))
+    # Reduced flashing (13.10) caps it at 0.40.
+    flash_cap(doc, [node["id"] for node in strips], 1)
     doc.timeline("vhit-flash", 500, [tr("vhit", "opacity", [(0, num(1)), (500, num(0))])], essential=True)
     doc.on("vehicleHit", play("vhit-flash"))
     return group

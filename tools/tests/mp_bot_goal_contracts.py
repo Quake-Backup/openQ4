@@ -52,7 +52,7 @@ def main() -> None:
     require(source, "const bool objectiveAvoided", "objective avoid cooldown")
     require(
         source,
-        "const bool enemyMovementAvailable = currentFoe && !IsAvoided( currentFoe );",
+        "const bool enemyMovementAvailable = currentFoe && !IsAvoided( currentFoe ) &&",
         "enemy movement avoid cooldown",
     )
     require(source, "if ( enemyMovementAvailable && currentFoe == lastAttacker", "attacker avoid cooldown")

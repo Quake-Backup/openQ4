@@ -101,8 +101,11 @@ public:
 
 	void				EnableClipping(bool b) { enableClipping = b; };
 	void				SetFont( int num );
-	void BeginHudCapture(std::vector<openq4::ui::HudPrimitive>& output) { hudCapture = &output; }
-	void EndHudCapture() { hudCapture = nullptr; }
+	void BeginHudCapture(std::vector<openq4::ui::HudPrimitive>& output) { hudCapture = &output; hudDiscard = false; }
+	void BeginHudDiscard() { hudCapture = nullptr; hudDiscard = true; }
+	void EndHudCapture() { hudCapture = nullptr; hudDiscard = false; }
+	void CaptureLegacyText(const char* text, const char* family, float scale, float width, float height,
+		int align, bool clip, std::vector<openq4::ui::HudPrimitive>& output);
 
 	void				SetOverStrike(bool b) { overStrikeMode = b; }
 
@@ -147,6 +150,7 @@ private:
 	std::vector<openq4::ui::HudPrimitive>* hudCapture = nullptr;
 	idVec4 hudColour = idVec4(1,1,1,1);
 	bool hudGlyph = false;
+	bool hudDiscard = false;
 	void SetDrawColor(const idVec4& colour);
 	bool CaptureHud(const idDrawVert* vertices, const idMaterial* material);
 	struct embeddedIcon_t {

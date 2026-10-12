@@ -14,6 +14,7 @@ import xml.etree.ElementTree as ET
 import build_retained_screens as ui
 from build_retained_weapon_wheel import svg_commands
 from build_retained_status_bar import BACK, FILL, ST_BACK, ST_FILL
+from classic_hud_art import gauge_art, gauge_rim
 
 ROOT = Path(__file__).resolve().parents[2]
 OUT = ROOT/'content/baseoq4/pak0/guis/hud'
@@ -98,7 +99,7 @@ def svg_paths(item):
     return paths
 
 def build():
-    art={};materials={};images=[]
+    art={};materials={};images=[];image_aliases={}
     def add(name,paths,aliases=()):
         paths=copy.deepcopy(paths)
         for i,p in enumerate(paths):p['id']='p'+str(i)
@@ -153,13 +154,18 @@ def build():
     add('scanlines',[path(''.join(f'M0 {y}H128V{y+1}H0Z' for y in range(0,128,6)),fill=[1,1,1,.25])])
     add('noise',[path(''.join(f'M{x} {y}H{x+3+(x+y)%9}V{y+1}H{x}Z' for y in range(0,128,7) for x in range((y*11)%13,128,17)),fill=[1,1,1,.22])])
     add('waveform',[path('M0 64H12L16 38L20 80L24 60L28 69L35 18L39 101L44 58L49 72L57 42L60 80L65 62L70 64L73 20L79 98L83 59L89 73L95 44L99 89L104 62H128',fill=None,stroke=WHITE,width=1.5,blend='additive')])
-    add('ekg',[path('M0 64H23L30 53L37 64H46L48 74L52 5L56 90L59 64H76L87 40H90L101 64H105L112 52L119 64H128',fill=None,stroke=WHITE,width=1.5,blend='additive')])
+    marine_fill, marine_armor, marine_ekg = gauge_art(path)
+    strogg_fill, strogg_armor, strogg_ekg = gauge_art(path, True)
+    add('ekg', marine_ekg)
+    add('strogg-ekg', strogg_ekg)
     gradient=path(rect);gradient['fill']=ui.linear([0,0],[{'fraction':1},0],[[0,[1,1,1,0]],[1,WHITE]])
     add('gradient',[gradient])
     add('marine-back',[path(BACK,(0,0,125,59))])
-    add('marine-fill',[path(FILL,(0,0,125,59))])
+    add('marine-fill',marine_fill)
+    add('marine-armor',marine_armor)
     add('strogg-back',[path(ST_BACK,(0,0,129,67))])
-    add('strogg-fill',[path(ST_FILL,(0,0,129,67))])
+    add('strogg-fill',strogg_fill)
+    add('strogg-armor',strogg_armor)
     add('weapon-strip',[path('M2 2H123L127 6V126H5L1 122V3Q1 2 2 2Z')])
     add('pickup',[path('M0 0H126Q128 0 128 2V112L112 128H0Z')])
     # Preserve the transparent margins within the authored 200x50 / 100x50
@@ -180,7 +186,29 @@ def build():
     add('edge-glow',[path('M1 1H127V127H1Z',fill=None,stroke=[1,1,1,.1],width=7,blend='additive'),
         path('M1 1H127V127H1Z',fill=None,stroke=[1,1,1,.3],width=1,blend='additive')])
     add('damage',[path('M0 0H128V128H116V20H0Z',fill=[1,1,1,.6],blend='additive')])
-    add('direction',[path('M0 0H128L64 46Z',blend='additive')])
+    # The legacy GUI rotates a full-canvas texture. Preserve its transparent
+    # margins: a soft dome centred 151 u above the aim point, not a triangle
+    # stretched across the whole viewport. Linear-painted sectors provide an
+    # elliptical gradient in the catalog, whose bridge renders paths directly
+    # without document-node transforms. Adjacent sectors agree on each radius.
+    dome=[]
+    for i in range(64):
+        a,b=2*math.pi*i/64,2*math.pi*(i+1)/64
+        x0,y0=320+150*math.cos(a),89+52*math.sin(a)
+        x1,y1=320+150*math.cos(b),89+52*math.sin(b)
+        p=path(f'M320 89L{x0} {y0}L{x1} {y1}Z',(0,0,640,480),blend='additive')
+        # Work in the catalog's square coordinates, including the ellipse's
+        # anisotropic radii, so every point on the outer chord is transparent.
+        dx,dy=(x1-x0)/640,(y1-y0)/480
+        nx,ny=dy,-dx
+        mx,my=((x0+x1)/2-320)/640,((y0+y1)/2-89)/480
+        reach=(mx*nx+my*ny)/(nx*nx+ny*ny)
+        p['fill']=ui.linear([{'fraction':.5},{'fraction':89/480}],
+                            [{'fraction':.5+nx*reach},{'fraction':89/480+ny*reach}],
+                            [[0,WHITE],[1,[1,1,1,0]]])
+        dome.append(p)
+    add('direction',dome)
+    add('direction-chevron',[path('M275 152L320 126L365 152L320 140Z',(0,0,640,480),blend='additive')])
     add('ring',[path('M64 4A60 60 0 1 0 64 124A60 60 0 1 0 64 4Z',fill=None,stroke=WHITE,width=1.5)])
     add('scope-quadrant',[path('M128 3C59 3 3 59 3 128 M128 12C65 12 12 65 12 128 M48 8V20 M8 48H20 M94 0V12 M0 94H12',fill=None,stroke=WHITE,width=1.5)])
     add('scope-glow',[path('M128 3C59 3 3 59 3 128',fill=None,stroke=[1,1,1,.25],width=9,blend='additive')])
@@ -287,12 +315,12 @@ def build():
         'static1':'noise','strogg/data':'scanlines','strogg/doorgui_inner_r':'ring','strogg/doorgui_outer_r':'ring','strogg/genericseal_dot':'hex',
         'strogg/scrolltext1fast':'scanlines','strogg/scrolltext2':'scanlines','warnbar1':'scanlines'}
     hud={
-        'arbar':'marine-fill','aud_wavbg':'rounded','backbar':'marine-back','backbar_add':'marine-back',
-        'ctf_bgbar':'plate','ctf_bgbar2':'plate','directional_hit':'direction','directional_hit2':'direction','ekg':'ekg',
+        'arbar':'marine-armor','aud_wavbg':'rounded','backbar':'marine-back','backbar_add':'marine-back',
+        'ctf_bgbar':'plate','ctf_bgbar2':'plate','directional_hit':'direction','directional_hit2':'direction-chevron','ekg':'ekg',
         'ffa_bgbar':'rounded','ffa_bgbar2':'rounded','flatbedbar':'flatbed','flatbededge':'flatbed',
         'medchange_edge':'med-edge','medchange_hex':'hex','mp_waveform':'waveform','obj_btn1':'frame','obj_btn2':'frame','obj_btn3':'frame','obj_btn4':'frame',
-        'pickupbar':'pickup','powerup_bgbar':'rounded','s_arbar':'strogg-fill','s_backbar':'strogg-back','s_backbar_add':'strogg-back',
-        's_boss_healthbar':'boss-health','s_boss_shieldbar':'boss-shield','s_bossbar':'boss-back','s_ekg':'ekg','s_hudstatic':'noise','s_valbar':'strogg-fill','s_waveform':'waveform',
+        'pickupbar':'pickup','powerup_bgbar':'rounded','s_arbar':'strogg-armor','s_backbar':'strogg-back','s_backbar_add':'strogg-back',
+        's_boss_healthbar':'boss-health','s_boss_shieldbar':'boss-shield','s_bossbar':'boss-back','s_ekg':'strogg-ekg','s_hudstatic':'noise','s_valbar':'strogg-fill','s_waveform':'waveform',
         'trambar':'tram','tramedge':'tram','valbar':'marine-fill','veh_arbar':'marine-fill','veh_backbar':'marine-back','veh_backbar2':'vehicle-panel','veh_backbar2a':'vehicle-panel',
         'veh_valbar':'marine-fill','veh_xdir1':'direction','veh_xdir2':'direction','waveform':'waveform','wsbar':'weapon-strip','wsbarglow':'rounded-frame',
         'reticles/airdef_loadbar':'scanlines','reticles/airdef_loadbar2':'scanlines','reticles/nailgun_scope':'scope-quadrant',
@@ -326,10 +354,7 @@ def build():
         shape['fill']=ui.linear([0,0],[{'fraction':1},0],[[0,[1,1,1,.87]],[.34,[1,1,1,.5]],[.81,[1,1,1,.15]],[1,[1,1,1,.1]]])
         add(kind+'-slab',[shape],['gfx/guis/hud/'+kind+'_bgbar','gfx/guis/hud/'+kind+'_bgbar2'])
     for material,base in (('backbar_add','marine-back'),('s_backbar_add','strogg-back')):
-        # The low-health warning is light at the plate edge; black is unlit.
-        p=copy.deepcopy(art[base]['paths'][0]);p.pop('fill',None)
-        p['stroke']=ui.stroke(ui.solid([1,1,1,.45]),2,minimum=0,join='round',cap='round');p['blend']='additive'
-        add(base+'-glow',[p],['gfx/guis/hud/'+material])
+        add(base+'-glow',gauge_rim(path, base=='strogg-back'),['gfx/guis/hud/'+material])
     aliases('rounded','gfx/guis/hud_rev3/radiobar','gfx/guis/soundmeter/audiobg')
     aliases('rounded-frame','gfx/guis/soundmeter/audioverlay','gfx/guis/vehicles/mdisp_edge','gfx/guis/vehicles/mdisp_btns')
     aliases('solid','gfx/guis/vehicles/bar2')
@@ -380,9 +405,23 @@ def build():
     # complex imagery; they remain installed-content pictures, never copied.
     images += ['gfx/guis/vehicles/mdisp_main','gfx/guis/vehicles/mdisp_mech','gfx/guis/monitors/marine/mcc13_bigmap','gfx/guis/monitors/marine/mcc13_key','gfx/guis/mainmenu/q4text']
     images += ['gfx/guis/mainmenu/e3_'+n for n in ('0','0_add','1','2')]
-    # Named award stencils remain distinct rather than a generic badge.
-    award={'assist':'item_health','capture':'ctf_flag','combo_kill':'item_doubler','defense':'item_guard','excellent':'sb_doubler','humiliation':'gun_gauntlet','impressive':'item_railgun','rampage':'item_quaddamage'}
-    for n,a in award.items():aliases(a,'gfx/mp/awards/'+n)
+    # Complex earned medals are explicit bitmap exceptions (design section 6).
+    # Register every stock award during level precache, including Holy Shit.
+    images += ['gfx/mp/awards/'+n for n in ('assist','capture','combo_kill','defense',
+               'excellent','holy_shit','humiliation','impressive','rampage')]
+    # The Remastered Strogg gauge's complex grain is the installed stock
+    # texture under an editable vector mask, not a bundled extracted asset.
+    images += ['q4-add/gfx/guis/hud/s_static']
+    # The ammo backdrop uses the original side-view weapon bitmap, including
+    # its transparent margins. The user explicitly requested this exception.
+    weapon_images = {name: symbol for name, symbol in materials.items() if symbol.startswith('gun_')}
+    for name, symbol in weapon_images.items():
+        del materials[name]
+        canonical = name.removesuffix('.tga').removesuffix('_colored')
+        for alias in (name, name if name.endswith('.tga') else name + '.tga'):
+            images.append(alias)
+            if alias != canonical:
+                image_aliases[alias] = canonical
     # Rhino is maintained with the other first-party source symbols.
     if 'radio_rhino' in SYMBOLS.get('icons',{}):aliases('radio_rhino','gfx/guis/hud/radio_rhino')
     else:raise ValueError('radio_rhino is required in hud_symbols.json')
@@ -422,9 +461,9 @@ def build():
            'vehicles/hud','vehicles/airdef_cannon','vehicles/medchange','vehicles/mdisp','vehicles/strogg_noise','vehicles/blank']
     expansion=['q4xhud','q4xhud_strogg','q4x_cannon_hud','dropshiphealth','mcchealth','introcinematic',
                'vehicles/speederplayerhud','vehicles/gev_hud','vehicles/mcc/cannonplayerhud','vehicles/airassault/turretplayerhud']
-    registry={'version':1,'roots':['guis/'+n+'.gui' for n in roots],'materials':dict(sorted(materials.items())),'images':sorted(images),
+    registry={'version':1,'roots':['guis/'+n+'.gui' for n in roots],'materials':dict(sorted(materials.items())),'images':sorted(set(images)),
               'expansionRoots':['guis/'+n+'.gui' for n in expansion],
-              'imageAliases':{'gfx/guis/mainmenu/e3_0_add':'q4-add/gfx/guis/mainmenu/e3_0'}}
+              'imageAliases':{'gfx/guis/mainmenu/e3_0_add':'q4-add/gfx/guis/mainmenu/e3_0', **dict(sorted(image_aliases.items()))}}
     return {'artwork.q4ui':document,'coverage.json':registry}
 
 def main():

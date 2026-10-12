@@ -6,7 +6,7 @@ screens, hand-offs, session verbs, loading selection, the campaign selectors
 and the status report) against counted engine/UI doubles, and checks the
 source contracts that keep the gate complete:
 
-* ui_retained defaults to 1 and is archived; while it is 0 no retained
+* ui_retained defaults to 0 and is archived; while it is 0 no retained
   screen is reachable. ui_retainedSystem opts into the SYSTEM page, which
   ui_retained includes only once it offers every setting of the stock SYSTEM
   page and each one works there: the list of settings it lacks matches the
@@ -63,6 +63,8 @@ struct idStr : std::string {
     idStr() = default;
     idStr(const std::string& value) : std::string(value) {}
     idStr& operator=(const char* value) { assign(value); return *this; }
+    operator const char*() const { return c_str(); }
+    void Clear() { clear(); }
     int Length() const { return static_cast<int>(size()); }
     static int Icmp(const char* a, const char* b) {
         while (*a && *b && std::tolower(*a) == std::tolower(*b)) { ++a; ++b; }
@@ -104,8 +106,12 @@ struct CVarSystem {
     std::map<std::string, std::string> strings;
     const char* GetCVarString(const char* name) const { const auto found = strings.find(name); return found == strings.end() ? "" : found->second.c_str(); }
     bool GetCVarBool(const char* name) const { return std::string(GetCVarString(name)) == "1"; }
+    int GetCVarInteger(const char* name) const { return std::atoi(GetCVarString(name)); }
+    void SetCVarInteger(const char* name, int value) { strings[name] = std::to_string(value); }
+    void SetCVarBool(const char* name, bool value) { strings[name] = value ? "1" : "0"; }
 } cvarSystemObject, *cvarSystem = &cvarSystemObject;
 struct FileSystem {
+    const char* GetActiveGameDir() const { return "baseoq4"; }
     std::set<std::string> files;
     std::map<std::string, std::set<std::string>> gameDirFiles; // what each game directory itself supplies
     idFile file; int opens = 0, closes = 0;
@@ -250,6 +256,8 @@ public:
     ID_TIME_T retainedNewestSave = 0;
     idUserInterface* guiRetainedReleasing = nullptr; int retainedReleaseUntil = 0;
     idUserInterface* retainedSubpageFrom = nullptr; bool retainedSubpageDeeper = false; int retainedSubpageBegan = 0, retainedSubpageUntil = 0;
+    int retainedDetailTarget = 0; idStr retainedDetailCampaign;
+    bool OpenRetainedCampaignSkill(); void BeginRetainedCampaignSkill(idUserInterface*, const char*, bool = false);
     idUserInterface* guiLoading = nullptr; bool retainedLoadingActive = false;
     int retainedLoadingTip = -1, retainedLoadingTipSlot = 0, retainedLoadingTipAt = 0; void PublishRetainedLoadingTip(bool);
     void BeginRetainedSubpage(idUserInterface*, bool); void UpdateRetainedSubpage(); bool RetainedSubpageEvent(const sysEvent_t*);
@@ -283,7 +291,8 @@ public:
     void HandleRetainedSessionRequest(idUserInterface*, const char*);
     void OpenCampaignSelector(bool);
     std::vector<std::string> selected; int menus = 0;
-    void SelectCampaign(const char* campaign) { selected.push_back(campaign); }
+    int starts = 0;
+    void SelectCampaign(const char* campaign, bool start = false) { selected.push_back(campaign); if (start) ++starts; else OpenRetainedCampaignSkill(); }
     void StartMenu() { ++menus; guiActive = guiMainMenu; }
     void SetGUI(idUserInterface* gui, void*) { guiActive = gui; }
     idUserInterface* SelectRetainedLoadingGui(idUserInterface*, bool);
@@ -314,7 +323,7 @@ public:
 MAIN = r'''
 static const char* const DOCUMENTS[] = {"guis/menu/title.q4ui", "guis/menu/pause.q4ui", "guis/menu/pause_strogg.q4ui", "guis/loading/loading.q4ui",
     "guis/menu/singleplayer.q4ui", "guis/menu/campaigns.q4ui", "guis/menu/settings/system.q4ui", "guis/menu/mp_escape.q4ui",
-    "guis/menu/mp_welcome.q4ui", "guis/menu/mp_summary.q4ui"};
+    "guis/menu/mp_welcome.q4ui", "guis/menu/campaign_skill.q4ui", "guis/menu/mp_summary.q4ui"};
 // The documents that fell back to their stock screens, in order.
 static std::vector<std::string> Stock(const idSessionLocal& session) {
     return std::vector<std::string>(session.retainedStock.begin(), session.retainedStock.end());
@@ -535,6 +544,33 @@ int main() {
         CHECK(loading.state["loading_tip_a"] != first && loading.state["loading_tip_b"].empty() && loading.named.back() == "tipA");
         loading.state["loading_mp"] = "1"; const size_t events = loading.named.size(); commonObject.time += 6000;
         s.PublishRetainedLoadingTip(false); s.PublishRetainedLoadingTip(true); CHECK(loading.named.size() == events);
+    }
+    {   // Fourth level: both campaigns, cancellation, draft settings and Start.
+        auto s = Session(true); s.OpenCampaignSelector(true); auto* parent = s.guiActive;
+        cvarSystemObject.SetCVarInteger("g_skill",1);
+        s.HandleRetainedSessionRequest(parent,"campaignQuake4");
+        CHECK(s.retainedDetailTarget == 1 && s.guiActive == parent && parent->named.back() == "detailEnterQuake4");
+        sysEvent_t back; back.evType=SE_KEY; back.evValue=K_ESCAPE; back.evValue2=1;
+        commonObject.time += 120; CHECK(s.RetainedSubpageEvent(&back));
+        CHECK(s.retainedDetailTarget == 0 && s.guiActive == parent && parent->named.back() == "detailReverse150");
+        s.HandleRetainedSessionRequest(parent,"campaignAwakening");
+        CHECK(parent->named.back() == "detailEnterAwakening");
+        commonObject.time += 349; s.UpdateRetainedSubpage(); CHECK(s.guiActive == parent);
+        commonObject.time += 1; s.UpdateRetainedSubpage(); auto* skill = s.guiActive;
+        CHECK(std::string(skill->Name()) == "guis/menu/campaign_skill.q4ui" && s.selected.back() == "awakening");
+        s.HandleRetainedSessionRequest(skill,"campaignSkill4"); s.HandleRetainedSessionRequest(skill,"campaignSkillTurbo");
+        CHECK(skill->State().GetInt("skill") == 4 && skill->State().GetBool("turbo") && cvarSystemObject.GetCVarInteger("g_skill") == 1);
+        s.HandleRetainedSessionRequest(skill,"campaignSkillBack"); CHECK(s.retainedDetailTarget == 2);
+        commonObject.time += 300; s.UpdateRetainedSubpage(); CHECK(s.guiActive == parent && cvarSystemObject.GetCVarInteger("g_skill") == 1);
+        cvarSystemObject.strings["ui_retainedReducedMotion"]="1";
+        s.HandleRetainedSessionRequest(parent,"campaignQuake4"); CHECK(s.guiActive == skill && !s.retainedSubpageFrom);
+        CHECK(skill->State().GetInt("skill") == 1 && !skill->State().GetBool("turbo"));
+        s.HandleRetainedSessionRequest(skill,"campaignSkill3"); s.HandleRetainedSessionRequest(skill,"campaignSkillTurbo");
+        s.HandleRetainedSessionRequest(skill,"campaignSkillStart");
+        CHECK(s.starts == 1 && cvarSystemObject.GetCVarInteger("g_skill") == 3 && cvarSystemObject.GetCVarBool("g_turboMode"));
+        auto disabled = Session(false); CHECK(!disabled.OpenRetainedCampaignSkill());
+        auto missing = Session(true); fileSystemObject.files.erase("guis/menu/campaign_skill.q4ui");
+        CHECK(!missing.OpenRetainedCampaignSkill());
     }
     {   // Single Player and its Campaign sub-page (spec 1.10): the leaving document
         // plays its half, the other presents at the hand-over (350 ms deeper, 300 ms
@@ -2475,9 +2511,9 @@ def main() -> int:
     session = (ROOT / 'src/framework/Session.cpp').read_text(encoding='utf-8')
     adapter = (ROOT / 'src/ui/UserInterfaceRetained.cpp').read_text(encoding='utf-8')
 
-    # The gate itself: on by default and archived, so a player's choice of the
-    # stock screens persists.
-    assert 'idCVar ui_retained( "ui_retained", "1", CVAR_GUI | CVAR_BOOL | CVAR_ARCHIVE, ' in menu, 'ui_retained must default to 1 and be archived'
+    # The gate itself: off by default while performance work remains open;
+    # archive an explicit player preference for either interface.
+    assert 'idCVar ui_retained( "ui_retained", "0", CVAR_GUI | CVAR_BOOL | CVAR_ARCHIVE, ' in menu, 'ui_retained must default to 0 and be archived'
     assert 'ui_retainedSystem( "ui_retainedSystem", "0", CVAR_GUI | CVAR_BOOL' in menu
     # The opt-ins and the runtime's test settings last until the player quits,
     # and survive a multiplayer join: any other unarchived CVar is a cheat,
@@ -2515,7 +2551,7 @@ def main() -> int:
         for match in re.finditer(r'"([^"]+\.q4ui)"', source):
             path = match.group(1)
             allowed = {'guis/menu/settings/system.q4ui', 'guis/menu/title.q4ui', 'guis/menu/pause.q4ui', 'guis/menu/pause_strogg.q4ui',
-                       'guis/loading/loading.q4ui', 'guis/menu/singleplayer.q4ui', 'guis/menu/campaigns.q4ui',
+                       'guis/loading/loading.q4ui', 'guis/menu/singleplayer.q4ui', 'guis/menu/campaigns.q4ui', 'guis/menu/campaign_skill.q4ui',
                        'guis/menu/mp_escape.q4ui', 'guis/menu/mp_welcome.q4ui', 'guis/menu/mp_summary.q4ui'}
             assert path in allowed, f'{name} names an ungated retained document {path}'
     # Every retained document loads through FindRetainedGui, which falls back to
@@ -2661,15 +2697,18 @@ def main() -> int:
     value_allowlist = cpp_allowlist(adapter, 'bool SessionMenuValueCommand(')
     player_settings = player_setting_rules(adapter)
     handled = set(re.findall(r'\{ "([A-Za-z][A-Za-z0-9]*)",\s+"main_b_', menu)) | set(re.findall(r'!idStr::Icmp\( request, "([A-Za-z][A-Za-z0-9]*)" \)', menu))
+    assert 'for ( int i = 0; i < 5; ++i ) if ( !idStr::Icmp( request, va( "campaignSkill%d", i ) ) )' in menu
+    handled.update(f'campaignSkill{i}' for i in range(5))
     assert allowlist == handled, f'allowlist {sorted(allowlist)} differs from session handlers {sorted(handled)}'
     for relative in ('content/baseoq4/pak0/guis/menu/title.q4ui', 'content/baseoq4/pak0/guis/menu/pause.q4ui',
                      'content/baseoq4/pak0/guis/menu/pause_strogg.q4ui', 'content/baseoq4/pak0/guis/loading/loading.q4ui',
                      'content/baseoq4/pak0/guis/menu/singleplayer.q4ui', 'content/baseoq4/pak0/guis/menu/campaigns.q4ui',
-                     'content/baseoq4/pak0/guis/menu/mp_escape.q4ui',
+                     'content/baseoq4/pak0/guis/menu/mp_escape.q4ui', 'content/baseoq4/pak0/guis/menu/campaign_skill.q4ui',
                      'content/baseoq4/pak0/guis/menu/mp_summary.q4ui'):
         text = (ROOT / relative).read_text(encoding='utf-8')
         document = json.loads(re.sub(r'^\s*//.*$', '', text, flags=re.M))
-        assert document.get('canvas') == {'height': 720}, relative
+        centered = '/loading/' in relative or any(name in relative for name in ('singleplayer.q4ui','campaigns.q4ui','campaign_skill.q4ui'))
+        assert document.get('canvas') == ({'height': 720, 'minWidth': 960} if centered else {'height': 720}), relative
         if 'pause' in relative or 'mp_escape' in relative or 'mp_summary' in relative:
             assert [child['id'] for child in document['root']['children']] == ['scene-softfocus', 'scrim', 'chrome'], relative
         if 'pause' in relative:
@@ -2703,6 +2742,7 @@ def main() -> int:
         'static bool Session_RetainedHomePopup(', 'static const char *Session_RetainedHomeMissingPage(',
         'static void Session_PublishRetainedTitleState(', 'idUserInterface *idSessionLocal::FindRetainedGui(',
         'bool idSessionLocal::RetainedSystemAvailable(', 'void idSessionLocal::OpenCampaignSelector(',
+        'bool idSessionLocal::OpenRetainedCampaignSkill(', 'void idSessionLocal::BeginRetainedCampaignSkill(',
         'bool idSessionLocal::RetainedHomeInputBlocked(',
         'void idSessionLocal::UpdateRetainedHome(', 'idUserInterface *idSessionLocal::RetainedHomeDocument(',
         'bool idSessionLocal::RetainedPauseIsStrogg(', 'void idSessionLocal::RetainedHomeFrameEvent(',

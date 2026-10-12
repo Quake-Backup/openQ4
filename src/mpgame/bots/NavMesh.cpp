@@ -30,9 +30,10 @@ rvNavMesh					navMesh;
 #define NAV_CLIP_MASK			( CONTENTS_SOLID | CONTENTS_PLAYERCLIP )
 
 static const float	NAV_WALKABLE_NORMAL_Z	= 0.7f;		// ~45 degrees, matches idPhysics_Player
-// Furthest one-way ledge drop we will route over.  Multiplayer falls are never
-// fatal - CrashLand's fatal threshold is off and a 375-unit fall costs 10 HP -
-// and stock maps hide power items behind 224-576 unit drops (the Red Armor in
+// Furthest one-way ledge drop we will route over. Multiplayer disables the
+// fatal damage tier, but a 375-unit fall still costs 10 HP and can kill an
+// injured player; selected routes also obey that bot's landing-damage limit.
+// Stock maps hide power items behind 224-576 unit drops (the Red Armor in
 // q4ctf6's sunken centre, the Quad in q4xdm13's basin), so 192 left those
 // unreachable and turned ordinary drops into detours up to fifteen times
 // longer.  Kill pits below this are refused by their own hazard volumes.
@@ -80,10 +81,21 @@ static const float	NAV_GAP_TAKEOFF_SLACK	= 16.0f;
 static const float	NAV_GAP_MAX_FALL		= 128.0f;	// landing at most this far below the takeoff
 static const float	NAV_GAP_PENALTY			= 128.0f;	// a gap jump can be missed; prefer walking round
 static const float	NAV_GAP_RUNUP			= 56.0f;	// straight approach a bot takes before a gap jump
+static const float	NAV_LANDING_SUPPORT		= 8.0f;		// support probes around an airborne landing's centre
 static const float	NAV_TRANSPORT_GOAL_REACH = 64.0f;	// a goal touching a pad ends its route this close
 static const float	NAV_SWEEP_SLACK			= 2.0f;		// a sweep stopped this short of its end arrived
+static const float	NAV_GOAL_TOUCH_REACH	= 24.0f;	// a box stopped this near a goal overlaps what stands there
+static const float	NAV_NEAR_GOAL_REACH		= 128.0f;	// a pursued player is approached to within this of its spot
+static const float	NAV_PAD_STEP_SECONDS	= 0.016f;	// pad arc integration step: one multiplayer frame
+static const int	NAV_PAD_MAX_STEPS		= 625;		// ten seconds of flight before a pad arc is given up
+static const float	NAV_PAD_STEER_REACH		= 256.0f;	// floors this far round a pad's apex are candidate landings
+static const float	NAV_PAD_LEVEL_BAND		= 48.0f;	// candidates closer in height than this share a floor level
+static const int	NAV_PAD_MAX_LEVELS		= 6;
+static const float	NAV_PAD_LANDING_REACH	= 32.0f;	// a steered flight this close to its candidate came down on it
+static const float	NAV_PAD_AIR_ACCELERATE	= 1.18f;	// PM_AIRACCELERATE_MP: what a steering player adds in flight
 static const int	NAV_MAX_LANDMARKS		= 8;
 static const int	NAV_LANDMARK_STRIDE		= 2 * NAV_MAX_LANDMARKS;	// floats per node row: from, to per landmark
+static const int	NAV_PRICING_MIN_BUDGET	= 2048;		// exact-search expansions one goal decision may spend
 // The condensation closure is components^2 bits; past this it is skipped and
 // cross-component queries fall back to searching.
 static const int	NAV_MAX_CLOSURE_COMPONENTS = 4096;
@@ -96,6 +108,27 @@ static const int	navNeighbourY[8] = { 0,  1,  1,  1,  0, -1, -1, -1 };
 static idClipModel *		navAgentModel = NULL;
 static idTraceModel			navAgentTrace;
 static idBounds				navAgentBounds;
+static idTraceModel			navSupportTrace;	// the middle of the agent's footprint, NAV_LANDING_SUPPORT each way
+static idBounds				navSupportBounds;
+
+/*
+================
+NavCreateAgentTrace
+
+Match idPlayer::SetClipModel, including the server's cylinder side count and
+alignment.  A box can balance on a diagonal platform corner that the default
+eight-sided player hull never touches, creating a fatal drop onto empty air.
+================
+*/
+static idTraceModel NavCreateAgentTrace( const idBounds &bounds ) {
+	int sides = pm_usecylinder.GetInteger();
+	const bool alternateAlignment = sides > 0;
+	sides = idMath::Abs( sides );
+	if ( sides >= 1 ) {
+		return idTraceModel( bounds, sides < 3 ? 8 : sides, alternateAlignment );
+	}
+	return idTraceModel( bounds );
+}
 
 /*
 ================
@@ -122,6 +155,24 @@ static bool NavTravelVolumeBounds( idEntity *ent, idBounds &bounds ) {
 
 	bounds = ent->GetPhysics()->GetAbsBounds();
 	return true;
+}
+
+/*
+================
+NavTravelVolumeClip
+
+The clip model a pad or a teleporter tests its contacts against, for the exact
+touch test its bounding box only approximates.
+================
+*/
+static const idClipModel *NavTravelVolumeClip( idEntity *ent ) {
+	if ( !ent ) {
+		return NULL;
+	}
+	if ( ent->IsType( rvJumpPad::GetClassType() ) ) {
+		return static_cast<rvJumpPad *>( ent )->GetForceFieldClipModel();
+	}
+	return ent->GetPhysics() ? ent->GetPhysics()->GetClipModel() : NULL;
 }
 
 /*
@@ -163,6 +214,29 @@ static bool NavPointInLethalLiquid( const idVec3 &point ) {
 }
 // openQ4 END
 
+// CrashLand squares the downward impact speed, then discounts water. A
+// nodamage contact or water above the head suppresses fall damage entirely.
+static float NavLandingImpactDelta( const trace_t &trace, const idVec3 &velocity, const idVec3 &gravity ) {
+	const float g = gravity.Length();
+	if ( g <= 1.0f || ( trace.c.material && ( trace.c.material->GetSurfaceFlags() & SURF_NODAMAGE ) ) ) {
+		return 0.0f;
+	}
+	const idVec3 down = gravity / g;
+	float delta = Square( Max( 0.0f, velocity * down ) ) * 0.0001f;
+	const idBounds &bounds = rvNavMesh::GetAgentBounds();
+	if ( gameLocal.LiquidContentsAtPoint( trace.endpos - down * ( bounds[0].z + 1.0f ), NULL ) & MASK_WATER ) {
+		if ( gameLocal.LiquidContentsAtPoint( trace.endpos - down * ( ( bounds[1].z - bounds[0].z ) * 0.5f ), NULL ) & MASK_WATER ) {
+			if ( gameLocal.LiquidContentsAtPoint( trace.endpos - down * ( bounds[1].z - 1.0f ), NULL ) & MASK_WATER ) {
+				return 0.0f;
+			}
+			delta *= 0.25f;
+		} else {
+			delta *= 0.5f;
+		}
+	}
+	return delta;
+}
+
 /*
 ================
 NavHurtDamagePerTouch
@@ -202,12 +276,13 @@ no-touch and scripted doors remain obstructions, as does every other solid
 entity: movers are reconsidered by route searches at run time.
 ================
 */
-static bool NavAgentTranslation( trace_t &trace, const idVec3 &start, const idVec3 &end ) {
+static bool NavTraceTranslation( trace_t &trace, const idVec3 &start, const idVec3 &end,
+								 const idTraceModel &model, const idBounds &bounds ) {
 	static idClipModel *touching[MAX_GENTITIES];
 
 	// The navmesh is built over the main instance's clip world.
 	const idClip *clipWorld = gameLocal.GetEntityClipWorld( NULL );
-	collisionModelManager->Translation( &trace, start, end, &navAgentTrace, mat3_identity, NAV_CLIP_MASK,
+	collisionModelManager->Translation( &trace, start, end, &model, mat3_identity, NAV_CLIP_MASK,
 										clipWorld->GetWorldCollisionModel(), vec3_origin, mat3_identity );
 	trace.c.entityNum = ( trace.fraction < 1.0f ) ? ENTITYNUM_WORLD : ENTITYNUM_NONE;
 	if ( trace.fraction <= 0.0f ) {
@@ -215,7 +290,7 @@ static bool NavAgentTranslation( trace_t &trace, const idVec3 &start, const idVe
 	}
 
 	idBounds swept;
-	swept.FromBoundsTranslation( navAgentBounds, start, mat3_identity, trace.endpos - start );
+	swept.FromBoundsTranslation( bounds, start, mat3_identity, trace.endpos - start );
 	const int num = clipWorld->ClipModelsTouchingBounds( swept, NAV_CLIP_MASK, touching, MAX_GENTITIES );
 
 	for ( int i = 0; i < num; i++ ) {
@@ -228,7 +303,7 @@ static bool NavAgentTranslation( trace_t &trace, const idVec3 &start, const idVe
 		}
 
 		trace_t hit;
-		collisionModelManager->Translation( &hit, start, end, &navAgentTrace, mat3_identity, NAV_CLIP_MASK,
+		collisionModelManager->Translation( &hit, start, end, &model, mat3_identity, NAV_CLIP_MASK,
 											touch->GetCollisionModel(), touch->GetOrigin(), touch->GetAxis() );
 		if ( hit.fraction < trace.fraction ) {
 			trace = hit;
@@ -240,6 +315,53 @@ static bool NavAgentTranslation( trace_t &trace, const idVec3 &start, const idVe
 	}
 
 	return trace.fraction >= 1.0f;
+}
+
+static bool NavAgentTranslation( trace_t &trace, const idVec3 &start, const idVec3 &end ) {
+	return NavTraceTranslation( trace, start, end, navAgentTrace, navAgentBounds );
+}
+
+// Keep ordinary route nodes away from a hull-only sliver of support. A route
+// along q4dz3's outer rim was supported only by the last two units of the
+// player's footprint; normal corner steering put the feet into the void.
+static bool NavFloorSupported( const idVec3 &floor ) {
+	trace_t trace;
+	const float step = pm_stepsize.GetFloat();
+	// Offset landing probes can be uphill on a valid slope. Start above that
+	// rise rather than mistaking a probe that begins inside it for no floor.
+	const float lift = Max( step, navSupportBounds[1].x * 2.0f ) + NAV_GROUND_OFFSET;
+	const idVec3 start = floor + idVec3( 0.0f, 0.0f, lift );
+	const idVec3 end = floor - idVec3( 0.0f, 0.0f, step );
+	return !NavTraceTranslation( trace, start, end, navSupportTrace, navSupportBounds ) &&
+		trace.fraction > 0.0f && trace.c.normal.z >= NAV_WALKABLE_NORMAL_Z &&
+		idMath::Fabs( trace.endpos.z - floor.z ) <= step + NAV_GROUND_OFFSET;
+}
+
+/*
+================
+NavLandingSupported
+
+A jump or drop has to come down where the floor is, not where the hull merely
+clips an edge. Probe the centre and each side of it: one small box alone still
+accepted an eight-unit overhang beside q4ctf3's decorative rim. Overlapping
+probes tolerate small brush seams without accepting floor on only one side.
+================
+*/
+static bool NavLandingSupported( const idVec3 &floor ) {
+	const float support = navSupportBounds[1].x;
+	const idVec3 offsets[5] = {
+		idVec3( 0.0f, 0.0f, 0.0f ),
+		idVec3( support, 0.0f, 0.0f ),
+		idVec3( -support, 0.0f, 0.0f ),
+		idVec3( 0.0f, support, 0.0f ),
+		idVec3( 0.0f, -support, 0.0f )
+	};
+	for ( int i = 0; i < 5; i++ ) {
+		if ( !NavFloorSupported( floor + offsets[i] ) ) {
+			return false;
+		}
+	}
+	return true;
 }
 
 /*
@@ -586,7 +708,7 @@ bool rvNavMesh::SampleFloor( const idVec3 &start, float maxDrop, idVec3 &floorOu
 
 	floorOut = trace.endpos;
 
-	return true;
+	return NavFloorSupported( floorOut );
 }
 
 /*
@@ -642,22 +764,266 @@ bool rvNavMesh::TryStep( const idVec3 &fromFloor, const idVec3 &toCentre, idVec3
 			continue;
 		}
 
+		// A falling bot needs support near its centre, just like a jump.
+		// A hull grazing the outer edge is not a reliable landing target.
+		if ( rise < -stepSize && !NavLandingSupported( toFloor ) ) {
+			continue;
+		}
+
 		if ( attempt == 2 ) {
 			// Only the jump-height lift got through, so the bot has to jump
 			// whatever the destination floor turns out to be.  A railing it has
 			// to hop over lands it back at the same height, and calling that a
 			// walk would leave the bot pressed against the railing forever.
+			if ( !NavLandingSupported( toFloor ) ) {
+				continue;		// a sliver of an edge: no jump comes down on it
+			}
+			// A vertical lift proves headroom, not touchdown. Both a lower
+			// ledge and a raised decorative lip can be crossed while rising,
+			// then left behind over a pit. Prove the complete running hop.
+			const float gravity = Max( 1.0f, gameLocal.GetGravity().Length() );
+			if ( !GapJumpClear( fromFloor, toFloor,
+				Max( 1.0f, pm_speed.GetFloat() ) * NAV_GAP_SPEED_FRACTION,
+				idMath::Sqrt( 2.0f * gravity * jumpSize ), gravity, true ) ) {
+				continue;
+			}
 			travelType = NAVTRAVEL_JUMP;
 		} else if ( rise > stepSize ) {
 			// Reachable only by jumping, but that is not what was tried here.
 			continue;
 		} else {
 			travelType = ( fromFloor.z - toFloor.z > stepSize ) ? NAVTRAVEL_DROP : NAVTRAVEL_WALK;
+			if ( travelType == NAVTRAVEL_DROP && !RunningDropClear( fromFloor, toFloor ) ) {
+				continue;
+			}
 		}
 
 		return true;
 	}
 
+	return false;
+}
+
+/*
+================
+rvNavMesh::RunningDropClear
+
+A vertical floor probe does not prove a running drop: momentum can carry the
+player over its platform before air control brakes it. Follow the actual
+walk-off and falling controller, then require support and room to stop.
+================
+*/
+bool rvNavMesh::RunningDropClear( const idVec3 &from, const idVec3 &to ) const {
+	idVec3 direction = to - from;
+	direction.z = 0.0f;
+	if ( direction.Normalize() < 1.0f ) {
+		return false;
+	}
+	const float gravity = Max( 1.0f, gameLocal.GetGravity().Length() );
+	const float speed = Max( 1.0f, pm_speed.GetFloat() );
+	const float dt = NAV_PAD_STEP_SECONDS;
+	const idVec3 lift( 0.0f, 0.0f, NAV_GROUND_OFFSET );
+	const float lateral = Min( 64.0f, speed * 0.2f );
+	const idVec3 side( -direction.y, direction.x, 0.0f );
+	for ( int approach = 0; approach < 4; approach++ ) {
+		idVec3 position = from + lift;
+		idVec3 velocity = direction * speed * ( approach ? 1.0f : 0.25f );
+		if ( approach >= 2 ) {
+			velocity = direction * idMath::Sqrt( speed * speed - lateral * lateral ) +
+				side * ( approach == 2 ? lateral : -lateral );
+		}
+		bool falling = false, landed = false;
+		for ( int frame = 0; frame < 160; frame++ ) {
+			trace_t trace;
+			if ( !falling ) {
+				// While supported the controller keeps walking off the lip.
+				// Apply MP ground friction and acceleration, including a slow
+				// approach that gains speed before its hull leaves the ledge.
+				const float currentSpeed = velocity.Length();
+				if ( currentSpeed > 0.0f ) {
+					velocity *= Max( 0.0f, currentSpeed - Max( currentSpeed, 100.0f ) * 6.0f * dt ) / currentSpeed;
+				}
+				const float add = speed - velocity * direction;
+				if ( add > 0.0f ) {
+					velocity += direction * Min( add, 15.0f * dt * speed );
+				}
+				const idVec3 next = position + velocity * dt;
+				if ( !NavAgentTranslation( trace, position, next ) ) {
+					// WalkMove can step over a low lip before walking off. Keep
+					// its momentum on a full up/across/down success; partial
+					// steps need more collision planes and remain unproven.
+					const idVec3 stepLift( 0.0f, 0.0f, pm_stepsize.GetFloat() );
+					trace_t up, across, down;
+					NavAgentTranslation( up, trace.endpos, trace.endpos + stepLift );
+					NavAgentTranslation( across, up.endpos, up.endpos + next - trace.endpos );
+					NavAgentTranslation( down, across.endpos, across.endpos - stepLift );
+					if ( across.fraction < 1.0f ||
+						( down.fraction < 1.0f && down.c.normal.z < NAV_WALKABLE_NORMAL_Z ) ) {
+						return false;
+					}
+					position = down.endpos + ( down.fraction < 1.0f ? lift : idVec3( 0.0f, 0.0f, 0.0f ) );
+				} else {
+					position = next;
+				}
+				NavAgentTranslation( trace, position, position -
+					idVec3( 0.0f, 0.0f, pm_stepsize.GetFloat() + NAV_GROUND_OFFSET ) );
+				if ( trace.fraction < 1.0f && trace.c.normal.z >= NAV_WALKABLE_NORMAL_Z &&
+					trace.endpos.z >= from.z - pm_stepsize.GetFloat() ) {
+					position = trace.endpos + lift;
+					continue;
+				}
+				falling = true;
+				continue;	// the walk-off already consumed this frame's displacement
+			}
+			idVec3 wish;
+			if ( NavAirSteer( position, velocity, to, gravity, wish ) ) {
+				const float add = speed - velocity * wish;
+				if ( add > 0.0f ) {
+					velocity += wish * Min( add, NAV_PAD_AIR_ACCELERATE * dt * speed );
+				}
+			}
+			const idVec3 next = position + velocity * dt - idVec3( 0.0f, 0.0f, 0.5f * gravity * dt * dt );
+			if ( !NavAgentTranslation( trace, position, next ) ) {
+				if ( trace.c.normal.z < NAV_WALKABLE_NORMAL_Z ||
+					idMath::Fabs( trace.endpos.z - to.z ) > pm_stepsize.GetFloat() ||
+					!NavLandingSupported( trace.endpos ) || IsLethalFloor( trace.endpos ) ||
+					!WalkableLine( trace.endpos, to ) ) {
+					return false;
+				}
+				// Ignore friction and use less than MP's 15x acceleration: this
+				// stop reserve is conservative, including one input-frame delay.
+				idVec3 flat( velocity.x, velocity.y, 0.0f );
+				const idVec3 stop = trace.endpos + flat * ( dt + flat.Length() / ( 20.0f * speed ) );
+				if ( !LandingContinuationClear( trace.endpos, stop ) ) {
+					return false;
+				}
+				landed = true;
+				break;
+			}
+			position = next;
+			velocity.z -= gravity * dt;
+		}
+		if ( !landed ) {
+			return false;
+		}
+	}
+	return true;
+}
+
+bool rvNavMesh::LandingContinuationClear( const idVec3 &origin, const idVec3 &next ) const {
+	const float step = pm_stepsize.GetFloat();
+	const idVec3 points[2] = { origin, next };
+	idVec3 floors[2];
+	const int count = ( next - origin ).LengthSqr() < 1.0f ? 1 : 2;
+	for ( int i = 0; i < count; i++ ) {
+		// Start at actual standing height: lifting the entire hull a step
+		// first would overlap the ceiling in a valid low corridor.
+		if ( !SampleFloor( points[i] + idVec3( 0.0f, 0.0f, NAV_GROUND_OFFSET ),
+			step + 2.0f * NAV_GROUND_OFFSET, floors[i] ) ) {
+			// An item origin can float above its floor. Find that floor with
+			// the low support hull, then prove the full hull fits there.
+			trace_t trace;
+			const idVec3 start = points[i] + idVec3( 0.0f, 0.0f, step + NAV_GROUND_OFFSET );
+			const idVec3 end = points[i] - idVec3( 0.0f, 0.0f, step + NAV_GROUND_OFFSET );
+			if ( NavTraceTranslation( trace, start, end, navSupportTrace, navSupportBounds ) ||
+				trace.fraction <= 0.0f || trace.c.normal.z < NAV_WALKABLE_NORMAL_Z ) {
+				return false;
+			}
+			floors[i] = trace.endpos;
+			const idVec3 standing = floors[i] + idVec3( 0.0f, 0.0f, NAV_GROUND_OFFSET );
+			if ( !NavAgentTranslation( trace, standing, standing ) ) {
+				return false;
+			}
+		}
+		if ( idMath::Fabs( floors[i].z - points[i].z ) > step ||
+			!NavLandingSupported( floors[i] ) || IsLethalFloor( floors[i] ) ) {
+			return false;
+		}
+	}
+	return count == 1 || WalkableLine( floors[0], floors[1] );
+}
+
+static bool NavRecoveryFootprintContains( const idVec3 &point ) {
+	const float margin = 0.03f;
+	if ( point.x < navAgentTrace.bounds[0].x + margin || point.x > navAgentTrace.bounds[1].x - margin ||
+		 point.y < navAgentTrace.bounds[0].y + margin || point.y > navAgentTrace.bounds[1].y - margin ) {
+		return false;
+	}
+	for ( int i = 0; i < navAgentTrace.numPolys; i++ ) {
+		const traceModelPoly_t &plane = navAgentTrace.polys[i];
+		if ( idMath::Fabs( plane.normal.z ) < 0.5f && plane.normal * point > plane.dist - margin ) {
+			return false;
+		}
+	}
+	return true;
+}
+
+static bool NavRecoverySharedSupport( const idVec3 &from, const idVec3 &to ) {
+	static const idBounds pinBounds( idVec3( -0.01f, -0.01f, 0.0f ), idVec3( 0.01f, 0.01f, 0.01f ) );
+	static const idTraceModel pin( pinBounds );
+	const idVec3 bases[2] = { from, to };
+	for ( int side = 0; side < 2; side++ ) {
+		for ( int i = 0; i < navAgentTrace.numVerts; i++ ) {
+			if ( navAgentTrace.verts[i].z > navAgentTrace.bounds[0].z + 0.01f ) {
+				continue;
+			}
+			// A tiny inset gives the probe real area inside both footprints.
+			// Convexity then keeps this known floor patch under the hull at
+			// EVERY intermediate position, not just at four-unit samples.
+			idVec3 anchor = bases[side] + navAgentTrace.verts[i] * 0.995f;
+			if ( !NavRecoveryFootprintContains( anchor - from ) ||
+				 !NavRecoveryFootprintContains( anchor - to ) ) {
+				continue;
+			}
+			trace_t trace;
+			const idVec3 lift( 0.0f, 0.0f, NAV_GROUND_OFFSET );
+			if ( !NavTraceTranslation( trace, anchor + lift, anchor - lift, pin, pinBounds ) &&
+				 trace.fraction > 0.0f && trace.c.normal.z >= NAV_WALKABLE_NORMAL_Z &&
+				 idMath::Fabs( trace.endpos.z - from.z ) <= NAV_GROUND_OFFSET ) {
+				return true;
+			}
+		}
+	}
+	return false;
+}
+
+bool rvNavMesh::RecoveryStepClear( const idVec3 &origin, const idVec3 &target ) const {
+	if ( NavLandingSupported( origin ) ) {
+		return false;		// never relax an ordinary supported WALK or gap approach
+	}
+	idVec3 direction = target - origin;
+	direction.z = 0.0f;
+	const float distance = Min( 64.0f, direction.Normalize() );
+	if ( distance <= 1.0f ) {
+		return false;
+	}
+	const idVec3 lift( 0.0f, 0.0f, NAV_GROUND_OFFSET );
+	idVec3 previous = origin;
+	// Four-unit samples are well inside the stock hull's width. This is a
+	// bounded local escape, not a distant endpoint test across missing floor.
+	const int steps = (int)idMath::Ceil( distance / 4.0f );
+	for ( int i = 0; i <= steps; i++ ) {
+		idVec3 point = origin + direction * ( distance * (float)i / (float)steps );
+		point.z = previous.z;
+		trace_t trace;
+		if ( !NavAgentTranslation( trace, previous + lift, point + lift ) ||
+			 LineEntersTransport( previous, point ) ||
+			 ( i > 0 && !NavRecoverySharedSupport( previous, point ) ) ) {
+			return false;
+		}
+		// The real standing hull must retain same-height ground contact on
+		// every sample, including the marginal start. A wall is not a floor.
+		if ( NavAgentTranslation( trace, point + lift, point - lift ) ||
+			 trace.fraction <= 0.0f || trace.c.normal.z < NAV_WALKABLE_NORMAL_Z ||
+			 idMath::Fabs( trace.endpos.z - origin.z ) > 2.0f * NAV_GROUND_OFFSET ||
+			 IsLethalFloor( trace.endpos ) ) {
+			return false;
+		}
+		previous = trace.endpos;
+		if ( i > 0 && NavLandingSupported( previous ) ) {
+			return true;
+		}
+	}
 	return false;
 }
 
@@ -1029,14 +1395,19 @@ int rvNavMesh::LevelNodeInCell( int gx, int gy, float z, float tolerance ) const
 ================
 rvNavMesh::GapJumpClear
 
-Proves a running jump from one floor point to another: the parabola of a jump
-at a conservative run speed reaches the landing's height no earlier than it
-is over the landing, the real hull clears everything along that arc from a
-takeoff moved back a little, and there is floor where it comes down.
+Proves a running jump through touchdown, using the same direction-to-corner
+air input as the bot. Reaching the destination's horizontal position while
+still airborne proves nothing about where momentum finally puts the player.
+Check both the conservative approach speed and full speed, including the
+takeoff margin. A legal landing has supported, nonlethal ground connected to
+the destination; flying past a narrow ledge fails closed. Adjacent steps may
+slide upward along a vertical riser before clearing it, as player physics does.
 ================
 */
 bool rvNavMesh::GapJumpClear( const idVec3 &start, const idVec3 &end, float runSpeed,
-							  float jumpSpeed, float gravity ) const {
+							  float jumpSpeed, float gravity, bool stepHop,
+							  const idVec3 *actualVelocity, float actualWishSpeed,
+							  const idVec3 *firstWish, float firstWishSpeed ) const {
 	idVec3 direction = end - start;
 	direction.z = 0.0f;
 	const float distance = direction.Normalize();
@@ -1046,13 +1417,25 @@ bool rvNavMesh::GapJumpClear( const idVec3 &start, const idVec3 &end, float runS
 
 	// The edge must not be right under the takeoff node: a bot reaches the
 	// node a corner radius early and may need a frame to leave the ground.
-	idVec3 lip;
-	if ( !SampleFloor( start + direction * 8.0f + idVec3( 0.0f, 0.0f, NAV_GROUND_OFFSET + 8.0f ), 24.0f, lip ) ||
-		 idMath::Fabs( lip.z - start.z ) > pm_stepsize.GetFloat() ) {
-		return false;
+	if ( !stepHop && !actualVelocity ) {
+		idVec3 lip;
+		if ( !SampleFloor( start + direction * 8.0f + idVec3( 0.0f, 0.0f, NAV_GROUND_OFFSET + 8.0f ), 24.0f, lip ) ||
+			 idMath::Fabs( lip.z - start.z ) > pm_stepsize.GetFloat() ) {
+			return false;
+		}
 	}
 
-	const idVec3 takeoff = start - direction * NAV_GAP_TAKEOFF_SLACK;
+	const idVec3 takeoff = actualVelocity ? start : start - direction * NAV_GAP_TAKEOFF_SLACK;
+	if ( stepHop ) {
+		// The point ahead of a step can already be inside its raised face.
+		// Check the actual takeoff's support instead of probing through it.
+		idVec3 floor;
+		if ( !SampleFloor( takeoff + idVec3( 0.0f, 0.0f, NAV_GROUND_OFFSET ),
+			 pm_stepsize.GetFloat() + NAV_GROUND_OFFSET, floor ) ||
+			 idMath::Fabs( floor.z - start.z ) > pm_stepsize.GetFloat() ) {
+			return false;
+		}
+	}
 	const float span = distance + NAV_GAP_TAKEOFF_SLACK;
 	const float rise = end.z - start.z;
 	const float discriminant = jumpSpeed * jumpSpeed - 2.0f * gravity * rise;
@@ -1060,31 +1443,170 @@ bool rvNavMesh::GapJumpClear( const idVec3 &start, const idVec3 &end, float runS
 		return false;		// too high to reach at all
 	}
 	const float landTime = ( jumpSpeed + idMath::Sqrt( discriminant ) ) / gravity;
-	if ( runSpeed * landTime < span ) {
+	if ( !actualVelocity && runSpeed * landTime < span ) {
 		return false;		// comes down short of the landing
 	}
 
-	// Sweep the arc in short segments up to the moment it is over the landing.
-	const float overTime = span / runSpeed;
-	const int segments = Max( 2, (int)idMath::Ceil( span / 16.0f ) );
-	idVec3 previous = takeoff + idVec3( 0.0f, 0.0f, NAV_GROUND_OFFSET );
-	trace_t trace;
-
-	for ( int i = 1; i <= segments; i++ ) {
-		const float t = overTime * (float)i / (float)segments;
-		const idVec3 point = takeoff + direction * ( runSpeed * t ) +
-			idVec3( 0.0f, 0.0f, NAV_GROUND_OFFSET + jumpSpeed * t - 0.5f * gravity * t * t );
-		if ( !NavAgentTranslation( trace, previous, point ) ) {
+	const float wishSpeed = Max( 1.0f, actualVelocity ? actualWishSpeed : pm_speed.GetFloat() );
+	const float steppedLandTime = stepHop ?
+		( jumpSpeed + idMath::Sqrt( discriminant + 2.0f * gravity * pm_stepsize.GetFloat() ) ) / gravity : landTime;
+	const int steps = Min( NAV_PAD_MAX_STEPS,
+		(int)idMath::Ceil( ( steppedLandTime + 0.1f ) / NAV_PAD_STEP_SECONDS ) );
+	for ( int approach = 0; approach < ( actualVelocity ? 1 : 2 ); approach++ ) {
+		idVec3 position = takeoff + idVec3( 0.0f, 0.0f, NAV_GROUND_OFFSET );
+		idVec3 velocity = actualVelocity ? *actualVelocity : direction * ( approach ? wishSpeed : runSpeed );
+		velocity.z = jumpSpeed;
+		bool landed = false;
+		for ( int step = 0; step < steps; step++ ) {
+			idVec3 wish = end - position;
+			wish.z = 0.0f;
+			const float frameWishSpeed = ( step == 0 && firstWish ) ? firstWishSpeed : wishSpeed;
+			if ( step == 0 && firstWish ) {
+				wish = *firstWish;
+			}
+			if ( wish.Normalize() > 0.0f ) {
+				const float add = frameWishSpeed - velocity * wish;
+				if ( add > 0.0f ) {
+					velocity += wish * Min( add, NAV_PAD_AIR_ACCELERATE * NAV_PAD_STEP_SECONDS * frameWishSpeed );
+				}
+			}
+			idVec3 next = position + velocity * NAV_PAD_STEP_SECONDS -
+				idVec3( 0.0f, 0.0f, 0.5f * gravity * NAV_PAD_STEP_SECONDS * NAV_PAD_STEP_SECONDS );
+			trace_t trace;
+			bool clear = false;
+			for ( int bump = 0; bump < 3; bump++ ) {
+				if ( NavAgentTranslation( trace, position, next ) ) {
+					clear = true;
+					break;
+				}
+				if ( stepHop && velocity.z > 0.0f && trace.fraction > 0.0f &&
+					 idMath::Fabs( trace.c.normal.z ) < 0.01f ) {
+					const idVec3 remainder = next - trace.endpos;
+					const idVec3 stepLift( 0.0f, 0.0f, pm_stepsize.GetFloat() );
+					trace_t down, up, across;
+					// MP AirMove can step while close to the floor. A successful
+					// up/across/down keeps horizontal momentum, so clipping it
+					// first would falsely approve a short raised platform.
+					if ( !NavAgentTranslation( down, trace.endpos, trace.endpos - stepLift ) &&
+						 down.c.normal.z > NAV_WALKABLE_NORMAL_Z ) {
+						NavAgentTranslation( up, trace.endpos, trace.endpos + stepLift );
+						NavAgentTranslation( across, up.endpos, up.endpos + remainder );
+						NavAgentTranslation( down, across.endpos, across.endpos - stepLift );
+						if ( down.fraction >= 1.0f || down.c.normal.z > NAV_WALKABLE_NORMAL_Z ) {
+							if ( across.fraction >= 1.0f ) {
+								next = down.endpos;
+								clear = true;
+								break;
+							}
+							if ( across.fraction > trace.fraction ) {
+								return false;	// partial step needs more collision planes
+							}
+						}
+					}
+					// Hitting a stair's side on ascent removes inward speed;
+					// it does not stop the vertical jump. Sweep the remainder
+					// along that face. Descending impacts still fail closed.
+					position = trace.endpos + trace.c.normal * NAV_GROUND_OFFSET;
+					next = position + remainder - trace.c.normal * Min( 0.0f, remainder * trace.c.normal );
+					velocity -= trace.c.normal * Min( 0.0f, velocity * trace.c.normal );
+					continue;
+				}
+				break;
+			}
+			if ( !clear ) {
+				landed = velocity.z < 0.0f && trace.fraction > 0.0f &&
+					trace.c.normal.z >= NAV_WALKABLE_NORMAL_Z &&
+					idMath::Fabs( trace.endpos.z - end.z ) <= pm_stepsize.GetFloat() &&
+					NavLandingSupported( trace.endpos ) && !IsLethalFloor( trace.endpos ) &&
+					WalkableLine( trace.endpos, end );
+				break;
+			}
+			position = next;
+			velocity.z -= gravity * NAV_PAD_STEP_SECONDS;
+		}
+		if ( !landed ) {
 			return false;
 		}
-		previous = point;
 	}
+	return true;
+}
 
-	idVec3 landed;
-	if ( !SampleFloor( previous, previous.z - end.z + 32.0f, landed ) ) {
+bool rvNavMesh::JumpTakeoffClear( const idVec3 &origin, const idVec3 &velocity,
+								const idVec3 &landing, float gravity, float wishSpeed,
+								const idVec3 *firstWish, float firstWishSpeed ) const {
+	if ( gravity <= 1.0f || pm_jumpheight.GetFloat() <= 0.0f ) {
 		return false;
 	}
-	return idMath::Fabs( landed.z - end.z ) <= pm_stepsize.GetFloat();
+	trace_t ground;
+	const idVec3 lifted = origin + idVec3( 0.0f, 0.0f, NAV_GROUND_OFFSET );
+	if ( NavAgentTranslation( ground, lifted, lifted - idVec3( 0.0f, 0.0f, 2.0f * NAV_GROUND_OFFSET ) ) ||
+		 ground.fraction <= 0.0f || ground.c.normal.z < NAV_WALKABLE_NORMAL_Z ||
+		 velocity * ground.c.normal < -1.0f ) {
+		// CheckJump projects inward velocity onto the ground before adding the
+		// impulse. Wait for a settled approach instead of guessing that slide.
+		return false;
+	}
+	const float jumpSpeed = velocity.z + idMath::Sqrt( 2.0f * gravity * pm_jumpheight.GetFloat() );
+	return jumpSpeed > 0.0f && GapJumpClear( origin, landing, wishSpeed, jumpSpeed,
+		gravity, true, &velocity, wishSpeed, firstWish, firstWishSpeed );
+}
+
+/*
+================
+rvNavMesh::DodgeJumpClear
+
+The walking dodge probe covers 72 units; a running hop carries a player more
+than 200. Prove a supported, ordinary touchdown for the actual momentum and
+for a full-speed approach. These voluntary hops do not need to reach a lower
+floor or use a transport, so stop at the normal flight time and fail closed.
+================
+*/
+bool rvNavMesh::DodgeJumpClear( const idVec3 &origin, const idVec3 &velocity,
+							  const idVec3 &direction, float gravity, float effectiveWishSpeed ) const {
+	if ( gravity <= 1.0f || pm_jumpheight.GetFloat() <= 0.0f ) {
+		return false;
+	}
+	idVec3 wish = direction;
+	wish.z = 0.0f;
+	wish.Normalize();
+	const float wishSpeed = Max( 1.0f, effectiveWishSpeed > 0.0f ? effectiveWishSpeed : pm_speed.GetFloat() );
+	const float jumpSpeed = idMath::Sqrt( 2.0f * gravity * pm_jumpheight.GetFloat() );
+	const float verticalSpeed = Max( 0.0f, velocity.z ) + jumpSpeed;
+	const int steps = Min( 96, (int)idMath::Ceil( ( 2.0f * verticalSpeed / gravity + 0.1f ) / NAV_PAD_STEP_SECONDS ) );
+	for ( int approach = 0; approach < 2; approach++ ) {
+		idVec3 speed = approach ? wish * wishSpeed : velocity;
+		speed.z = verticalSpeed;
+		idVec3 position = origin + idVec3( 0.0f, 0.0f, NAV_GROUND_OFFSET );
+		bool landed = false;
+		for ( int step = 0; step < steps; step++ ) {
+			const float add = wishSpeed - speed * wish;
+			if ( add > 0.0f ) {
+				speed += wish * Min( add, NAV_PAD_AIR_ACCELERATE * NAV_PAD_STEP_SECONDS * wishSpeed );
+			}
+			const idVec3 next = position + speed * NAV_PAD_STEP_SECONDS -
+				idVec3( 0.0f, 0.0f, 0.5f * gravity * NAV_PAD_STEP_SECONDS * NAV_PAD_STEP_SECONDS );
+			if ( LineEntersTransport( position, next ) ) {
+				return false;
+			}
+			trace_t trace;
+			if ( !NavAgentTranslation( trace, position, next ) ) {
+				idBounds standing = GetAgentBounds();
+				standing.TranslateSelf( trace.endpos );
+				landed = speed.z < 0.0f && trace.fraction > 0.0f &&
+					trace.c.normal.z >= NAV_WALKABLE_NORMAL_Z &&
+					trace.endpos.z >= origin.z - pm_stepsize.GetFloat() &&
+					NavLandingSupported( trace.endpos ) && !IsLethalFloor( trace.endpos ) &&
+					TransportAt( standing ) < 0;
+				break;
+			}
+			position = next;
+			speed.z -= gravity * NAV_PAD_STEP_SECONDS;
+		}
+		if ( !landed ) {
+			return false;
+		}
+	}
+	return true;
 }
 
 /*
@@ -1156,7 +1678,15 @@ void rvNavMesh::AddGapJumpLinks( void ) {
 					continue;	// still over the gap
 				}
 
-				// The first floor beyond the gap decides this direction.
+				// The first floor beyond the gap decides this direction.  Its
+				// near edge cell may only clip the platform; then the next cell
+				// on the same platform is the landing a running jump makes.
+				if ( !NavLandingSupported( nodes[landing].origin ) ) {
+					landing = LevelNodeInCell( cx + dx, cy + dy, nodes[landing].origin.z, stepSize );
+					if ( landing < 0 || !NavLandingSupported( nodes[landing].origin ) ) {
+						break;
+					}
+				}
 				if ( FindLink( takeoff, landing ) < 0 &&
 					 GapJumpClear( origin, nodes[landing].origin, runSpeed, jumpSpeed, gravity ) ) {
 					const float cost = ( nodes[landing].origin - origin ).Length() + NAV_JUMP_PENALTY +
@@ -1198,6 +1728,260 @@ int rvNavMesh::NodeForEntityPoint( const idVec3 &point ) const {
 	}
 
 	return FindNearestNode( point, 256.0f );
+}
+
+/*
+================
+rvNavMesh::PadLanding
+
+Where a jump pad really puts a player down.  rvJumpPad sets a velocity that
+spends its climb at the target, so the target is the apex of the arc, not the
+landing: q4dm1's pad 24 aims above a ledge at 224 and drops players onto the
+floor at 64, 75 units on.  Linking the floor under the target sent every route
+through that pad to a corner nobody arrives at.  The arc is integrated from the
+pad's own launch velocity - recomputed exactly as rvJumpPad::Event_FindTargets
+does - and swept with the player's box until it comes down on a floor.
+
+When steerTo is given the flight steers for it as the bot will, with
+NavAirSteer through idPhysics_Player's air acceleration.
+================
+*/
+bool rvNavMesh::PadLanding( idEntity *pad, const idVec3 &launch, const idVec3 *steerTo, idVec3 &landing,
+							float *flightSeconds, float *impactDelta ) const {
+	idEntity *target = ( pad && pad->targets.Num() ) ? pad->targets[0].GetEntity() : NULL;
+	if ( !target || !target->GetPhysics() || !pad->GetPhysics() ) {
+		return false;
+	}
+
+	const idVec3 gravity = gameLocal.GetCurrentGravity( pad );
+	const float g = gravity.Length();
+	if ( g <= 1.0f ) {
+		return false;
+	}
+	const idVec3 down = gravity / g;
+	const idVec3 diff = target->GetPhysics()->GetOrigin() - pad->GetPhysics()->GetOrigin();
+	const idVec3 vert = ( diff * down ) * down;
+	const float flightTime = idMath::Sqrt( vert.Length() / ( 0.5f * g ) );
+	if ( flightTime <= 0.0f ) {
+		return false;
+	}
+	idVec3 horizontal = diff - vert;
+	const float span = horizontal.Normalize();
+	idVec3 velocity = horizontal * ( span / flightTime ) - gravity * flightTime;
+
+	const float wishSpeed = Max( 1.0f, pm_speed.GetFloat() );
+	idVec3 position = launch + idVec3( 0.0f, 0.0f, NAV_GROUND_OFFSET );
+	for ( int step = 0; step < NAV_PAD_MAX_STEPS; step++ ) {
+		idVec3 wish;
+		if ( steerTo && NavAirSteer( position, velocity, *steerTo, g, wish ) ) {
+			// idPhysics_Player::Accelerate, Quake 2 style.
+			const float add = wishSpeed - velocity * wish;
+			if ( add > 0.0f ) {
+				velocity += wish * Min( add, NAV_PAD_AIR_ACCELERATE * NAV_PAD_STEP_SECONDS * wishSpeed );
+			}
+		}
+
+		const idVec3 next = position + velocity * NAV_PAD_STEP_SECONDS +
+			gravity * ( 0.5f * NAV_PAD_STEP_SECONDS * NAV_PAD_STEP_SECONDS );
+		trace_t trace;
+		if ( NavAgentTranslation( trace, position, next ) ) {
+			position = next;
+			velocity += gravity * NAV_PAD_STEP_SECONDS;
+			continue;
+		}
+
+		// Coming down on standable ground ends the flight.  A wall or a
+		// ceiling takes the velocity into it and the arc carries on along it.
+		if ( trace.c.normal.z >= NAV_WALKABLE_NORMAL_Z && velocity * down > 0.0f ) {
+			landing = trace.endpos;
+			if ( flightSeconds ) {
+				*flightSeconds = (float)( step + 1 ) * NAV_PAD_STEP_SECONDS;
+			}
+			if ( impactDelta ) {
+				*impactDelta = NavLandingImpactDelta( trace,
+					velocity + gravity * ( NAV_PAD_STEP_SECONDS * trace.fraction ), gravity );
+			}
+			return true;
+		}
+		if ( trace.fraction <= 0.0f && ( velocity * trace.c.normal ) >= 0.0f ) {
+			return false;		// wedged: no honest landing to report
+		}
+		position = trace.endpos;
+		velocity -= trace.c.normal * ( velocity * trace.c.normal );
+		velocity += gravity * NAV_PAD_STEP_SECONDS;
+	}
+
+	return false;
+}
+
+/*
+================
+NavPadFlightCost
+
+What a pad's flight is worth to a route: the ground a bot would have covered
+running for as long as it is in the air, and never less than the old flat
+price.  A flat price made every flight look like a 128-unit walk, so a route
+could take a second and a half in the air beside a vertical pad just to get
+past it.
+================
+*/
+static float NavPadFlightCost( float flightSeconds ) {
+	return Max( NAV_JUMPPAD_COST, flightSeconds * Max( 1.0f, pm_speed.GetFloat() ) );
+}
+
+/*
+================
+rvNavMesh::PadLandings
+
+Every place a bot can bring a pad's flight down.  The natural landing comes
+first - the arc as the pad throws it, which a bot rides without steering.  Then, for each floor level within
+air-control reach of the apex, the supported node nearest the apex is tried as
+a steered landing and kept when the flight really comes down on it; Quake
+III's AAS links a jump pad to the areas under its trajectory the same way.
+That is what takes a bot up q4dm1's vertical pads: their arc falls back down
+their own shaft, and only steering puts it on the ledge beside it.  Nothing
+that comes down on the pad itself is a landing.
+
+A bot does not leave from the pad's centre, though: the pad throws it the
+moment its box first touches the volume, half a box outside it on whichever
+side it walked in from.  A steered landing that only works from the centre -
+q4dm5's pad 2 slides its arc along a wall and under a ledge's lip to reach the
+ledge - timed out in play, so an air-control landing is kept only when the
+flight makes it from every side a box can stand at.
+================
+*/
+bool rvNavMesh::PadLandings( idEntity *pad, int from, const idBounds &entryBounds, int targetNode,
+							 idList<int> &landings, idList<float> &costs ) const {
+	idEntity *target = ( pad && pad->targets.Num() ) ? pad->targets[0].GetEntity() : NULL;
+	if ( !target || !target->GetPhysics() ) {
+		return false;
+	}
+	const idVec3 launch = nodes[from].origin;
+	const idBounds agent = GetAgentBounds();
+
+	idVec3 landing;
+	float flight = 0.0f;
+	if ( PadLanding( pad, launch, NULL, landing, &flight ) ) {
+		idBounds standing = agent;
+		standing.TranslateSelf( landing );
+		const int landed = standing.IntersectsBounds( entryBounds ) ? -1 : FindNearestNode( landing, 128.0f, true );
+		if ( landed != -1 && landed != from ) {
+			landings.Append( landed );
+			costs.Append( NavPadFlightCost( flight ) );
+		}
+	} else if ( targetNode != -1 && targetNode != from ) {
+		// No arc to fly - no gravity here, or wedged at launch: the floor
+		// under the target, as before there was a simulation.
+		landings.Append( targetNode );
+		costs.Append( NAV_JUMPPAD_COST );
+		return true;
+	}
+	const bool naturalFirst = landings.Num() > 0;
+
+	// Where a bot can really be thrown from: the centre the arc was flown
+	// from, and the middle of each side of the volume where a standing box
+	// first touches it on the pad's floor.
+	idVec3	launches[5];
+	int		numLaunches = 0;
+	launches[numLaunches++] = launch;
+	const idVec3 centre = entryBounds.GetCenter();
+	for ( int side = 0; side < 4; side++ ) {
+		idVec3 edge( centre.x, centre.y, launch.z );
+		const int axis = side >> 1;
+		edge[axis] = ( side & 1 ) ? entryBounds[1][axis] + agent[1][axis] : entryBounds[0][axis] + agent[0][axis];
+		idVec3 floor;
+		if ( SampleFloor( edge + idVec3( 0.0f, 0.0f, pm_stepsize.GetFloat() ), pm_stepsize.GetFloat() * 2.0f, floor ) &&
+			 idMath::Fabs( floor.z - launch.z ) <= pm_stepsize.GetFloat() ) {
+			launches[numLaunches++] = floor;
+		}
+	}
+
+	// The supported node nearest the apex on each floor level below it.
+	const idVec3 apex = target->GetPhysics()->GetOrigin();
+	int		levelNode[NAV_PAD_MAX_LEVELS];
+	float	levelZ[NAV_PAD_MAX_LEVELS];
+	float	levelDistance[NAV_PAD_MAX_LEVELS];
+	int		numLevels = 0;
+
+	int minX, minY, maxX, maxY;
+	CellCoords( apex - idVec3( NAV_PAD_STEER_REACH, NAV_PAD_STEER_REACH, 0.0f ), minX, minY );
+	CellCoords( apex + idVec3( NAV_PAD_STEER_REACH, NAV_PAD_STEER_REACH, 0.0f ), maxX, maxY );
+	for ( int gy = minY; gy <= maxY; gy++ ) {
+		for ( int gx = minX; gx <= maxX; gx++ ) {
+			const int key = nodeHash.GenerateKey( gx, gy );
+			for ( int n = nodeHash.First( key ); n != -1; n = nodeHash.Next( n ) ) {
+				const navNode_t &node = nodes[n];
+				if ( node.gx != gx || node.gy != gy || n == from || node.origin.z > apex.z - NAV_GROUND_OFFSET ) {
+					continue;
+				}
+				idVec3 aside = node.origin - apex;
+				aside.z = 0.0f;
+				const float distance = aside.LengthSqr();
+				if ( distance > Square( NAV_PAD_STEER_REACH ) ) {
+					continue;
+				}
+				int level = 0;
+				while ( level < numLevels && idMath::Fabs( levelZ[level] - node.origin.z ) > NAV_PAD_LEVEL_BAND ) {
+					level++;
+				}
+				if ( level < numLevels && distance >= levelDistance[level] ) {
+					continue;
+				}
+				if ( level == numLevels && numLevels == NAV_PAD_MAX_LEVELS ) {
+					continue;
+				}
+				idBounds standing = agent;
+				standing.TranslateSelf( node.origin );
+				if ( standing.IntersectsBounds( entryBounds ) || !NavLandingSupported( node.origin ) ) {
+					continue;
+				}
+				if ( level == numLevels ) {
+					numLevels++;
+				}
+				levelNode[level]		= n;
+				levelZ[level]			= node.origin.z;
+				levelDistance[level]	= distance;
+			}
+		}
+	}
+
+	// Nearest first, so the cap keeps the landings least air control reaches.
+	while ( numLevels > 0 && landings.Num() < NAV_MAX_TRANSPORT_LANDINGS ) {
+		int nearest = 0;
+		for ( int i = 1; i < numLevels; i++ ) {
+			if ( levelDistance[i] < levelDistance[nearest] ) {
+				nearest = i;
+			}
+		}
+		const int candidate = levelNode[nearest];
+		numLevels--;
+		levelNode[nearest]		= levelNode[numLevels];
+		levelZ[nearest]			= levelZ[numLevels];
+		levelDistance[nearest]	= levelDistance[numLevels];
+
+		if ( landings.FindIndex( candidate ) >= 0 ) {
+			continue;
+		}
+		bool everyLaunch = true;
+		float centreFlight = 0.0f;
+		for ( int l = 0; l < numLaunches && everyLaunch; l++ ) {
+			everyLaunch = PadLanding( pad, launches[l], &nodes[candidate].origin, landing, &flight );
+			if ( everyLaunch ) {
+				idVec3 miss = landing - nodes[candidate].origin;
+				everyLaunch = idMath::Fabs( miss.z ) <= pm_stepsize.GetFloat();
+				miss.z = 0.0f;
+				everyLaunch = everyLaunch && miss.LengthSqr() <= Square( NAV_PAD_LANDING_REACH );
+			}
+			if ( l == 0 ) {
+				centreFlight = flight;
+			}
+		}
+		if ( everyLaunch ) {
+			landings.Append( candidate );
+			costs.Append( NavPadFlightCost( centreFlight ) );
+		}
+	}
+	return naturalFirst;
 }
 
 /*
@@ -1245,14 +2029,40 @@ void rvNavMesh::AddOffMeshLinks( void ) {
 		}
 
 		const int from = NodeForEntityPoint( entryBounds.GetCenter() );
-		const int to   = NodeForEntityPoint( ent->targets[0].GetEntity()->GetPhysics()->GetOrigin() );
-
-		if ( from == -1 || to == -1 || from == to ) {
+		const int to = NodeForEntityPoint( ent->targets[0].GetEntity()->GetPhysics()->GetOrigin() );
+		// A live pad still launches whoever walks across it when no entry
+		// node or landing was accepted. Keep that activation volume below;
+		// sealing it with zero exits prevents an ordinary route through it.
+		if ( from == -1 && travelType != NAVTRAVEL_JUMPPAD ) {
 			continue;
 		}
 
-		LinkNodes( from, to, cost, travelType, ent->entityNumber );
-		numLinksAdded++;
+		// A pad's target is the apex of its arc, not a landing: link where its
+		// flight comes down, and every other floor a bot can steer it onto.  A
+		// pad whose flight only comes back down on itself is a trampoline a bot
+		// would bounce on until the traversal timed out, and gets no link.
+		idList<int> landings;
+		idList<float> costs;
+		bool naturalFirst = true;
+		if ( travelType == NAVTRAVEL_JUMPPAD && from != -1 ) {
+			naturalFirst = PadLandings( ent, from, entryBounds, to, landings, costs );
+		} else if ( travelType == NAVTRAVEL_TELEPORT && to != -1 && to != from ) {
+			landings.Append( to );
+			costs.Append( cost );
+		}
+		if ( landings.Num() == 0 && travelType != NAVTRAVEL_JUMPPAD ) {
+			continue;
+		}
+
+		for ( int i = 0; i < landings.Num(); i++ ) {
+			LinkNodes( from, landings[i], costs[i], travelType, ent->entityNumber );
+			numLinksAdded++;
+			if ( bot_debug.GetBool() && travelType == NAVTRAVEL_JUMPPAD ) {
+				gameLocal.Printf( "rvNavMesh: pad '%s' from %s lands at %s, cost %.0f%s\n", ent->GetName(),
+								  nodes[from].origin.ToString( 0 ), nodes[landings[i]].origin.ToString( 0 ), costs[i],
+								  i == 0 ? "" : " (steered)" );
+			}
+		}
 
 		// Only a volume that is carrying players right now seals the ground
 		// under it.  A pad switched off at load is floor until something turns
@@ -1265,9 +2075,17 @@ void rvNavMesh::AddOffMeshLinks( void ) {
 			transport.bounds		= entryBounds;
 			transport.entityNum		= ent->entityNumber;
 			transport.travelType	= travelType;
-			transport.destination	= to;
-			transport.cost			= cost;
+			transport.naturalFirst	= naturalFirst && landings.Num() > 0;
+			transport.numDestinations = Min( landings.Num(), NAV_MAX_TRANSPORT_LANDINGS );
+			for ( int i = 0; i < transport.numDestinations; i++ ) {
+				transport.destinations[i]	= landings[i];
+				transport.costs[i]			= costs[i];
+			}
 			transports.Append( transport );
+			if ( bot_debug.GetBool() && transport.numDestinations == 0 ) {
+				gameLocal.Printf( "rvNavMesh: active pad '%s' at %s sealed without a routable landing\n",
+					ent->GetName(), entryBounds.GetCenter().ToString( 0 ) );
+			}
 		}
 	}
 
@@ -1309,6 +2127,7 @@ void rvNavMesh::SealTransportVolumes( void ) {
 		// The cells whose standing box can reach the volume: the volume grown
 		// by the box, horizontally.
 		const idBounds &volume = transports[t].bounds;
+		const idClipModel *clip = NavTravelVolumeClip( gameLocal.entities[transports[t].entityNum] );
 		int minX, minY, maxX, maxY;
 		CellCoords( volume[0] - idVec3( agent[1].x, agent[1].y, 0.0f ), minX, minY );
 		CellCoords( volume[1] - idVec3( agent[0].x, agent[0].y, 0.0f ), maxX, maxY );
@@ -1322,9 +2141,20 @@ void rvNavMesh::SealTransportVolumes( void ) {
 					}
 					idBounds standing = agent;
 					standing.TranslateSelf( nodes[n].origin );
-					if ( standing.IntersectsBounds( volume ) ) {
-						sealedBy[n] = t;
+					if ( !standing.IntersectsBounds( volume ) ) {
+						continue;
 					}
+					// The box against the brush itself, as the field and the
+					// trigger test it: a diagonal pad's bounding box covers
+					// floor beside the pad, and a node sealed there was a pad
+					// entry no bot was ever launched from.
+					if ( clip && clip->GetCollisionModel() &&
+						 !collisionModelManager->Contents( nodes[n].origin, &navAgentTrace, mat3_identity, -1,
+														   clip->GetCollisionModel(), clip->GetOrigin(),
+														   clip->GetAxis() ) ) {
+						continue;
+					}
+					sealedBy[n] = t;
 				}
 			}
 		}
@@ -1339,8 +2169,11 @@ void rvNavMesh::SealTransportVolumes( void ) {
 		const navTransport_t &transport = transports[t];
 		nodes[n].flags |= NAVNODE_TRANSPORT;
 		nodes[n].firstLink = -1;
-		if ( n != transport.destination ) {
-			LinkNodes( n, transport.destination, transport.cost, transport.travelType, transport.entityNum );
+		for ( int d = 0; d < transport.numDestinations; d++ ) {
+			if ( n != transport.destinations[d] ) {
+				LinkNodes( n, transport.destinations[d], transport.costs[d], transport.travelType,
+						   transport.entityNum );
+			}
 		}
 		transportNodes++;
 	}
@@ -1390,6 +2223,59 @@ void rvNavMesh::CompactLinks( void ) {
 
 /*
 ================
+NavLineTouchesVolumeBrush
+
+LineEntersTransport's test against a volume's brush itself, as sealing and the
+trigger test it: the standing box carried along the line, and again
+NAV_SMOOTH_MAX_DIP under it, as far as a string-pulled line floats over its
+ground.  A pass whose box begins touching the brush is leaving it.  A diagonal
+pad's bounding box covers floor beside the pad that sealing leaves walkable,
+and a line that began on that floor used to be exempt from the pad altogether
+- so a shortcut from there could cross the brush and launch the bot.
+================
+*/
+static bool NavLineTouchesVolumeBrush( const idVec3 &from, const idVec3 &to, const idClipModel *clip ) {
+	const idVec3 dip( 0.0f, 0.0f, NAV_SMOOTH_MAX_DIP );
+	for ( int pass = 0; pass < 2; pass++ ) {
+		const idVec3 start = pass ? from - dip : from;
+		const idVec3 end = pass ? to - dip : to;
+		if ( collisionModelManager->Contents( start, &navAgentTrace, mat3_identity, -1, clip->GetCollisionModel(),
+											   clip->GetOrigin(), clip->GetAxis() ) ) {
+			continue;
+		}
+		trace_t trace;
+		collisionModelManager->Translation( &trace, start, end, &navAgentTrace, mat3_identity, -1,
+											clip->GetCollisionModel(), clip->GetOrigin(), clip->GetAxis() );
+		if ( trace.fraction < 1.0f ) {
+			return true;
+		}
+	}
+	return false;
+}
+
+/*
+================
+rvNavMesh::IsSteeredPadLanding
+================
+*/
+bool rvNavMesh::IsSteeredPadLanding( int padEntityNum, const idVec3 &landing ) const {
+	for ( int t = 0; t < transports.Num(); t++ ) {
+		const navTransport_t &transport = transports[t];
+		if ( transport.entityNum != padEntityNum ) {
+			continue;
+		}
+		for ( int d = 0; d < transport.numDestinations; d++ ) {
+			if ( ( nodes[transport.destinations[d]].origin - landing ).LengthSqr() <= 1.0f ) {
+				return !( d == 0 && transport.naturalFirst );
+			}
+		}
+		return false;
+	}
+	return false;
+}
+
+/*
+================
 rvNavMesh::LineEntersTransport
 
 Would a standing box carried along this line touch a transport volume it did
@@ -1419,7 +2305,20 @@ bool rvNavMesh::LineEntersTransport( const idVec3 &from, const idVec3 &to ) cons
 		grown[1] = transports[t].bounds[1] - agent[0];
 		grown[1].z += NAV_SMOOTH_MAX_DIP;
 
-		if ( !grown.IntersectsBounds( sweep ) || grown.ContainsPoint( from ) ) {
+		if ( !grown.IntersectsBounds( sweep ) ) {
+			continue;
+		}
+
+		// A volume with a brush answers exactly; only a brushless one is
+		// judged by its box.
+		const idClipModel *clip = NavTravelVolumeClip( gameLocal.entities[transports[t].entityNum] );
+		if ( clip && clip->GetCollisionModel() ) {
+			if ( NavLineTouchesVolumeBrush( from, to, clip ) ) {
+				return true;
+			}
+			continue;
+		}
+		if ( grown.ContainsPoint( from ) ) {
 			continue;
 		}
 
@@ -1463,6 +2362,63 @@ int rvNavMesh::TransportAt( const idBounds &absBounds ) const {
 		}
 	}
 	return -1;
+}
+
+bool rvNavMesh::NaturalPadLanding( int padEntityNum, idVec3 &landing ) const {
+	for ( int t = 0; t < transports.Num(); t++ ) {
+		const navTransport_t &transport = transports[t];
+		if ( transport.entityNum == padEntityNum && transport.travelType == NAVTRAVEL_JUMPPAD &&
+			 transport.naturalFirst && transport.numDestinations > 0 ) {
+			landing = nodes[transport.destinations[0]].origin;
+			return true;
+		}
+	}
+	return false;
+}
+
+/*
+================
+rvNavMesh::LandingSurvivable
+
+Only a bot that cannot afford one of the live fall-damage tiers supplies a
+finite limit. Keep the shared graph intact: this qualifies one route/entry for
+that bot's current health, including safe materials and water at touchdown.
+================
+*/
+bool rvNavMesh::LandingSurvivable( const idVec3 &from, const navCorner_t &corner, float maxImpactDelta ) const {
+	if ( maxImpactDelta >= NAV_UNREACHED || ( corner.travelType != NAVTRAVEL_DROP &&
+		 corner.travelType != NAVTRAVEL_JUMP && corner.travelType != NAVTRAVEL_JUMPPAD ) ) {
+		return true;
+	}
+	if ( corner.travelType == NAVTRAVEL_JUMPPAD ) {
+		if ( corner.actionEntityNum < 0 || corner.actionEntityNum >= MAX_GENTITIES ) {
+			return false;
+		}
+		idEntity *pad = gameLocal.entities[corner.actionEntityNum];
+		idVec3 landing;
+		float delta = 0.0f;
+		const idVec3 *steer = IsSteeredPadLanding( corner.actionEntityNum, corner.origin ) ? &corner.origin : NULL;
+		return PadLanding( pad, from, steer, landing, NULL, &delta ) && delta <= maxImpactDelta;
+	}
+
+	const idVec3 gravity = gameLocal.GetGravity();
+	const float g = gravity.Length();
+	if ( g <= 1.0f ) {
+		return true;
+	}
+	const float fall = Max( 0.0f, from.z - corner.origin.z +
+		( corner.travelType == NAVTRAVEL_JUMP ? pm_jumpheight.GetFloat() : 0.0f ) );
+	if ( 2.0f * g * fall * 0.0001f <= maxImpactDelta ) {
+		return true;		// water/materials only reduce an already safe impact
+	}
+	const idVec3 velocity = gravity * ( idMath::Sqrt( 2.0f * g * fall ) / g );
+	trace_t trace;
+	const idVec3 lift( 0.0f, 0.0f, pm_stepsize.GetFloat() + NAV_GROUND_OFFSET );
+	if ( NavAgentTranslation( trace, corner.origin + lift, corner.origin - lift ) ||
+		 trace.fraction <= 0.0f || trace.c.normal.z < NAV_WALKABLE_NORMAL_Z ) {
+		return false;
+	}
+	return NavLandingImpactDelta( trace, velocity, gravity ) <= maxImpactDelta;
 }
 
 /*
@@ -1557,8 +2513,12 @@ bool rvNavMesh::Build( void ) {
 
 	gridOrigin = gameLocal.GetWorldBounds( NULL )[0];
 
-	navAgentTrace = idTraceModel( GetAgentBounds() );
+	navAgentTrace = NavCreateAgentTrace( GetAgentBounds() );
 	navAgentModel = new idClipModel( navAgentTrace );
+	const float support = Min( NAV_LANDING_SUPPORT, GetAgentBounds()[1].x * 0.5f );
+	navSupportBounds[0].Set( -support, -support, 0.0f );
+	navSupportBounds[1].Set( support, support, support );
+	navSupportTrace = idTraceModel( navSupportBounds );
 
 	seeds.SetGranularity( 256 );
 	GatherSeeds( seeds );
@@ -1628,12 +2588,36 @@ bool rvNavMesh::Build( void ) {
 		}
 	}
 
-	gameLocal.Printf( "rvNavMesh: %d nodes, %d links, %d areas, %d components, %d landmarks, "
-					  "%d gap jumps, %d hazard volumes (%d priced nodes), %d transports (%d sealed nodes), "
+	// How much of the map one route can reach and come back from, and how
+	// many nodes are a dead end - ground with no way off it at all, which a
+	// pad that only bounces in place or a sealed volume with no landing
+	// leaves behind.  A map sweep reads these to find where bots get trapped.
+	idList<int> componentSize;
+	componentSize.SetNum( Max( numComponents, 1 ) );
+	for ( int i = 0; i < componentSize.Num(); i++ ) {
+		componentSize[i] = 0;
+	}
+	int deadEnds = 0;
+	for ( int i = 0; i < nodes.Num(); i++ ) {
+		if ( nodes[i].component >= 0 && nodes[i].component < componentSize.Num() ) {
+			componentSize[nodes[i].component]++;
+		}
+		if ( nodes[i].firstLink == -1 ) {
+			deadEnds++;
+		}
+	}
+	int largestComponent = 0;
+	for ( int i = 0; i < componentSize.Num(); i++ ) {
+		largestComponent = Max( largestComponent, componentSize[i] );
+	}
+
+	gameLocal.Printf( "rvNavMesh: %d nodes, %d links, %d areas, %d components (largest %.1f%%, %d dead ends), "
+					  "%d landmarks, %d gap jumps, %d hazard volumes (%d priced nodes), %d transports (%d sealed nodes), "
 					  "%d seeds in %d ms (cell %g)\n",
-					  nodes.Num(), links.Num(), numAreas, numComponents, numLandmarks, gapJumpLinks,
-					  hazards.Num(), hazardNodes, transports.Num(), transportNodes, seeds.Num(), buildMsec,
-					  cellSize );
+					  nodes.Num(), links.Num(), numAreas, numComponents,
+					  100.0f * (float)largestComponent / (float)Max( nodes.Num(), 1 ), deadEnds, numLandmarks,
+					  gapJumpLinks, hazards.Num(), hazardNodes, transports.Num(), transportNodes, seeds.Num(),
+					  buildMsec, cellSize );
 
 	return true;
 }
@@ -2245,7 +3229,7 @@ the map first.  Each accepted draw is then proven by a real route, because
 movers can make one branch temporarily unavailable.
 ================
 */
-bool rvNavMesh::RandomReachablePoint( const idVec3 &origin, idVec3 &result, rvNavPath *pathOut ) const {
+bool rvNavMesh::RandomReachablePoint( const idVec3 &origin, idVec3 &result, rvNavPath *pathOut, float maxImpactDelta ) const {
 	if ( pathOut ) {
 		pathOut->Clear();
 	}
@@ -2273,7 +3257,7 @@ bool rvNavMesh::RandomReachablePoint( const idVec3 &origin, idVec3 &result, rvNa
 		attempts++;
 
 		rvNavPath candidatePath;
-		if ( !FindPath( origin, nodes[candidate].origin, candidatePath ) ) {
+		if ( !FindPath( origin, nodes[candidate].origin, candidatePath, false, maxImpactDelta ) ) {
 			continue;
 		}
 
@@ -2436,6 +3420,127 @@ float rvNavMesh::PathCost( int startNode, int goalNode, float maxCost ) const {
 
 /*
 ================
+NavInsertBest
+
+Keeps the keepBest highest scores, best first.
+================
+*/
+static void NavInsertBest( float *best, int &numBest, int keepBest, float score ) {
+	int at = numBest;
+	if ( numBest < keepBest ) {
+		numBest++;
+	} else if ( score <= best[keepBest - 1] ) {
+		return;
+	} else {
+		at = keepBest - 1;
+	}
+	while ( at > 0 && best[at - 1] < score ) {
+		best[at] = best[at - 1];
+		at--;
+	}
+	best[at] = score;
+}
+
+/*
+================
+rvNavMesh::RankedSettle
+
+Goal pricing's fallback past its work budget: one Dijkstra from startNode that
+prices the candidates still in the running as it settles them, and stops as
+soon as none of those left could enter the best few - the exact searches'
+stop rule, applied to a single field.  A field that settled until every
+candidate was priced cost more than the searches it replaced.
+================
+*/
+void rvNavMesh::RankedSettle( int startNode, float maxCost, float startLeg, const navFieldTarget_t *targets,
+							  const int *remaining, int numRemaining, bool ranked, int keepBest,
+							  float *best, int &numBest, idList<int> &pricedNode, idList<float> &pricedCost ) const {
+	static idList<bool> done;
+
+	BeginSearch();
+	heap.SetNum( 0, false );
+
+	done.SetNum( Max( 0, numRemaining ), false );
+	int unpriced = 0;
+	float heaviest = 0.0f;			// the most an unpriced candidate weighs
+	float lightestExtra = idMath::INFINITY;
+	for ( int r = 0; r < numRemaining; r++ ) {
+		const navFieldTarget_t &target = targets[remaining[r]];
+		done[r] = false;
+		fieldTargetTag[target.node] = searchSerial;
+		unpriced++;
+		heaviest = Max( heaviest, target.weight );
+		lightestExtra = Min( lightestExtra, Max( 0.0f, target.extra ) );
+	}
+
+	gScore[startNode] = 0.0f;
+	openTag[startNode] = searchSerial;
+	HeapPush( startNode, 0.0f );
+
+	while ( heap.Num() && unpriced > 0 ) {
+		const int current = HeapPop();
+		if ( closedTag[current] == searchSerial ) {
+			continue;
+		}
+		if ( gScore[current] > maxCost ) {
+			break;
+		}
+		closedTag[current] = searchSerial;
+		stats.fieldNodes++;
+
+		if ( fieldTargetTag[current] == searchSerial ) {
+			bool pricedHere = false;
+			for ( int r = 0; r < numRemaining; r++ ) {
+				const navFieldTarget_t &target = targets[remaining[r]];
+				if ( done[r] || target.node != current ) {
+					continue;
+				}
+				done[r] = true;
+				unpriced--;
+				pricedHere = true;
+				pricedNode.Append( current );
+				pricedCost.Append( gScore[current] );
+				NavInsertBest( best, numBest, keepBest, Min( target.minWeight, target.weight ) /
+					Max( 1.0f, gScore[current] + startLeg + Max( 0.0f, target.extra ) ) );
+			}
+			if ( pricedHere ) {
+				heaviest = 0.0f;
+				lightestExtra = idMath::INFINITY;
+				for ( int r = 0; r < numRemaining; r++ ) {
+					if ( !done[r] ) {
+						heaviest = Max( heaviest, targets[remaining[r]].weight );
+						lightestExtra = Min( lightestExtra, Max( 0.0f, targets[remaining[r]].extra ) );
+					}
+				}
+			}
+		}
+
+		// Nothing unpriced can score more than its weight over a route at
+		// least as long as the ground settled so far.
+		if ( ranked && numBest >= keepBest && unpriced > 0 &&
+			 best[keepBest - 1] >= heaviest / Max( 1.0f, gScore[current] + startLeg + lightestExtra ) ) {
+			break;
+		}
+
+		for ( int l = nodes[current].firstLink; l != -1; l = links[l].next ) {
+			const int next = links[l].node;
+			const float tentative = gScore[current] + links[l].cost;
+			if ( tentative > maxCost ) {
+				continue;
+			}
+			if ( openTag[next] == searchSerial && tentative >= gScore[next] ) {
+				continue;
+			}
+
+			openTag[next] = searchSerial;
+			gScore[next] = tentative;
+			HeapPush( next, tentative );
+		}
+	}
+}
+
+/*
+================
 rvNavMesh::BuildCostField
 
 Ranked form: branch and bound over the targets instead of a field.  The
@@ -2447,6 +3552,11 @@ the best few, and the caller's top few are exact.  A Dijkstra field that
 proved the same thing settled a third of q4dm5 per decision and was four
 fifths of all bot navigation time; a handful of landmark-guided searches
 expand a few hundred nodes.
+
+Where the bounds are weak - q4dm1's long detours around pads and drops - each
+exact search re-expands the same ground, and a decision cost twice the map.
+Past a work budget the candidates still unpriced are priced from one bounded
+field instead, so a decision never costs much more than a field would have.
 ================
 */
 int rvNavMesh::BuildCostField( const idVec3 &origin, float maxCost, const navFieldTarget_t *targets,
@@ -2505,6 +3615,8 @@ int rvNavMesh::BuildCostField( const idVec3 &origin, float maxCost, const navFie
 
 	float best[NAV_FIELD_MAX_KEEP];
 	int numBest = 0;
+	const int budget = Max( NAV_PRICING_MIN_BUDGET, nodes.Num() / 8 );
+	int spent = 0;
 	for ( int k = 0; k < order.Num(); k++ ) {
 		const int i = order[k];
 		if ( ranked && numBest >= keepBest && best[keepBest - 1] >= bound[i] ) {
@@ -2520,7 +3632,20 @@ int rvNavMesh::BuildCostField( const idVec3 &origin, float maxCost, const navFie
 			}
 		}
 		if ( cost < 0.0f ) {
+			if ( spent > budget ) {
+				// Everything still in the running, priced and ranked by one field.
+				static idList<int> rest;
+				rest.SetNum( 0, false );
+				for ( int r = k; r < order.Num(); r++ ) {
+					rest.Append( order[r] );
+				}
+				RankedSettle( startNode, maxCost, startLeg, targets, rest.Ptr(), rest.Num(), ranked, keepBest,
+							  best, numBest, pricedNode, pricedCost );
+				break;
+			}
+			const int expandedBefore = stats.fieldNodes;
 			cost = PathCost( startNode, node, maxCost );
+			spent += stats.fieldNodes - expandedBefore;
 			pricedNode.Append( node );
 			pricedCost.Append( cost );
 		}
@@ -2530,21 +3655,8 @@ int rvNavMesh::BuildCostField( const idVec3 &origin, float maxCost, const navFie
 
 		// The least this target can be worth, so the stop rule never overrates
 		// what is already priced.
-		const float score = Min( targets[i].minWeight, targets[i].weight ) /
-			Max( 1.0f, cost + startLeg + Max( 0.0f, targets[i].extra ) );
-		int at = numBest;
-		if ( numBest < keepBest ) {
-			numBest++;
-		} else if ( score <= best[keepBest - 1] ) {
-			continue;
-		} else {
-			at = keepBest - 1;
-		}
-		while ( at > 0 && best[at - 1] < score ) {
-			best[at] = best[at - 1];
-			at--;
-		}
-		best[at] = score;
+		NavInsertBest( best, numBest, keepBest, Min( targets[i].minWeight, targets[i].weight ) /
+			Max( 1.0f, cost + startLeg + Max( 0.0f, targets[i].extra ) ) );
 	}
 
 	// Publish under a serial of its own: CostFieldDistance answers from this
@@ -2709,6 +3821,43 @@ bool rvNavMesh::WalkableLine( const idVec3 &from, const idVec3 &to, const char *
 		}
 	}
 
+	return true;
+}
+
+/*
+================
+rvNavMesh::LegTouchesGoal
+
+Sweeps the agent from the last corner toward a goal it could not reach
+exactly.  When the box stops, on floor, close enough that it overlaps a box
+standing at the goal, the stopping point is where the route ends.
+================
+*/
+bool rvNavMesh::LegTouchesGoal( const idVec3 &from, const idVec3 &goal, idVec3 &touch ) const {
+	idVec3 flat = goal - from;
+	flat.z = 0.0f;
+	if ( flat.LengthSqr() > Square( NAV_TRANSPORT_GOAL_REACH ) ||
+		 idMath::Fabs( goal.z - from.z ) > pm_stepsize.GetFloat() ) {
+		return false;
+	}
+
+	trace_t trace;
+	const idVec3 lift( 0.0f, 0.0f, NAV_GROUND_OFFSET );
+	NavAgentTranslation( trace, from + lift, goal + lift );
+
+	idVec3 left = goal - trace.endpos;
+	left.z = 0.0f;
+	if ( left.LengthSqr() > Square( NAV_GOAL_TOUCH_REACH ) ) {
+		return false;
+	}
+
+	idVec3 floor;
+	if ( !SampleFloor( trace.endpos + idVec3( 0.0f, 0.0f, pm_stepsize.GetFloat() ),
+					   pm_stepsize.GetFloat() + NAV_SMOOTH_MAX_DIP, floor ) || IsLethalFloor( floor ) ) {
+		return false;
+	}
+
+	touch = floor;
 	return true;
 }
 
@@ -3030,12 +4179,15 @@ void rvNavMesh::StringPull( const idList<int> &nodePath, const idVec3 &goal, rvN
 
 			// A running jump across a gap needs the bot moving at speed along
 			// the jump line when it leaves the ground, not arriving at the edge
-			// from the side.  Put a run-up corner behind the takeoff when both
-			// legs to it are plain floor.
+			// from the side, and so does a jump up more than two steps: a
+			// 47-unit crate is within reach of a 48-unit jump only from a run.
+			// Put a run-up corner behind the takeoff when both legs to it are
+			// plain floor.
 			if ( immediateTravel == NAVTRAVEL_JUMP ) {
 				idVec3 across = nodes[nodePath[i + 1]].origin - source;
 				across.z = 0.0f;
-				if ( across.Normalize() > cellSize * 1.6f ) {
+				const float rise = nodes[nodePath[i + 1]].origin.z - source.z;
+				if ( across.Normalize() > cellSize * 1.6f || rise > pm_stepsize.GetFloat() * 2.0f ) {
 					const idVec3 runup = source - across * NAV_GAP_RUNUP;
 					const idVec3 &before = ( path.Num() > 0 ) ? path[path.Num() - 1].origin : nodes[nodePath[0]].origin;
 					if ( ( before - runup ).LengthSqr() > 1.0f &&
@@ -3186,7 +4338,7 @@ retried, allowing a bot to choose another corridor without tracing every link
 the search merely considered.
 ================
 */
-bool rvNavMesh::FindPath( const idVec3 &start, const idVec3 &goal, rvNavPath &path ) const {
+bool rvNavMesh::FindPath( const idVec3 &start, const idVec3 &goal, rvNavPath &path, bool nearGoal, float maxImpactDelta ) const {
 	path.Clear();
 
 	if ( nodes.Num() == 0 ) {
@@ -3195,7 +4347,7 @@ bool rvNavMesh::FindPath( const idVec3 &start, const idVec3 &goal, rvNavPath &pa
 
 	const double startTicks = idLib::sys->GetClockTicks();
 	stats.pathSearches++;
-	const bool found = FindPathInternal( start, goal, path );
+	const bool found = FindPathInternal( start, goal, path, nearGoal, maxImpactDelta );
 	if ( !found ) {
 		stats.pathFailures++;
 	}
@@ -3209,7 +4361,7 @@ bool rvNavMesh::FindPath( const idVec3 &start, const idVec3 &goal, rvNavPath &pa
 rvNavMesh::FindPathInternal
 ================
 */
-bool rvNavMesh::FindPathInternal( const idVec3 &start, const idVec3 &goal, rvNavPath &path ) const {
+bool rvNavMesh::FindPathInternal( const idVec3 &start, const idVec3 &goal, rvNavPath &path, bool nearGoal, float maxImpactDelta ) const {
 	idVec3 routeStart = start;
 	idVec3 routeGoal = goal;
 
@@ -3227,7 +4379,19 @@ bool rvNavMesh::FindPathInternal( const idVec3 &start, const idVec3 &goal, rvNav
 	}
 
 	const int startNode = FindNearestNode( routeStart, 256.0f, true );
-	const int goalNode  = FindNearestNode( routeGoal, 256.0f, true );
+	int goalNode = FindNearestNode( routeGoal, 256.0f, true );
+
+	// Pursuit settles for the nearest node on the player's own floor when the
+	// exact spot proves no walk - a tight diagonal corridor, the lip of a
+	// ledge.  The chase ends close enough to see and to fight.
+	if ( goalNode == -1 && nearGoal && startNode != -1 ) {
+		const int nearest = FindNearestNode( routeGoal, NAV_NEAR_GOAL_REACH, false );
+		if ( nearest != -1 && !( nodes[nearest].flags & NAVNODE_TRANSPORT ) &&
+			 idMath::Fabs( nodes[nearest].origin.z - routeGoal.z ) <= NAV_SMOOTH_MAX_DIP ) {
+			goalNode = nearest;
+			routeGoal = nodes[nearest].origin;
+		}
+	}
 
 	if ( startNode == -1 || goalNode == -1 ) {
 		stats.snapFailures++;
@@ -3391,7 +4555,12 @@ bool rvNavMesh::FindPathInternal( const idVec3 &start, const idVec3 &goal, rvNav
 				path.Clear();
 				return false;
 			}
-			if ( LinkTraversable( nodePath[i], link ) ) {
+			navCorner_t landing;
+			landing.origin = nodes[nodePath[i + 1]].origin;
+			landing.travelType = links[link].travelType;
+			landing.actionEntityNum = links[link].actionEntityNum;
+			if ( LinkTraversable( nodePath[i], link ) &&
+				 LandingSurvivable( nodes[nodePath[i]].origin, landing, maxImpactDelta ) ) {
 				continue;
 			}
 
@@ -3443,6 +4612,35 @@ bool rvNavMesh::FindPathInternal( const idVec3 &start, const idVec3 &goal, rvNav
 			idBounds standing = GetAgentBounds();
 			standing.TranslateSelf( routeGoal );
 			if ( TransportAt( standing ) >= 0 ) {
+				path.SetTravelCost( start, exactTravelCost );
+				path.routeStart = routeStart;
+				return true;
+			}
+		}
+
+		// Two refusals are not real.  The goal's own snap proved the walk from
+		// the goal to its node, and a sweep the other way can stall on a
+		// slope's or a wall's clip epsilon that a box leaving the goal never
+		// meets - so the reverse proof stands.  And a goal set against a wall
+		// - an item in an alcove, an enemy flush with the brickwork - can sit
+		// where a player's box does not fit: the box stops a few units short,
+		// already overlapping whatever stands there, and that is arriving.
+		// A goal touching a pad is the exception above, never these: the walk
+		// from it starts inside the volume and proves nothing about walking in.
+		idBounds goalBox = GetAgentBounds();
+		goalBox.TranslateSelf( routeGoal );
+		if ( path.Num() > 0 && ( path[path.Num() - 1].origin - routeGoal ).LengthSqr() > 1.0f &&
+			 TransportAt( goalBox ) < 0 ) {
+			const idVec3 last = path[path.Num() - 1].origin;
+			idVec3 touch;
+			if ( WalkableLine( routeGoal, last ) ) {
+				path.Append( routeGoal, NAVTRAVEL_WALK );
+				path.SetTravelCost( start, exactTravelCost );
+				path.routeStart = routeStart;
+				return true;
+			}
+			if ( LegTouchesGoal( last, routeGoal, touch ) ) {
+				path.Append( touch, NAVTRAVEL_WALK );
 				path.SetTravelCost( start, exactTravelCost );
 				path.routeStart = routeStart;
 				return true;

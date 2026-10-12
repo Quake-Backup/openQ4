@@ -4887,6 +4887,13 @@ bool idMaterial::SetDefaultText( void ) {
 		SetText("material _retainedMultiply { sort gui twoSided { blend gl_dst_color, gl_zero vertexColor map _white } }");
 		return true;
 	}
+	if (idStr::Icmpn(GetName(),"_retainedAtlas/",15)==0) {
+		const char* index=GetName()+15;
+		if (!*index) return false;
+		for (const char* p=index;*p;++p) if (*p<'0' || *p>'9') return false;
+		SetText(va("material %s { sort gui twoSided { blend gl_one, gl_one_minus_src_alpha vertexColor nopicmip nearest clamp map _retainedAtlasImage%s } }",GetName(),index));
+		return true;
+	}
 	// Process-local retained UI image material. Do not mutate the original
 	// material's vertex colour/blending or add a networked content declaration.
 	// The runtime's first integration path accepts direct images and generated
@@ -4896,13 +4903,15 @@ bool idMaterial::SetDefaultText( void ) {
 	const bool retainedAdditive = idStr::Icmpn( GetName(), "_retainedAdd/", 13 ) == 0;
 	if ( retainedAdditive || idStr::Icmpn( GetName(), "_retained/", 10 ) == 0 ) {
 		const char* imageName = GetName() + ( retainedAdditive ? 13 : 10 );
+		const bool repeat = idStr::Icmpn( imageName, "_repeat/", 8 ) == 0;
+		if ( repeat ) imageName += 8;
 		if ( !imageName[0] ) return false;
 		for ( const char* p = imageName; *p; ++p ) {
 			if ( !( (*p >= 'a' && *p <= 'z') || (*p >= 'A' && *p <= 'Z') || (*p >= '0' && *p <= '9') ||
 				*p == '_' || *p == '-' || *p == '/' || *p == '.' ) ) return false;
 		}
-		idStr generated = va( "material %s { sort gui twoSided { blend %s vertexColor nopicmip linear clamp map \"%s\" } }", GetName(),
-			retainedAdditive ? "add" : "blend", imageName );
+		idStr generated = va( "material %s { sort gui twoSided { blend %s vertexColor nopicmip linear %s map \"%s\" } }", GetName(),
+			retainedAdditive ? "add" : "blend", repeat ? "" : "clamp", imageName );
 		SetText( generated.c_str() );
 		return true;
 	}

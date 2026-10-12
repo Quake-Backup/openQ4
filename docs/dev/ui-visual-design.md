@@ -1,6 +1,6 @@
 # openQ4 UI Visual Design
 
-Specification version 1.19, 7 October 2026 (1.15 and 1.16 earlier that day, 1.14 on 1 October, 1.10 to 1.13 the same day, 1.7 to
+Specification version 1.22, 11 October 2026 (1.19 on 7 October, 1.15 and 1.16 earlier that day, 1.14 on 1 October, 1.10 to 1.13 the same day, 1.7 to
 1.9 on 29 September, 1.6 on 28 September, 1.4 and 1.5 on 27 September, 1.1 to
 1.3 on 26 September, 1.0 on 8 September 2026). Status:
 implementation target; the replacement has not shipped. Applies to every
@@ -808,7 +808,8 @@ frames, reticles and checkboxes require vector work.
 | CRT dirt, scratches, glass reflections | Bitmap exception |
 | Static grain | Procedural noise; a bitmap only where the look depends on the stock grain |
 | Light bands, vignettes, page backing, list bands, progress shading | Vector gradients |
-| Scanlines, reticle grid, tick ramps, EKG and waveform traces | Vector or procedural patterns |
+| Scanlines, reticle grid, tick ramps and waveform traces | Vector or procedural patterns |
+| HUD EKG | Installed `ekg`, `s_ekg`, `s_ekg2` bitmaps; approved performance exception, 11 October 2026 |
 | Frames, plates, markers, boxes, arrows, scrollbars, tabs | Vector |
 
 Record each exception with purpose and source in the migration inventory.
@@ -1773,7 +1774,7 @@ and parallax off.
   gauge drawn from the slider's tick ramp. Crosshair, HUD scale, text size,
   brightness and color-vision rows preview live. Apply and Discard live in the
   prompt bar, and display changes keep the 15-second Keep or Revert countdown.
-- **Menu levels.** Home, pages and sub-pages (sections 8 and 9). Single Player
+- **Menu levels.** Home, pages, sub-pages and detail pages (sections 8 and 9). Single Player
   is a page whose sections, Campaign and Arena, each open a sub-page: Campaign
   includes a campaign choice (Quake 4 and installed Awakening content),
   then New Campaign (the difficulty choice) and Chapters (the reached
@@ -1782,6 +1783,21 @@ and parallax off.
   and Player Setup edits in place. A section that leads deeper summarizes itself
   in the content column, with a levelshot where one fits, until Accept opens it.
   Back always climbs one level.
+- **Fourth level.** Every child route beneath a sub-page uses the same detail
+  construction. The top band moves another 97 u, to a 517,-63 u translation;
+  the bottom band remains docked. Two parent crumbs occupy the thin spans at
+  39 and 136 u; the current title starts at 233,19 u. Each crumb uses the same
+  language fitting, 13 dp floor and clipping as the third level. Descending
+  takes 350 ms: outgoing content fades over 150 ms and sweeps 640 u over
+  300 ms, the band begins its 300 ms step at 50 ms, and the chosen label
+  carries into the new title slot. Back takes 300 ms and restores the immediate
+  parent title during its last 150 ms. Back during descent reverses the
+  presented pose over 150–300 ms; repeated activation cannot dispatch twice.
+  Reduced motion places the new level immediately with an 80 ms arrival.
+  Both Quake 4 and Awakening difficulty setup use this route, including entry
+  after a game-directory/module switch. Difficulty and Turbo are drafts until
+  Start Game. Chapters or other future child pages must use the same helper;
+  sibling tabs, Arena tier selection and modal dialogs do not add a level.
 - **Lists** (servers, saves, demos). Filters are small cut tags built like the
   header band. Sort from the column header or with north. The detail column
   shows the levelshot, players and rules; Join, Spectate and Favorite sit in
@@ -1810,6 +1826,9 @@ and parallax off.
 - **Depth.** The backdrop, light, grid and frame layers may shift by up to 6 dp
   with the pointer, the right stick or device tilt. Content never moves.
   Reduced motion disables the shift, and the Phone profile starts with it off.
+  On the retained title, apply pointer depth to the scene image only; the
+  vector light, grid and framing stay stationary so fractional pointer movement
+  does not rebuild their analytic coverage. Their scripted band motion remains.
 - **Focus light.** The focused plate gains a soft additive glow in
   `marine.glow`, about 24 dp across, beside its focus rail. High-contrast mode
   replaces the glow with a solid rail.
@@ -1983,22 +2002,34 @@ y 419. Remastered centers the three gauges as one status bar (section 14.4).
 
 ### 14.3 Gauges
 
+- **Legacy parity (11 October 2026 review).** Keep the group centered, with
+  the legacy gauge sizes, gaps, vertical positions and internal offsets.
+  Match the background's colour, saturation and transparency after texture
+  modulation, not just the GUI tint. Marine fill interiors multiply that tint
+  by 148/255, Strogg by 171/255, and armor by 175/255, with the original soft
+  bevel. Armor dividers modulate alpha to 155/255; do not paint dark lines or
+  add an extra opaque rim. The black backing remains at 0.50 by default.
 - **Fill.** The fill is anchored at its trailing end and drains toward the
   numerals. The drained part stays visible as the track, the same art at 20%.
   Below about 23% only the band above the notch remains.
 - **Ammo.** For a weapon with a clip of two or more, the clip count is large
-  (Chain 36 dp), the reserve small (Chain 23 dp), and the fill shows the clip.
+  (legacy textscale 0.5), the reserve small (0.32 Marine, 0.26 Strogg),
+  and the fill shows the clip.
   Otherwise the total shows alone and the fill shows it against the maximum.
   Weapons with unlimited ammunition show no number and a full fill. The
-  selected weapon's own shaded render (its `mtr_icon`, section 14.16) sits
+  selected weapon's original installed bitmap (its `mtr_icon`, section 14.16) sits
   behind the clip count at #C7BD78, 0.40, where the stock draws its
   right-aligned texture into the 106x26 u window, and changes with the weapon;
   the multiplayer gauge has none.
   Multiplayer always shows the total and tints the ammo fill in the weapon's
   color at 20% and 50%.
-- **Numerals.** Chain, aligned to a fixed trailing edge. Stock Chain digits are
-  proportional, so the leading edge moves as digits change; Remastered uses
-  tabular figures, and Classic keeps the stock digits.
+- **Numerals.** As corrected on 9 October 2026, the on-foot status bar uses
+  the legacy TTF layout exactly: Chain for Marine, r_strogg for Strogg, whole
+  proportional strings aligned right in the original text rectangles. Preserve
+  the two-unit inset, atlas selection, glyph advances, line height, clipping
+  and each Marine text window's own shear origin. The centered status-bar
+  anchor and user HUD scale apply to the complete gauge group. Do not use
+  tabular digit cells or a separately estimated text baseline.
 - **Gains.** A rising value pops its numeral to 120% in white, settling to 100%
   and the readout color over 250 ms, and its icon flashes white. Damage never
   animates a gauge; it drives the hit indicator.
@@ -2010,6 +2041,11 @@ y 419. Remastered centers the three gauges as one status bar (section 14.4).
   beats per width moving toward the trailing edge at 37.5 dp/s (24 beats a
   minute), #161B0E, and #4C0D00 at low health. It is an instrument, so reduced
   motion keeps it moving.
+  The product owner's 11 October 2026 performance review approves the installed
+  legacy bitmap for this instrument. Repeat each complete texture with UV
+  scrolling under the existing vector mask, retaining its tint, glow and speed.
+  Marine uses `ekg.tga`; Strogg uses `s_ekg.tga` and `s_ekg2.tga` at 0.2 and
+  0.38 widths/s. Do not extract or redistribute the installed images.
   - **Trace.** Draw the measured trace, never a smoothed curve. The baseline
     sits at 58% of the gauge height. Each 62.5 u beat has a triangular P wave
     rising 3.5 u (11.2–18.6 u), a 2.5 u Q dip, an R spike rising 17.5 u and an
@@ -2081,6 +2117,9 @@ and goes. A vehicle's gauges and weapon panel take the status bar's place
 Couch and Handheld start at 125%. The player sets a safe inset of 0–10%, which
 moves every edge anchor inward; the center anchor never moves. Elements keep
 their stock shape and shear at every scale, and nothing stretches.
+On a narrow screen the status bar's effective scale is limited to the available
+safe width so all three gauges remain visible; this does not change the saved
+HUD-scale preference. The other anchor groups retain the requested scale.
 
 **Classic.** The Classic preset keeps the stock 4:3 rectangles centered in the
 view, with no expansion: the gauges return to 13, 190 and 326 u, the pickup line
@@ -2263,24 +2302,21 @@ its wheel is the Marine wheel with these changes:
   - **Classic waveform.** Its motion is the additive #FF8000 carrier waveform, the
     stock `waveform.tga`: a recorded voice trace with a 4-texel core and
     bursts of spikes up to 32% of its height above and below it, flat in 37%
-    of its columns. Rebuild it column by column as vector bars (Appendix
-    B.5); a generated zigzag does not read as speech.
+    of its columns. The product owner's 11 October bitmap exception uses the
+    installed image directly; a generated zigzag does not read as speech.
   - **Mask and Classic scroll.** A right trapezoid 19.2 u wide at the top and 23.1 u
     at the bottom, its leading side leaning with the plate. The trace scrolls
     toward the leading edge at 24.6 u/s.
-  - **Playback graph.** Classic steps its height every 79 ms through the canned
-    table, 0.71 to 2.5 times, core included. Remastered draws actual decoded PCM
-    peaks from the playing radio channel: 40 columns at 60 Hz, oldest at the
-    leading edge and the current sample at the trailing edge. The 650 ms history
-    changes shape with the line, including pauses between words; it never scales
-    a prerecorded trace. The normalized peak has a square response, with each
-    side reaching 32% of the drawing rectangle's height above/below a thin core.
-    Read the sample's playback cursor, including pause, pitch and slow motion;
-    never advance it from UI frames. Meter before user volume changes. Missing,
-    stopped and finished audio is a flat core, with no canned fallback. New
-    samples clear the previous line's history. Other player sounds cannot drive
-    the radio graph. Reduced motion shows a stationary band at the current
-    level, preserving the instrument's information without horizontal motion.
+  - **Transmission graph.** Classic keeps its measured bitmap and canned table.
+    The product owner's 11 October 2026 follow-up replaces the approximate
+    preset with the installed legacy `waveform.tga`. Remastered repeats that
+    bitmap at 0.6 texture widths/s with the stock 21-sample `wavTable` centred
+    UV scaling, including its duplicated endpoint and separate wrap sample.
+    The full 41x25 u radio image sits under the existing trapezoid with the same
+    additive colour; do not squeeze it to the mask's narrower bounds. Do not
+    extract or redistribute the image. It indicates transmission activity,
+    not measured loudness. Chatter events still show/hide the display; Reduced
+    Motion holds the pattern still. No per-frame PCM bindings are required.
   - **Squad emblem.** When the line addresses the player, the player's squad
     stencil (#FFFF00) and its black 0.40 plate shrink into place beside the
     bar over 500 ms, the stencil from 42x39 u to 22x22 u. Every new line
@@ -2506,14 +2542,12 @@ of the stock's breathing lines in the center column.
 **Voice (Remastered).** One plate per talker stacks directly above the chat
 box, newest nearest it: a sheared HUD plate at black 0.50 holding the
 transmission trace (section 14.8) in the talker's team text color, or #FFFF8D
-in deathmatch, plotting their actual decoded playback history, then the speaker symbol and the
-name. Your own transmission reads YOU on the header-band plate at 0.30 with a
-microphone. Every talker owns a separate audio history; never share a meter or
-invent differing phases. Your own display follows the outgoing audio stream,
-received displays follow the decoded stream that is being played. A muted,
-unavailable or disconnected source stays flat. The temporary stock MP adapter
-fits 24 samples into its smaller graph; the complete talker plates use the same
-40-sample history as radio. Restoring the multiplayer microphone capture,
+in deathmatch, then the speaker symbol and the name. Your own transmission
+reads YOU on the header-band plate at 0.30 with a microphone. The approved
+performance fallback uses the same preset activity pattern as radio, with
+40 visible columns and no per-frame audio-level bindings. Talker visibility,
+names and team colours continue to follow game events. Reduced Motion holds
+the pattern still. Restoring the multiplayer microphone capture,
 codec and playback backend is a separate unfinished integration dependency.
 
 ### 14.10 Alarms and motion
@@ -2531,7 +2565,7 @@ codec and playback backend is a separate unfinished integration dependency.
 | Dead Zone score | Jumps to the team color on each control tick and relaxes to white | A steady team color for 1 s |
 | Timer, last ten seconds | #E46D56 with a 1 Hz pulse (Remastered) | Steady #E46D56 |
 | Tourney arena finished | Blue 1.00 to 0.40 over 500 ms | Immediate 0.40 |
-| Voice waveform | Actual playback history | Stationary current-level band |
+| Radio/voice waveform | Installed legacy trace and height table, 1667 ms loop | Stationary pattern |
 | Vehicle warnings | 2 Hz hull and shield, 1 Hz electric | Steady warning colors |
 | Spectator text | 900 ms breathing | Steady |
 | EKG | 37.5 dp/s | Kept: it is an instrument |
@@ -2975,9 +3009,10 @@ ring with ticks in their gaps, a center dot and two drop chevrons below it.
 
 ### 14.16 Item icons
 
-Every stock item icon is redrawn as vector paths, including the weapon renders
-and powerup emblems that section 6 formerly left as bitmaps. The award medals
-remain bitmaps. Quake 4 has no single-player inventory items: no keys,
+Stock pickup and weapon-strip icons use vector paths. The side-on weapon
+backdrops in the ammo gauge use their original installed bitmap materials,
+including the weapon-specific `mtr_icon` for expansion weapons. The award
+medals remain bitmaps. Quake 4 has no single-player inventory items: no keys,
 keycards or data disks. The single-player pickups are health, armor and the
 weapon and ammunition icons.
 
@@ -3153,6 +3188,9 @@ rings are circles on the 640x480 canvas. Its parts, measured on the canvas:
   clock (section 8), so every repaint finds them where continuous motion would
   have. The screen repaints at each step and, during a long step, whenever the
   engine can, at most 30 times a second. Reduced motion holds them still.
+  Reuse the dim rotating artwork's geometry and reduce optional redraws when
+  their measured cost would take time from loading; never prolong startup to
+  show an animation or wait for a full turn.
 - **Accents.** Remastered adds four quiet layers that keep close to the stock
   picture, on the presentation clock with the rings. Reduced motion holds the
   sweep still as a key light at the upper left, its leading edge 38 degrees
@@ -3327,6 +3365,19 @@ plan rather than being implied by the prototype.
 
 ### 14.20 Recovery, death and loading continuity
 
+**Air Defense crash awakening.** Only `airdefense1`'s `cin_opening` camera
+receives this treatment, driven by the three authored black fade-ins and two
+blackouts. Each wake restores acuity over the original fade duration plus
+2300 ms, starting at 16 dp Gaussian sigma and 0.62 saturation. A warm brown
+periphery and asymmetric, feathered upper/lower eyelid shades open with it;
+the middle remains unobstructed. A single subtle focus hesitation at 1.8–4.1 s
+suggests difficulty staying conscious. Blackout closes the same treatment
+under the original opaque fade, on its original deadline. Do not add white
+flashes, camera motion, audio, or script delays. Reduced motion or reduced
+flashing omits the hesitation. Camera exit, death, restore and disabling the
+retained interface discard the transient state. Every wake clears fully,
+including the final return to gameplay; the dropship sequence is unaffected.
+
 **MCC treatment recovery.** The opening of `mcc_2` is Kane regaining
 consciousness after medical treatment. Preserve the three authored fades,
 doctor dialogue, bed camera, objectives and release timing. During each white
@@ -3339,12 +3390,22 @@ sits below the readable HUD and subtitles and covers the full viewport.
 
 **Death.** Preserve the original camera, respawn and fade-to-black deadlines.
 Over 1800 ms, smoothly drain scene saturation to 0.06 and soften it to
-3.4 dp sigma. A charcoal peripheral shade darkens the corners while the
-center retains scene detail. A restrained warm afterimage rises over 120 ms
-and decays by 1400 ms; reduced motion omits that accent. The HUD remains
+3.4 dp sigma. One extra focus swell rises over 320 ms and settles by 1570 ms,
+adding at most 4.5 dp to the same filter. A charcoal peripheral shade darkens
+the corners while the center retains scene detail. A second, softer inward
+shade arrives from 300 to 2400 ms, without moving or cropping the camera.
+A restrained warm afterimage eases in over 120 ms and decays by 1400 ms;
+reduced motion or reduced flashing omits both transient accents. The HUD remains
 sharp, there is no camera shake or strobing, and revival, restore or changing
 the interface preference clears transient effect state. Classic retains the
 original view effects.
+
+**Before loading.** Finish a 240 ms smooth fade of the outgoing view to
+opaque black before unloading the level or showing the loading screen.
+Reduced motion uses 80 ms. The rectangle covers the full physical view,
+including side screens and tall bands. Present a terminal black frame even
+when frame time skips across the deadline. Keep that frame until the loading
+presentation takes over; retain the existing loading-screen reveal.
 
 ## Appendix A. Stock survey method
 
@@ -3801,13 +3862,20 @@ Version 1.15 adds the measured Medical Labs implant activation as section
 14.19, including its 4650 ms lifetime, independent hurt pulse and full wide/tall
 composition. The atlas gains an editable sheet with five aspect ratios and
 timeline controls. Register schema 14 appends `FLOW-062` for its remaining
-retained vehicle-HUD migration.
+retained vehicle-HUD migration. The retained title keeps pointer depth on its
+scene image while stationary vector furniture avoids costly coverage rebuilds.
 
 ### Version 1.16
 
-Version 1.16 replaces the scope smear with a feathered Gaussian surround for
-every optic and specifies MCC treatment recovery and death grading (section
-14.20).
+Version 1.16 adds a shared fourth menu level, campaign setup drafts and
+matching forward/Back transitions; replaces the scope smear with a feathered
+Gaussian surround for every optic; and specifies MCC treatment recovery,
+death grading and a short black handover before loading (section 14.20).
+Initialization now runs the layered artwork during real engine startup. Its
+machined bands remain editable as radial color stops, the sweep uses conic
+paint, and its full frame fits the Vulkan geometry budget through 4K.
+Register schema 15 supersedes `FLOW-050` with `FLOW-063` and `FLOW-053` with
+`FLOW-064`, and appends `FLOW-065` for the game-driven continuity effects.
 
 ### Version 1.17
 
@@ -3850,3 +3918,11 @@ channel switches: D-pad Down and V hold it open in multiplayer, alive, dead or
 spectating; it opens on Team in a team game, where the zoom control switches
 the channel and the hub shows that control's key; releasing inside the dead
 zone sends nothing.
+
+### Version 1.22: crash awakening and death
+
+Section 14.20 adds the Air Defense crash's fade-driven focus recovery and
+soft eyelid shading, plus one settling focus swell and delayed peripheral
+darkening on death. Both preserve original scene timing, readable HUD and
+subtitles, and the reduced-motion/flashing preferences. The presentation uses
+editable gradients and the existing scene filter, without new bitmap assets.

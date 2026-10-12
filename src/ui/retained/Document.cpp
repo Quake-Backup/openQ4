@@ -51,6 +51,8 @@ bool ValidProperty(const std::string& name, const Value& value) {
 		else if (auto entry = keywords.find(name); entry != keywords.end()) valid = value.type == ValueType::Keyword && entry->second.contains(value.text);
 		else if (name == "opacity" || name == "backdrop-saturate" || name == "backdrop-streak") valid = value.type == ValueType::Number && value.data[0] >= 0 && value.data[0] <= 1;
 		else if (name == "flex-grow" || name == "flex-shrink") valid = value.type == ValueType::Number && value.data[0] >= 0;
+		else if (name == "image-offset-x" || name == "image-offset-y") valid = value.type == ValueType::Number;
+		else if (name == "image-scale-x" || name == "image-scale-y") valid = value.type == ValueType::Number && value.data[0] > 0;
 		else if (name == "font-family") valid = value.type == ValueType::Font;
 		else if (name == "text") valid = value.type == ValueType::Text;
 		else if (name == "transform") valid = value.type == ValueType::Transform;
@@ -887,12 +889,19 @@ private:
 
 	Node ReadNode(const Json::Value& value, const std::string& path, unsigned depth) {
 		Require(depth <= 48 && ++nodeCount <= 65536,value,path,"Document hierarchy exceeds the node/depth limit");
-		Fields(value,path,{"id","type","properties","children","paths","mask","control","modal","extensions"});
+		Fields(value,path,{"id","type","properties","children","paths","mask","control","modal","legacyText","extensions"});
 		Node result;
 		result.id = Id(value["id"],path+"/id");
 		Require(nodeIds.insert(result.id).second,value["id"],path+"/id","Duplicate node ID '"+result.id+"'");
 		Require(value["type"] == "group" || value["type"] == "text" || value["type"] == "vector" || value["type"] == "image",value["type"],path+"/type","Supported node types are group, text, vector and image; unsupported nodes cannot be silently rendered");
 		result.type = value["type"].asString();
+		if (value.isMember("legacyText")) {
+			Require(value["legacyText"].isString() && result.type == "text" &&
+				(value["legacyText"].asString()=="window" || value["legacyText"].asString()=="simple"),
+				value,path+"/legacyText","Legacy text layout requires a text node and window or simple");
+			result.legacyText = true;
+			result.legacyTextClip = value["legacyText"].asString()=="window";
+		}
 		if (value.isMember("modal")) {
 			const auto& modal = value["modal"]; const auto p = path+"/modal";
 			Fields(modal,p,{"initialFocus","back","extensions"});
@@ -1117,6 +1126,11 @@ private:
 		}
 		Require(result.type != "image" || result.properties.contains("image"),value,path,
 			"An image node requires an explicit image source property; an empty source shows no picture");
+		if (HasImageCoordinates(result)) {
+			const auto fit=result.properties.find("image-fit");
+			Require(fit==result.properties.end() || fit->second.text=="fill",value,path+"/properties/image-fit",
+				"Repeating image coordinates require fill sizing");
+		}
 		if (value.isMember("children")) {
 			Require(value["children"].isArray(),value["children"],path+"/children","Expected a child array");
 			Require(result.type != "text" || value["children"].empty(),value["children"],path+"/children","Text nodes cannot own child nodes");
@@ -1535,7 +1549,8 @@ void MarkupNode(const Node& node, std::string& output) {
 	for (const auto& [name,value] : node.properties) if (name != "text") {
 		if (name == "opacity") { if (value.data[0] < 1) output += "filter:opacity("+value.Css()+");"; }
 		else if (name == "backdrop-blur" || name == "backdrop-saturate" || name == "backdrop-streak") continue; // Folded into backdrop-filter.
-		else if (name == "image") output += "decorator:"+ImageDecorator(node,value.text)+";";
+		else if (name == "image") { if (!HasImageCoordinates(node)) output += "decorator:"+ImageDecorator(node,value.text)+";"; }
+		else if (name == "image-offset-x" || name == "image-offset-y" || name == "image-scale-x" || name == "image-scale-y") continue;
 		else if (name == "image-fit" || name == "image-align-x" || name == "image-align-y" || name == "image-blend") continue; // Folded into the decorator.
 		else output += name+":"+value.Css()+";";
 	}
@@ -1606,6 +1621,10 @@ bool ParseStateValues(const std::string& source, StateValues& values, std::vecto
 	values = std::move(candidate); return true;
 }
 const Node* DocumentModel::FindNode(const std::string& id) const { return Find(root,id); }
+bool HasImageCoordinates(const Node& node) {
+	return node.properties.contains("image-offset-x") || node.properties.contains("image-offset-y") ||
+		node.properties.contains("image-scale-x") || node.properties.contains("image-scale-y");
+}
 std::string ImageDecorator(const Node& node, const std::string& source) {
 	if (source.empty() || !ValidImageSource(source)) return "none";
 	auto keyword = [&](const char* name, const char* fallback) {

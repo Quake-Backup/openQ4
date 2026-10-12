@@ -433,7 +433,7 @@ void rvStateThread::Restore( idRestoreGame *saveFile, idClass* owner ) {
 	int restoredResult;
 	saveFile->ReadInt( restoredResult );
 	lastResult = static_cast<stateResult_t>( restoredResult );
-	if ( saveFile->GetOpenQ4SaveGameCompatibilityVersion() == OPENQ4_SAVEGAME_COMPATIBILITY_VERSION ) {
+	if ( saveFile->GetOpenQ4SaveGameCompatibilityVersion() >= OPENQ4_SAVEGAME_TYPED_COMPATIBILITY_VERSION ) {
 		saveFile->ReadInt( packedFlags );
 		fl.stateCleared = ( packedFlags & BIT( 0 ) ) != 0;
 		fl.stateInterrupted = ( packedFlags & BIT( 1 ) ) != 0;

@@ -197,7 +197,7 @@ void rvAIAction::Restore ( idRestoreGame *savefile ) {
 	int num;
 	int packedFlags;
 
-	if ( savefile->GetOpenQ4SaveGameCompatibilityVersion() == OPENQ4_SAVEGAME_COMPATIBILITY_VERSION ) {
+	if ( savefile->GetOpenQ4SaveGameCompatibilityVersion() >= OPENQ4_SAVEGAME_TYPED_COMPATIBILITY_VERSION ) {
 		savefile->ReadInt( packedFlags );
 		fl.disabled = ( packedFlags & BIT( 0 ) ) != 0;
 		fl.noPain = ( packedFlags & BIT( 1 ) ) != 0;

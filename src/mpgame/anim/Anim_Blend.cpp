@@ -3447,6 +3447,7 @@ idAnimator::idAnimator() {
 // RAVEN BEGIN
 // jshepard:
 	rateMultiplier			= 1;
+	playbackRateScale		= 1.0f;
 // RAVEN END
 
 	frameBounds.Clear();
@@ -3535,6 +3536,8 @@ void idAnimator::Save( idSaveGame *savefile ) const {
 			channels[ i ][ j ].Save( savefile );
 		}
 	}
+	savefile->WriteFloat( rateMultiplier );
+	savefile->WriteFloat( playbackRateScale );
 }
 
 /*
@@ -3615,6 +3618,15 @@ void idAnimator::Restore( idRestoreGame *savefile ) {
 	for( i = ANIMCHANNEL_ALL; i < ANIM_NumAnimChannels; i++ ) {
 		for( j = 0; j < ANIM_MaxAnimsPerChannel; j++ ) {
 			channels[ i ][ j ].Restore( savefile, modelDef );
+		}
+	}
+	rateMultiplier = 1.0f;
+	playbackRateScale = 1.0f;
+	if ( savefile->GetOpenQ4SaveGameCompatibilityVersion() >= 4 ) {
+		savefile->ReadFloat( rateMultiplier );
+		savefile->ReadFloat( playbackRateScale );
+		if ( !( playbackRateScale >= 0.001f && playbackRateScale <= 1.0f ) ) {
+			savefile->Error( "idAnimator::Restore: invalid playback rate scale" );
 		}
 	}
 }
@@ -3936,7 +3948,7 @@ void idAnimator::CycleAnim( int channelNum, int animNum, int currentTime, int bl
 	}
 	
 	PushAnims( channelNum, currentTime, blendTime );
-	channels[ channelNum ][ 0 ].CycleAnim( modelDef, animNum, currentTime, blendTime, rateMultiplier );
+	channels[ channelNum ][ 0 ].CycleAnim( modelDef, animNum, currentTime, blendTime, rateMultiplier * playbackRateScale );
 	if ( entity ) {
 		entity->BecomeActive( TH_ANIMATE );
 	}
@@ -3969,7 +3981,7 @@ void idAnimator::PlayAnim( int channelNum, int animNum, int currentTime, int ble
 	}
 	
 	PushAnims( channelNum, currentTime, blendTime );
-	channels[ channelNum ][ 0 ].PlayAnim( modelDef, animNum, currentTime, blendTime, rateMultiplier );
+	channels[ channelNum ][ 0 ].PlayAnim( modelDef, animNum, currentTime, blendTime, rateMultiplier * playbackRateScale );
 	if ( entity ) {
 		entity->BecomeActive( TH_ANIMATE );
 	}
@@ -4064,6 +4076,21 @@ jointMod_t* idAnimator::FindJointMod ( jointHandle_t jointnum ) {
 idAnimator::SetPlaybackRate
 =====================
 */
+void idAnimator::SetPlaybackRateScale( float scale ) {
+	scale = idMath::ClampFloat( 0.001f, 1.0f, scale );
+	if ( scale == playbackRateScale ) {
+		return;
+	}
+	const float ratio = scale / playbackRateScale;
+	for ( int channel = ANIMCHANNEL_ALL; channel < ANIM_NumAnimChannels; ++channel ) {
+		for ( int blend = 0; blend < ANIM_MaxAnimsPerChannel; ++blend ) {
+			idAnimBlend &anim = channels[ channel ][ blend ];
+			anim.SetPlaybackRate( gameLocal.time, anim.GetPlaybackRate() * ratio );
+		}
+	}
+	playbackRateScale = scale;
+}
+
 void idAnimator::SetPlaybackRate( const char* animName, float rate ) {
 	SetPlaybackRate( GetAnim(animName), rate );
 }

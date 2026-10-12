@@ -6,6 +6,8 @@
 #include <RmlUi/Core/ElementUtilities.h>
 #include <RmlUi/Core/RenderManager.h>
 #include <RmlUi/Core/PropertyDefinition.h>
+#include <RmlUi/Core/StringUtilities.h>
+#include <RmlUi/Core/StyleSheetTypes.h>
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -25,17 +27,26 @@ bool SameCompilation(const std::array<double,12>& current, const std::array<doub
 }
 void VectorGeometry::Configure(const std::vector<VectorPath>& source, Host& owner, RuntimeStatistics& measurements) {
 	paths = source; host = &owner; statistics = &measurements;
-	cache.clear(); valid = false;
+	cache.clear(); valid = renderReady = false;
 	hitGeometry.clear(); hitPrepared = hitValid = hitArea = false;
 }
 void VectorGeometry::CopyArtworkFrom(const VectorGeometry& source) {
-	paths = source.paths; host = source.host; statistics = source.statistics; multiply = {};
-	cache.clear(); valid = false;
+	paths = source.paths; host = source.host; statistics = source.statistics; multiply = {}; coverage = {};
+	cache.clear(); valid = renderReady = false;
 	hitGeometry.clear(); hitPrepared = hitValid = hitArea = false;
 }
 void VectorElement::CopyArtworkFrom(const VectorElement& source) {
+	measurements=source.measurements;
 	paint.CopyArtworkFrom(source.paint); mask.CopyArtworkFrom(source.mask);
 	hasMask = source.hasMask;
+	legacyText=source.legacyText; legacyTextClip=source.legacyTextClip; textHost=source.textHost; text=source.text;
+	textItems.clear(); textGeometry.clear(); textTextures.clear();
+	textLayoutValid=false;
+	coordinatesImage=source.coordinatesImage; additiveImage=source.additiveImage; imageSource=source.imageSource;
+	imageCoordinates=std::make_shared<ImageCoordinates>(*source.imageCoordinates); imageSampling=source.imageSampling;
+	replayOpacity=source.replayOpacity ? std::make_shared<float>(*source.replayOpacity) : nullptr;
+	replayText=source.replayText;
+	imageTexture={}; imageGeometry={};
 }
 bool VectorGeometry::PrepareHitGeometry(Rml::Element& element, Rml::Vector2f& origin) {
 	if (!host || !element.GetContext()) return false;
@@ -97,6 +108,30 @@ void VectorGeometry::Render(Rml::Element& element, bool inheritOpacity) {
 	if (density <= 0 || size.x <= 0 || size.y <= 0) return;
 	const auto offset = element.GetAbsoluteOffset(Rml::BoxArea::Border);
 	const auto state = manager->GetState();
+	const auto viewport = manager->GetViewport();
+	const double opacity = inheritOpacity ? std::clamp(static_cast<double>(element.GetComputedValues().opacity()),0.0,1.0) : 1;
+	if (opacity<=0) return;
+	const std::array<float,6> inputs{density,size.x,size.y,offset.x,offset.y,float(opacity)};
+	const auto drawCached=[&] {
+		const auto& entry=cache.front();
+		manager->SetTransform(cachedLocalMesh ? &cachedTransform : nullptr);
+		for (size_t i=0;i<entry.geometry.size();++i) {
+			if (entry.blends[i]==PathBlend::Multiply) entry.geometry[i].Render(cachedTranslation,multiply);
+			else if (cachedPartition) entry.geometry[i].Render(cachedTranslation,coverage);
+			else entry.geometry[i].Render(cachedTranslation);
+		}
+		manager->SetState(state);
+	};
+	// Layout, output transform, clip and opacity fully determine a compiled
+	// vector's submission. A settled instrument need not recompute coverage
+	// phases, projected bounds or path classification for every frame.
+	if (renderReady && !cache.empty() && inputs==renderInputs && inheritOpacity==renderInheritOpacity &&
+		state.transform==renderTransform && state.scissor_region==renderScissor && viewport==renderViewport) {
+		++statistics->vectorCacheHits;
+		for (const auto& mesh:cache.front().meshes) statistics->visibleVectorCacheBytes+=mesh.vertices.capacity()*sizeof(VectorVertex)+mesh.indices.capacity()*sizeof(int);
+		drawCached(); return;
+	}
+	renderReady=false;
 	auto project = [&](float x, float y) {
 		const auto p = state.transform*Rml::Vector4f(offset.x+x,offset.y+y,0,1);
 		return p;
@@ -115,7 +150,24 @@ void VectorGeometry::Render(Rml::Element& element, bool inheritOpacity) {
 	for (double value : {options.transform.a,options.transform.b,options.transform.c,options.transform.d,options.transform.tx,options.transform.ty}) {
 		if (!std::isfinite(value)) { host->Log(true,"Vector "+element.GetId()+": non-finite output transform"); return; }
 	}
-	const auto viewport = manager->GetViewport();
+	// Faint/soft artwork authored without pixel coverage has no screen-space
+	// edges to rebuild. Compile it in local pixels and let the render manager
+	// transform the cached triangles. Keep analytic masks and strokes (whose
+	// width can depend on the output transform) on their exact output-space path.
+	const bool localMesh = inheritOpacity && std::all_of(paths.begin(),paths.end(),[](const VectorPath& path) {
+		return !path.antialias && path.stroke.paint.type == PaintType::None;
+	});
+	Rml::Matrix4f localTransform = Rml::Matrix4f::Identity();
+	if (localMesh) {
+		const auto output = options.transform;
+		// Round upwards with headroom: sub-pixel float noise during rotation must
+		// not invalidate a mesh, and curve error stays below tolerance at this DPI.
+		const double scale = (std::round(output.MaximumScale()*64)+1)/64;
+		localTransform.SetColumns({float(output.a/scale),float(output.b/scale),0,0},
+			{float(output.c/scale),float(output.d/scale),0,0}, {0,0,1,0},
+			{float(output.tx),float(output.ty),0,1});
+		options.transform = {scale,0,0,scale,0,0};
+	}
 	VectorPixelBounds bounds{0,0,viewport.x,viewport.y};
 	if (state.scissor_region.Valid()) {
 		bounds.left = std::clamp(state.scissor_region.Left(),0,viewport.x);
@@ -158,8 +210,8 @@ void VectorGeometry::Render(Rml::Element& element, bool inheritOpacity) {
 			own.bottom > cachedBounds.bottom;
 		if (outgrows && ownArea <= 4.0*std::max(1.0,double(viewport.x)*double(viewport.y))) cachedBounds = own;
 	}
-	options.pixelBounds = cachedBounds;
-	const double opacity = inheritOpacity ? std::clamp(static_cast<double>(element.GetComputedValues().opacity()),0.0,1.0) : 1;
+	if (localMesh) cachedBounds = {}; // Final clipping belongs to the render manager.
+	else options.pixelBounds = cachedBounds;
 	// Fully transparent geometry adds nothing under any blend: neither
 	// tessellate nor submit it (a HUD keeps many faded nodes at zero).
 	if (opacity <= 0) return;
@@ -189,9 +241,9 @@ void VectorGeometry::Render(Rml::Element& element, bool inheritOpacity) {
 		Compilation fresh; fresh.signature = signature;
 		for (const auto& path : paths) {
 			VectorMesh result; std::string error;
-			const auto start = std::chrono::steady_clock::now();
+			const auto start = statistics->Now();
 			const bool success = TessellatePath(path,options,result,error);
-			statistics->vectorCompileMilliseconds += std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count();
+			statistics->vectorCompileMilliseconds += std::chrono::duration<double,std::milli>(statistics->Now()-start).count();
 			++statistics->vectorPathsCompiled;
 			if (!success) { host->Log(true,"Vector "+element.GetId()+"/"+error); continue; }
 			if (!result.indices.empty()) { fresh.meshes.push_back(std::move(result)); fresh.blends.push_back(path.blend); }
@@ -210,7 +262,7 @@ void VectorGeometry::Render(Rml::Element& element, bool inheritOpacity) {
 		for (size_t index = 0; index < entry->meshes.size(); ++index) {
 			const auto& cached = entry->meshes[index];
 			const auto blend = entry->blends[index];
-			const auto upload = std::chrono::steady_clock::now();
+			const auto upload = statistics->Now();
 			Rml::Mesh mesh;
 			mesh.vertices.reserve(cached.vertices.size());
 			auto channel = [&](double value) { return static_cast<Rml::byte>(std::round(std::clamp(value*opacity,0.0,1.0)*255)); };
@@ -230,27 +282,163 @@ void VectorGeometry::Render(Rml::Element& element, bool inheritOpacity) {
 			mesh.indices.assign(cached.indices.begin(),cached.indices.end());
 			entry->geometry.push_back(manager->MakeGeometry(std::move(mesh)));
 			++statistics->vectorUploads;
-			statistics->vectorUploadMilliseconds += std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-upload).count();
+			statistics->vectorUploadMilliseconds += std::chrono::duration<double,std::milli>(statistics->Now()-upload).count();
 		}
 	}
-	const auto& geometry = entry->geometry;
 	const auto& geometryBlends = entry->blends;
 	if (!multiply && std::find(geometryBlends.begin(),geometryBlends.end(),PathBlend::Multiply) != geometryBlends.end())
 		multiply = manager->LoadTexture(std::string("material:")+MultiplySource);
+	const bool partition = !inheritOpacity && paths.size()==1 && paths[0].antialias &&
+		paths[0].stroke.paint.type==PaintType::None && paths[0].blend==PathBlend::Normal;
+	if (partition && !coverage) coverage=manager->LoadTexture(std::string("material:")+CoverageSource);
 	// Geometry is already in output pixels. Submit through the render manager
 	// to retain its clipping/lifetime/order contract without a second transform.
-	manager->SetTransform(nullptr);
-	for (size_t index = 0; index < geometry.size(); ++index) {
-		const Rml::Vector2f translation{static_cast<float>(offsetX+residualX),static_cast<float>(offsetY+residualY)};
-		if (geometryBlends[index] == PathBlend::Multiply) geometry[index].Render(translation,multiply);
-		else geometry[index].Render(translation);
+	renderInputs=inputs; renderTransform=state.transform; renderScissor=state.scissor_region; renderViewport=viewport;
+	renderInheritOpacity=inheritOpacity; cachedLocalMesh=localMesh; cachedPartition=partition; cachedTransform=localTransform;
+	cachedTranslation={static_cast<float>(offsetX+residualX),static_cast<float>(offsetY+residualY)};
+	renderReady=true; drawCached();
+}
+void VectorElement::SetCanonicalText(const std::string& value) {
+	if (legacyText) text=value;
+	else SetInnerRML(Rml::StringUtilities::EncodeRml(value));
+}
+void VectorElement::OnRender() {
+	paint.Render(*this,true);
+	if (coordinatesImage) RenderImage();
+	if (legacyText) RenderLegacyText();
+}
+bool VectorElement::IsRenderSuppressed() {
+	// Canonical nodes own stacking contexts. Their isolated opacity filter
+	// multiplies every descendant's premultiplied output, including additions
+	// and backdrops. At exactly zero no paint can survive that composite.
+	// Keep layout, animation and input state alive; only omit traversal/paint.
+	if (!GetComputedValues().has_filter()) return false;
+	const auto* property=GetProperty(Rml::PropertyId::Filter);
+	if (!property || property->unit!=Rml::Unit::FILTER) return false;
+	const auto filters=property->Get<Rml::FiltersPtr>();
+	if (!filters || (filters->value!="opacity(0)" && filters->value!="q4-opacity(0)")) return false;
+	if (measurements) ++measurements->layerElisions;
+	return true;
+}
+bool VectorElement::SetImageSource(const std::string& source) {
+	if (!coordinatesImage) return false;
+	if (imageSource != source) { imageSource=source; imageTexture={}; imageGeometry={}; }
+	return true;
+}
+void VectorElement::SetImageCoordinate(const std::string& property, double value) {
+	const int index=property=="image-offset-x" ? 0 : property=="image-offset-y" ? 1 : property=="image-scale-x" ? 2 : 3;
+	(*imageCoordinates)[index]=value;
+}
+bool VectorElement::SetPresentationOpacity(const std::string& filter, float density, Rml::Vector2f dimensions) {
+	if (!SetProperty("filter",filter)) return false;
+	UpdateProperties(density,dimensions);
+	return true;
+}
+bool VectorElement::UpdateReplayOpacity(float opacity) {
+	if (!replayOpacity) return false;
+	const bool reusable=*replayOpacity>0 && *replayOpacity<1 && opacity>0 && opacity<1;
+	*replayOpacity=opacity;
+	return reusable;
+}
+void VectorElement::RenderImage() {
+	auto* manager=GetRenderManager();
+	if (!manager || imageSource.empty()) return;
+	if (!imageTexture) imageTexture=manager->LoadTexture(std::string("material:")+(additiveImage ? "q4-add/" : "")+"_repeat/"+imageSource);
+	if (!imageTexture) return;
+	const auto size=GetBox().GetSize(Rml::BoxArea::Content);
+	if (size.x<=0 || size.y<=0) return;
+	const auto colour=GetComputedValues().image_color();
+	const float opacity=GetComputedValues().opacity();
+	const std::array<double,11> signature{size.x,size.y,(*imageCoordinates)[0],(*imageCoordinates)[1],(*imageCoordinates)[2],(*imageCoordinates)[3],
+		double(colour.red),double(colour.green),double(colour.blue),double(colour.alpha),opacity};
+	if (!imageGeometry || signature!=imageSignature) {
+		imageSignature=signature;
+		const auto tint=colour.ToPremultiplied(opacity);
+		const float u0=float(.5+(*imageCoordinates)[0]-.5*(*imageCoordinates)[2]),v0=float(.5+(*imageCoordinates)[1]-.5*(*imageCoordinates)[3]);
+		const float u1=float(u0+(*imageCoordinates)[2]),v1=float(v0+(*imageCoordinates)[3]);
+		Rml::Mesh mesh;
+		mesh.vertices={{{0,0},tint,{u0,v0}},{{size.x,0},tint,{u1,v0}},{{size.x,size.y},tint,{u1,v1}},{{0,size.y},tint,{u0,v1}}};
+		mesh.indices={0,1,2,0,2,3};
+		imageGeometry=manager->MakeGeometry(std::move(mesh));
 	}
+	if (imageSampling) imageSampling->SetImageSampling(imageCoordinates);
+	imageGeometry.Render(GetAbsoluteOffset(Rml::BoxArea::Content),imageTexture);
+	if (imageSampling) imageSampling->SetImageSampling({});
+}
+void VectorElement::RenderLegacyText() {
+	if (!textHost || !GetContext()) return;
+	if (measurements && text.find('^')!=std::string::npos) ++measurements->liveTextRuns;
+	const float unit=1.5f*GetContext()->GetDensityIndependentPixelRatio();
+	const auto size=GetBox().GetSize(Rml::BoxArea::Border);
+	Rml::Array<Rml::Vector2f,4> quad;
+	if (!(unit>0 && size.x>0 && size.y>0) || !Rml::ElementUtilities::GetBorderBoxQuad(quad,this)) return;
+	const auto& css=GetComputedValues();
+	const auto colour=css.color();
+	const int align=css.text_align()==Rml::Style::TextAlign::Right ? 2 : css.text_align()==Rml::Style::TextAlign::Center ? 1 : 0;
+	const float scale=css.font_size()/(48*unit);
+	const std::array<float,5> layoutSignature{scale,size.x/unit,size.y/unit,float(align),legacyTextClip ? 1.f : 0.f};
+	// Plain glyph layout depends only on these inputs. Escapes can refer to
+	// live key bindings, so those continue to ask the host every frame.
+	const bool relayout=!textLayoutValid || layoutText!=text || layoutFamily!=css.font_family() ||
+		textLayoutSignature!=layoutSignature || text.find('^')!=std::string::npos;
+	bool changed=false;
+	if (relayout) {
+		std::vector<HudPrimitive> items;
+		if (!textHost->LayoutLegacyText(text,css.font_family(),scale,size.x/unit,size.y/unit,align,legacyTextClip,items)) return;
+		changed=items.size()!=textItems.size() || !std::equal(items.begin(),items.end(),textItems.begin(),
+			[](const auto& a,const auto& b) { return a.material==b.material && a.quad==b.quad && a.uv==b.uv && a.colour==b.colour; });
+		textItems=std::move(items); layoutText=text; layoutFamily=css.font_family();
+		textLayoutSignature=layoutSignature; textLayoutValid=true;
+	}
+	std::array<float,12> signature{quad[0].x,quad[0].y,quad[1].x,quad[1].y,quad[3].x,quad[3].y,
+		size.x/unit,size.y/unit,float(colour.red),float(colour.green),float(colour.blue),float(colour.alpha)};
+	const bool same=signature==textSignature && !changed;
+	auto* manager=GetRenderManager(); if (!manager) return;
+	if (!same) {
+		textGeometry.clear(); textTextures.clear();
+		std::vector<std::pair<std::string,Rml::Mesh>> batches;
+		for (const auto& item:textItems) {
+			if (batches.empty() || batches.back().first!=item.material) batches.emplace_back(item.material,Rml::Mesh{});
+			auto& mesh=batches.back().second;
+			const int base=static_cast<int>(mesh.vertices.size());
+			const float alpha=item.colour[3]*colour.alpha/255.f;
+			const auto byte=[](float v) { return static_cast<Rml::byte>(std::lround(std::clamp(v,0.f,255.f))); };
+			const Rml::ColourbPremultiplied tint(byte(item.colour[0]*colour.red*alpha),byte(item.colour[1]*colour.green*alpha),
+				byte(item.colour[2]*colour.blue*alpha),byte(alpha*255));
+			for (int i=0;i<4;++i) {
+				const float x=item.quad[2*i]*unit/size.x,y=item.quad[2*i+1]*unit/size.y;
+				const auto pos=quad[0]+(quad[1]-quad[0])*x+(quad[3]-quad[0])*y;
+				mesh.vertices.push_back({pos,tint,{item.uv[(i==1 || i==2)?2:0],item.uv[i>=2?3:1]}});
+			}
+			mesh.indices.insert(mesh.indices.end(),{base,base+3,base+1,base+1,base+3,base+2});
+		}
+		for (auto& [material,mesh]:batches) {
+			textGeometry.push_back(manager->MakeGeometry(std::move(mesh)));
+			textTextures.push_back(manager->LoadTexture("material:"+material));
+		}
+		textSignature=signature;
+	}
+	const auto state=manager->GetState(); manager->SetTransform(nullptr);
+	for (size_t i=0;i<textGeometry.size();++i) textGeometry[i].Render({0,0},textTextures[i]);
 	manager->SetState(state);
 }
 void VectorElement::Configure(const Node& node, Host& owner, RuntimeStatistics& measurements) {
+	this->measurements=&measurements;
 	hasMask = node.mask.has_value();
+	legacyText=node.legacyText; legacyTextClip=node.legacyTextClip; textHost=&owner;
+	textItems.clear(); textGeometry.clear(); textTextures.clear();
+	textLayoutValid=false;
 	paint.Configure(node.paths,owner,measurements);
 	mask.Configure(node.mask ? *node.mask : std::vector<VectorPath>{},owner,measurements);
+	coordinatesImage=HasImageCoordinates(node);
+	replayOpacity=node.children.empty() && node.paths.empty() && !hasMask && !node.control && (node.type=="text" || coordinatesImage) ?
+		std::make_shared<float>(1.f) : nullptr;
+	replayText=replayOpacity && node.type=="text" && !node.properties.contains("image");
+	additiveImage=node.properties.contains("image-blend") && node.properties.at("image-blend").text=="additive";
+	imageSource=node.properties.contains("image") ? node.properties.at("image").text : "";
+	imageCoordinates=std::make_shared<ImageCoordinates>(ImageCoordinates{0,0,1,1}); imageTexture={}; imageGeometry={};
+	for (const auto* property : {"image-offset-x","image-offset-y","image-scale-x","image-scale-y"})
+		if (const auto found=node.properties.find(property);found!=node.properties.end()) SetImageCoordinate(property,found->second.data[0]);
 }
 namespace {
 class VectorMask final : public Rml::Decorator {

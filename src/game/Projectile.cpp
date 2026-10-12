@@ -178,7 +178,7 @@ void idProjectile::Restore( idRestoreGame *savefile ) {
 
 	savefile->ReadInt( methodOfDeath );					// cnicholson: Added unrestored var
 	owner.Restore( savefile );
-	if ( savefile->GetOpenQ4SaveGameCompatibilityVersion() == OPENQ4_SAVEGAME_COMPATIBILITY_VERSION ) {
+	if ( savefile->GetOpenQ4SaveGameCompatibilityVersion() >= OPENQ4_SAVEGAME_TYPED_COMPATIBILITY_VERSION ) {
 		savefile->ReadInt( packedFlags );
 		projectileFlags.detonate_on_world = ( packedFlags & BIT( 0 ) ) != 0;
 		projectileFlags.detonate_on_actor = ( packedFlags & BIT( 1 ) ) != 0;

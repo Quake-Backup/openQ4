@@ -281,7 +281,7 @@ void idMoveState::Restore( idRestoreGame *savefile ) {
 	int i, num;
 	int packedFlags;
 
-	if ( savefile->GetOpenQ4SaveGameCompatibilityVersion() == OPENQ4_SAVEGAME_COMPATIBILITY_VERSION ) {
+	if ( savefile->GetOpenQ4SaveGameCompatibilityVersion() >= OPENQ4_SAVEGAME_TYPED_COMPATIBILITY_VERSION ) {
 		savefile->ReadInt( packedFlags );
 		fl.done = ( packedFlags & BIT( 0 ) ) != 0;
 		fl.moving = ( packedFlags & BIT( 1 ) ) != 0;

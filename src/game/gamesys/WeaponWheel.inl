@@ -26,8 +26,12 @@ int idPlayer::GetWeaponWheelSlotCount() const {
 // inside a narrow view without changing the archived preference.
 static void WeaponWheelPlacement( float &offset, float &fit ) {
 	const float width = 720.0f * gameLocal.GetScreenAspectRatio();
-	fit = Min( 1.0f, Max( 0.1f, ( width - 32.0f ) / 560.0f ) );
-	const float reach = Max( 0.0f, width * 0.5f - 264.0f * fit - 16.0f );
+	const float inset = idMath::ClampFloat( 0.0f, 10.0f, cvarSystem->GetCVarFloat( "ui_hudSafeInset" ) ) * 0.01f;
+	const float marginX = Max( 16.0f, width * inset );
+	const float marginY = Max( 16.0f, 720.0f * inset );
+	const float scale = idMath::ClampFloat( 0.5f, 2.0f, cvarSystem->GetCVarFloat( "ui_hudScale" ) );
+	fit = Min( scale, Max( 0.1f, Min( ( width - 2.0f * marginX ) / 560.0f, ( 720.0f - 2.0f * marginY ) / 560.0f ) ) );
+	const float reach = Max( 0.0f, width * 0.5f - 264.0f * fit - marginX );
 	const float requested = width * idMath::ClampFloat( -40.0f, 40.0f, cvarSystem->GetCVarFloat( "ui_weaponWheelOffset" ) ) / 100.0f;
 	offset = idMath::ClampFloat( -reach, reach, requested );
 }
@@ -70,9 +74,13 @@ bool idPlayer::DrawRetainedWeaponWheel() {
 		weaponWheelGui->SetStateString( va( "slot%d.reserve", slot ), reserve < 0 ? "" : va( "%d", reserve ) );
 		weaponWheelGui->SetStateFloat( va( "slot%d.fill", slot ), maximum > 0 ? idMath::ClampFloat( 0, 1, static_cast<float>( reserve ) / maximum ) : 0 );
 		if ( slot == weaponWheelHoveredSlot ) {
-			weaponWheelGui->SetStateString( "weaponName", owned && decl ? common->GetLocalizedString( decl->dict.GetString( "inv_name" ) ) : "" );
+			idStr name = owned && decl ? common->GetLocalizedString( decl->dict.GetString( "inv_name" ) ) : "";
+			name.ToUpper();
+			weaponWheelGui->SetStateString( "weaponName", name );
 			idStr readout;
-			if ( owned && total >= 0 ) {
+			if ( owned && total < 0 ) {
+				readout = "\xE2\x88\x9E"; // infinity; the native document draws its vector glyph
+			} else if ( owned ) {
 				if ( !gameLocal.isMultiplayer && decl && decl->dict.GetInt( "clipSize" ) > 0 ) readout = va( "%d / %d", clip, reserve );
 				else readout = va( "%d", reserve );
 			}
@@ -80,12 +88,15 @@ bool idPlayer::DrawRetainedWeaponWheel() {
 		}
 	}
 	weaponWheelGui->StateChanged( gameLocal.time );
+	const bool justOpened = weaponWheelActive && !weaponWheelGuiActive;
 	if ( weaponWheelGuiActive != weaponWheelActive ) {
 		weaponWheelGui->HandleNamedEvent( weaponWheelActive ? "open" : "close" );
 		weaponWheelGuiActive = weaponWheelActive;
 	}
 	if ( weaponWheelGuiSlot != weaponWheelHoveredSlot ) {
-		weaponWheelGui->HandleNamedEvent( "selection" );
+		// Opening already tunes/translates this name. A selection event in the
+		// same frame would replace the family's full opening choreography.
+		if ( !justOpened ) weaponWheelGui->HandleNamedEvent( "selection" );
 		weaponWheelGuiSlot = weaponWheelHoveredSlot;
 	}
 	weaponWheelGui->Redraw( gameLocal.time );
@@ -178,6 +189,10 @@ void idPlayer::ResetWeaponWheel( bool instantRestore ) {
 	weaponWheelLastCmdAngles[ YAW ] = SHORT2ANGLE( usercmd.angles[ YAW ] );
 	weaponWheelLastCmdAngles[ ROLL ] = SHORT2ANGLE( usercmd.angles[ ROLL ] );
 	weaponWheelLastUpdateTime = Sys_Milliseconds();
+	if ( entityNumber == gameLocal.localClientNum && cvarSystem->GetCVarInteger( "ui_radialOwner" ) == 1 ) {
+		cvarSystem->SetCVarInteger( "ui_radialOwner", 0 );
+		cvarSystem->SetCVarBool( "ui_radialCancel", false );
+	}
 
 	if ( instantRestore ) {
 		weaponWheelBlend = 0.0f;
@@ -231,28 +246,15 @@ int idPlayer::GetDefaultWeaponWheelSlot( void ) const {
 }
 
 int idPlayer::GetClosestAvailableWeaponWheelSlot( float angle ) const {
-	int bestSlot = -1;
-	float bestDelta = idMath::INFINITY;
 	const float slice = idMath::TWO_PI / GetWeaponWheelSlotCount();
-
-	for ( int slot = 0; slot < GetWeaponWheelSlotCount(); ++slot ) {
-		if ( !HasWeaponWheelSlotWeapon( slot ) ) {
-			continue;
-		}
-
-		const float slotAngle = slot * slice;
-		const float delta = idMath::Fabs( WeaponWheelNormalizeAngle( angle - slotAngle ) );
-		if ( delta < bestDelta ) {
-			bestDelta = delta;
-			bestSlot = slot;
-		}
-	}
-
+	const int slot = static_cast<int>( angle / slice + 0.5f ) % GetWeaponWheelSlotCount();
+	// Fixed slots must not redirect the pointer to a neighbouring weapon.
+	if ( !HasWeaponWheelSlotWeapon( slot ) ) return weaponWheelHoveredSlot;
 	if ( HasWeaponWheelSlotWeapon( weaponWheelHoveredSlot ) ) {
 		const float previousDelta = idMath::Fabs( WeaponWheelNormalizeAngle( angle - weaponWheelHoveredSlot * slice ) );
-		if ( previousDelta <= bestDelta + DEG2RAD( 4.0f ) ) return weaponWheelHoveredSlot;
+		if ( previousDelta <= slice * 0.5f + DEG2RAD( 4.0f ) ) return weaponWheelHoveredSlot;
 	}
-	return bestSlot;
+	return slot;
 }
 
 int idPlayer::GetWeaponWheelAmmoCount( int weaponIndex ) {
@@ -302,8 +304,14 @@ bool idPlayer::IsWeaponWheelSlotLowAmmo( int slot ) {
 	return ammoCount <= lowAmmo;
 }
 
-// The wheels' selector: the mouse's motion, else the look stick's turn, added
-// to a cursor that stays within the ring.
+static float WeaponWheelDeadzoneRadius() {
+	if ( !cvarSystem->GetCVarBool( "ui_retained" ) ) return WEAPON_WHEEL_DEADZONE_RADIUS;
+	return cvarSystem->GetCVarBool( "ui_radialStickActive" ) ? WEAPON_WHEEL_CURSOR_RADIUS * 0.35f : 32.0f;
+}
+
+// The native selector uses the actual stick direction. Neutral holds the
+// weapon selection but returns the cursor to the dead zone, which quick chat
+// also uses to cancel on release. Classic retains its cursor sensitivity.
 static void WeaponWheelAdvanceCursor( const usercmd_t &cmd, idVec2 &cursor, int &lastMouseX, int &lastMouseY, idAngles &lastAngles ) {
 	const int mouseDx = cmd.mx - lastMouseX;
 	const int mouseDy = cmd.my - lastMouseY;
@@ -320,7 +328,10 @@ static void WeaponWheelAdvanceCursor( const usercmd_t &cmd, idVec2 &cursor, int 
 
 	cursor.x += mouseDx * WEAPON_WHEEL_MOUSE_SENSITIVITY;
 	cursor.y += mouseDy * WEAPON_WHEEL_MOUSE_SENSITIVITY;
-	if ( mouseDx == 0 && mouseDy == 0 ) {
+	if ( mouseDx == 0 && mouseDy == 0 && cvarSystem->GetCVarBool( "ui_retained" ) && cvarSystem->GetCVarBool( "ui_radialStickActive" ) ) {
+		cursor.x = cvarSystem->GetCVarFloat( "ui_radialStickX" ) * WEAPON_WHEEL_CURSOR_RADIUS;
+		cursor.y = cvarSystem->GetCVarFloat( "ui_radialStickY" ) * WEAPON_WHEEL_CURSOR_RADIUS;
+	} else if ( mouseDx == 0 && mouseDy == 0 && !cvarSystem->GetCVarBool( "ui_retained" ) ) {
 		const float sensitivity = idMath::ClampFloat( 0.25f, 16.0f, cvarSystem->GetCVarFloat( "in_weaponWheelSensitivity" ) );
 		// Turning right decreases yaw; wheel coordinates increase to the right.
 		cursor.x -= lookDx * sensitivity;
@@ -371,6 +382,10 @@ void idPlayer::UpdateWeaponWheelEffects( void ) {
 
 void idPlayer::UpdateWeaponWheel( void ) {
 	if ( entityNumber != gameLocal.localClientNum ) return;
+	if ( weaponWheelActive && cvarSystem->GetCVarBool( "ui_radialCancel" ) ) {
+		ResetWeaponWheel( false );
+		return;
+	}
 	const bool canUseWheel = CanUseWeaponWheel();
 	const bool requested = weaponWheelDebug ? weaponWheelDebugHeld : ( usercmd.buttons & BUTTON_WEAPONWHEEL ) != 0;
 	if ( !requested ) weaponWheelCanceled = false;
@@ -379,7 +394,7 @@ void idPlayer::UpdateWeaponWheel( void ) {
 	const int now = Sys_Milliseconds();
 	const bool reducedMotion = cvarSystem->GetCVarBool( "ui_retained" ) && cvarSystem->GetCVarBool( "ui_retainedReducedMotion" );
 	const float blendInSpeed = reducedMotion ? 12.5f : WEAPON_WHEEL_BLEND_IN_SPEED;
-	const float blendOutSpeed = reducedMotion ? 12.5f : WEAPON_WHEEL_BLEND_OUT_SPEED;
+	const float blendOutSpeed = reducedMotion ? 12.5f : cvarSystem->GetCVarBool( "ui_retained" ) ? 6.25f : WEAPON_WHEEL_BLEND_OUT_SPEED;
 
 	if ( weaponWheelLastUpdateTime == 0 ) {
 		weaponWheelLastUpdateTime = now;
@@ -389,7 +404,11 @@ void idPlayer::UpdateWeaponWheel( void ) {
 	weaponWheelLastUpdateTime = now;
 
 	if ( !canUseWheel ) {
+		// A menu, camera or death taking over dismisses this invocation. Do
+		// not reopen from the same held control if it returns during the fade.
+		if ( weaponWheelActive && requested ) weaponWheelCanceled = true;
 		weaponWheelActive = false;
+		if ( cvarSystem->GetCVarInteger( "ui_radialOwner" ) == 1 ) cvarSystem->SetCVarInteger( "ui_radialOwner", 0 );
 		weaponWheelBlend = Max( 0.0f, weaponWheelBlend - dt * blendOutSpeed );
 		if ( weaponWheelBlend > 0.0f || wasBlended ) {
 			UpdateWeaponWheelEffects();
@@ -416,7 +435,7 @@ void idPlayer::UpdateWeaponWheel( void ) {
 	if ( weaponWheelActive ) {
 		if ( !weaponWheelDebug ) UpdateWeaponWheelCursor();
 
-		if ( weaponWheelCursor.Length() > WEAPON_WHEEL_DEADZONE_RADIUS ) {
+		if ( weaponWheelCursor.Length() > WeaponWheelDeadzoneRadius() ) {
 			float angle = atan2f( weaponWheelCursor.x, -weaponWheelCursor.y );
 			if ( angle < 0.0f ) {
 				angle += idMath::TWO_PI;
@@ -432,7 +451,7 @@ void idPlayer::UpdateWeaponWheel( void ) {
 	}
 
 	if ( !held && weaponWheelActive ) {
-		const int selectedWeapon = ( now - weaponWheelOpenedTime < 180 && weaponWheelCursor.Length() <= WEAPON_WHEEL_DEADZONE_RADIUS && !weaponWheelDebug )
+		const int selectedWeapon = ( now - weaponWheelOpenedTime < 180 && !weaponWheelDebug )
 			? previousWeapon : GetWeaponWheelWeaponForSlot( weaponWheelHoveredSlot );
 		weaponWheelActive = false;
 		weaponWheelCursor.Zero();
@@ -445,7 +464,10 @@ void idPlayer::UpdateWeaponWheel( void ) {
 		}
 	}
 
-	const float targetBlend = held ? 1.0f : 0.0f;
+	// Delay presentation, not selection. A tap swaps back without briefly
+	// flashing the wheel or slowing/softening the scene.
+	const bool showWheel = held && ( weaponWheelDebug || now - weaponWheelOpenedTime >= 180 );
+	const float targetBlend = showWheel ? 1.0f : 0.0f;
 	if ( weaponWheelBlend < targetBlend ) {
 		weaponWheelBlend = Min( 1.0f, weaponWheelBlend + dt * blendInSpeed );
 	} else if ( weaponWheelBlend > targetBlend ) {
@@ -455,5 +477,7 @@ void idPlayer::UpdateWeaponWheel( void ) {
 	if ( weaponWheelBlend > 0.0f || wasBlended ) {
 		UpdateWeaponWheelEffects();
 	}
+	if ( weaponWheelActive ) cvarSystem->SetCVarInteger( "ui_radialOwner", 1 );
+	else if ( cvarSystem->GetCVarInteger( "ui_radialOwner" ) == 1 ) cvarSystem->SetCVarInteger( "ui_radialOwner", 0 );
 }
 

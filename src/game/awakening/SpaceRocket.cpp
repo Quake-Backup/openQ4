@@ -8,6 +8,10 @@ static const float SPACEROCKET_TURN_MIN			= 0.05f;
 static const float SPACEROCKET_TURN_GAIN		= 0.2f;
 static const float SPACEROCKET_POINT_LOOKAHEAD	= 10000.0f;
 
+idVec3 AwakeningProjectileTargetPoint( const idEntity *ent ) {
+	return ent->GetPhysics()->GetAbsBounds().GetCenter() + ent->spawnArgs.GetVector( "projectileTargetOffset", "0 0 0" );
+}
+
 /*
 ================
 riProjectileSpaceRocket::riProjectileSpaceRocket
@@ -44,6 +48,8 @@ void riProjectileSpaceRocket::Restore( idRestoreGame *savefile ) {
 	savefile->ReadVec3( targetOffset );
 	savefile->ReadVec3( targetPosition );
 	savefile->ReadBool( hasTargetPosition );
+	// Old rockets cached the offset from their own definition. Refresh it from
+	// the restored target after the object graph is available in Think().
 }
 
 /*
@@ -53,7 +59,8 @@ riProjectileSpaceRocket::SetTarget
 */
 void riProjectileSpaceRocket::SetTarget( idEntity *ent ) {
 	target = ent;
-	targetOffset = spawnArgs.GetVector( "projectileTargetOffset", "0 0 0" );
+	targetOffset = ent != NULL ? ent->spawnArgs.GetVector( "projectileTargetOffset", "0 0 0" ) : vec3_origin;
+	hasTargetPosition = false;
 	homingStartTime = gameLocal.time;
 }
 
@@ -63,6 +70,7 @@ riProjectileSpaceRocket::SetTargetPosition
 ================
 */
 void riProjectileSpaceRocket::SetTargetPosition( const idVec3 &position ) {
+	target = NULL;
 	targetPosition = position;
 	hasTargetPosition = true;
 	homingStartTime = gameLocal.time;
@@ -96,7 +104,8 @@ void riProjectileSpaceRocket::Think( void ) {
 	const idVec3 &origin = physicsObj.GetOrigin();
 
 	if ( ent != NULL && ent->health > 0 ) {
-		aim = ent->GetPhysics()->GetAbsBounds().GetCenter() + targetOffset;
+		targetOffset = ent->spawnArgs.GetVector( "projectileTargetOffset", "0 0 0" );
+		aim = AwakeningProjectileTargetPoint( ent );
 		homing = true;
 	} else if ( hasTargetPosition ) {
 		// keep the point ahead of us, so passing it does not turn us around

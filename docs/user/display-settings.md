@@ -450,6 +450,23 @@ The in-game menu exposes this as `Settings -> System -> Display Sizing -> UI Asp
 |---|---:|---|
 | `ui_aspectCorrection` | `1` | `1` keeps classic 4:3-style correction for all 2D UI. `0` stretches 2D UI to the full 2D draw region. |
 
+## Television Viewing (Couch Profile)
+
+Playing on a television from across the room? Launching openQ4 from Steam's Big
+Picture mode selects the Couch profile automatically (a Steam Deck keeps its own
+profile). On a fresh configuration it turns controller input on and starts the
+new menus, their text and the HUD larger:
+
+| Setting | Couch default | What it does |
+|---|---:|---|
+| `ui_retainedScale` | `1.5` | Size of the new menus. |
+| `ui_retainedTextScale` | `1.25` | Text size in the new menus. |
+| `ui_hudScale` | `1.25` | HUD size (`Settings -> Game Options -> HUD -> HUD Size`). |
+
+Your own size choices always win over the profile. To choose it yourself, start
+the game with `+set com_platformProfile couch`, or set the environment variable
+`OPENQ4_COUCH=1`; `OPENQ4_COUCH=0` keeps Big Picture from selecting it.
+
 ## Text Rendering (New)
 
 Menu and HUD text is drawn from scalable font files rather than the original

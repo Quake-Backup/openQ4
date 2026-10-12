@@ -9,9 +9,10 @@
 	A short-range freezing spray built on the hyperblaster's body: every shot
 	throws five short-fused projectile_freezegun bolts. Its damage defs carry
 	"filter_freeze", which puts out func_fire_volume fires, and its projectile
-	carries "freezeEnemies". Ammo regenerates through the weapon def's
-	ammoRegenStep/ammoRegenTime; the battery glow (shader parm 6) shows how
-	full it is.
+	carries "freezeEnemies". The def's ammoRegenStep/ammoRegenTime apply only
+	while the player has the ammo-regeneration powerup; they do not provide
+	passive recharge. Shader parm 6 represents the clip fraction (full on the
+	shipped clipless definition).
 
 ===============================================================================
 */

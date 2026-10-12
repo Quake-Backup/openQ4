@@ -17,6 +17,14 @@ VectorMesh Clip(const VectorMesh& mesh, const std::array<VectorPoint,4>& quad) {
 	VectorMesh result;
 	const auto cross = [](VectorPoint a,VectorPoint b,VectorPoint p) { return (b.x-a.x)*(p.y-a.y)-(b.y-a.y)*(p.x-a.x); };
 	const double sign = cross(quad[0],quad[1],quad[2]) >= 0 ? 1 : -1;
+	// The usual crosshair is already inside its window. Preserve its disjoint
+	// coverage quads instead of splitting them into duplicated triangle lists;
+	// the host can then cache the exact pixel coverage in its atlas.
+	if (std::all_of(mesh.vertices.begin(),mesh.vertices.end(),[&](const auto& v) {
+		for (int edge=0;edge<4;++edge)
+			if (sign*cross(quad[edge],quad[(edge+1)%4],{v.x,v.y})<0) return false;
+		return true;
+	})) return mesh;
 	for (size_t i=0;i+2<mesh.indices.size();i+=3) {
 		std::vector<VectorVertex> polygon{mesh.vertices[mesh.indices[i]],mesh.vertices[mesh.indices[i+1]],mesh.vertices[mesh.indices[i+2]]};
 		for (int edge=0;edge<4 && !polygon.empty();++edge) {
@@ -46,7 +54,8 @@ bool Finite(const HudPrimitive& item) {
 }
 }
 bool HudElement::Prepare(const std::vector<HudPrimitive>& items,const Node& root,int width,int height,
-	RuntimeStatistics& stats,std::string& error) {
+	RuntimeStatistics& stats,std::string& error,bool& changed) {
+	changed=entries.size()!=items.size();
 	ready=false; statistics=&stats;
 	if (items.size()>32768 || width<=0 || height<=0) { error="HUD presentation exceeds its limits"; return false; }
 	auto* manager=GetRenderManager();
@@ -66,6 +75,7 @@ bool HudElement::Prepare(const std::vector<HudPrimitive>& items,const Node& root
 			entry.previous.artwork==item.artwork && entry.previous.material==item.material &&
 			entry.previous.quad==item.quad && entry.previous.uv==item.uv;
 		if (sameShape && entry.previous.colour==item.colour) continue;
+		changed=true;
 		entry.geometry.clear();
 		if (!sameShape) {
 			entry.meshes.clear(); entry.blends.clear(); entry.texture={}; entry.valid=false;

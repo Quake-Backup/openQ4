@@ -244,6 +244,7 @@ struct Geometry {
 		ClipPolygon polygon;
 		Rml::TextureHandle texture = 0;
 		std::uintptr_t multiply = 0;
+		std::uint64_t firstFrame = 0;
 		bool hasTransform = false, clipping = false;
 		bool Matches(const Submission& other) const {
 			return std::memcmp(&translation,&other.translation,sizeof(translation)) == 0 && hasTransform == other.hasTransform &&
@@ -254,9 +255,26 @@ struct Geometry {
 		std::vector<Vertex> vertices; // Transformed, or clipped with indices.
 		std::vector<int> indices;
 		std::uintptr_t material = 0;
+		Bounds bounds;
 		bool draws = false, inside = false, fallback = false;
 	};
-	std::unique_ptr<Submission> submission;
+	std::shared_ptr<Submission> submission;
+};
+struct ImageSampling {
+	std::shared_ptr<const ImageCoordinates> coordinates;
+	Vertex origin{};
+	float bx=0, by=0, cx=0, cy=0, determinant=1;
+};
+struct RecordedDraw {
+	std::vector<Vertex> vertices;
+	std::vector<int> indices;
+	std::uintptr_t texture = 0;
+	std::uint64_t mesh = 0, revision = 0;
+	std::shared_ptr<const Geometry::Submission> retained;
+	ImageSampling sampling;
+	std::shared_ptr<const float> opacitySource;
+	const std::vector<Vertex>& Vertices() const { return retained ? retained->vertices : vertices; }
+	const std::vector<int>& Indices() const { return retained ? retained->indices : indices; }
 };
 // The speed streak's RmlUi filter, `streak(<0..1>)` in a backdrop-filter: the
 // renderer compiles it like soft focus and the host draws it.
@@ -283,6 +301,32 @@ private:
 	Rml::PropertyId value = Rml::PropertyId::Invalid;
 };
 
+// A canonical leaf keeps the same isolated opacity semantics as RmlUi's
+// opacity filter. The owner also supplies the live value for frame replay.
+class LeafOpacityFilter final : public Rml::Filter {
+public:
+	explicit LeafOpacityFilter(float value) : value(value) {}
+	Rml::CompiledFilter CompileFilter(Rml::Element* element) const override {
+		return element->GetRenderManager()->CompileFilter("q4-opacity",Rml::Dictionary{
+			{"value",Rml::Variant(value)},{"element",Rml::Variant(static_cast<void*>(element))}});
+	}
+private:
+	float value;
+};
+class LeafOpacityFilterInstancer final : public Rml::FilterInstancer {
+public:
+	LeafOpacityFilterInstancer() {
+		value=RegisterProperty("value","1").AddParser("number").GetId();
+		RegisterShorthand("filter","value",Rml::ShorthandType::FallThrough);
+	}
+	Rml::SharedPtr<Rml::Filter> InstanceFilter(const Rml::String&, const Rml::PropertyDictionary& properties) override {
+		const auto* property=properties.GetProperty(value);
+		return property ? Rml::MakeShared<LeafOpacityFilter>(property->Get<float>()) : nullptr;
+	}
+private:
+	Rml::PropertyId value=Rml::PropertyId::Invalid;
+};
+
 struct Filter {
 	float opacity = 1;
 	std::uint32_t mask = 0;
@@ -292,37 +336,81 @@ struct Filter {
 	// or the speed streak's strength.
 	float blur = 0, saturation = 1, streak = 0;
 	bool backdrop = false;
+	std::shared_ptr<const std::vector<RecordedDraw>> recording;
+	std::shared_ptr<const float> opacitySource;
+	bool textOpacity=false;
 };
 
 // The host's composition target IDs are process-wide. A mask may retain its
 // lease after the stack layer that produced it has been popped.
+class Renderer;
 struct LayerPool {
-	struct Slot { const void* owner = nullptr; int width = 0, height = 0; std::uint64_t frame = 0; };
+	struct Slot { Renderer* owner = nullptr; int width = 0, height = 0; std::uint64_t frame = 0; bool cached = false; };
 	std::array<Slot,49> slots{};
 };
 
-class Renderer final : public Rml::RenderInterface {
+class Renderer final : public Rml::RenderInterface, public ImageSamplingInterface {
 public:
 	Renderer(Host& h, RuntimeStatistics& statistics) : host(h), statistics(statistics) {}
 	void Attach(LayerPool& value) { pool = &value; }
 	void Detach() {
 		EndFrame();
+		InvalidateFrame(); frameCommands.clear();
+		ClearLayerCache();
 		if (pool) for (auto& slot : pool->slots) if (slot.owner == this) {
 			host.Log(true,"Retained context leaked a composition lease"); slot.owner = nullptr;
 		}
 		pool = nullptr;
 	}
 	void BeginFrame(int width, int height) {
-		if (width != viewportWidth || height != viewportHeight) ++viewportGeneration;
+		if (width != viewportWidth || height != viewportHeight) { ++viewportGeneration; ClearLayerCache(); }
 		viewportWidth = width; viewportHeight = height; failed = false;
 	}
 	void EndFrame() {
 		if (!stack.empty()) {
+			failed = true;
 			host.Log(true,"Unbalanced retained composition layers"); host.EndLayer(0);
 			for (const auto& layer : stack) ReleaseSlot(layer.slot);
 			stack.clear();
 		}
 	}
+	bool Succeeded() const { return !failed; }
+	void SetImageSampling(std::shared_ptr<const ImageCoordinates> coordinates) override { imageSampling=std::move(coordinates); }
+	void InvalidateFrame() { frameValid=false; recordFrame=false; }
+	bool ReplayFrame() {
+		if (!frameValid || failed) return false;
+		for (const auto& command:frameCommands) if (command.slot &&
+			(!pool || pool->slots[command.slot].owner!=this || !pool->slots[command.slot].cached)) { InvalidateFrame(); return false; }
+		for (auto& command:frameCommands) {
+			if (command.slot) {
+				pool->slots[command.slot].frame=host.RenderFrame();
+				for (auto& cached:layerCache) if (cached.slot==command.slot) cached.used=++cacheClock;
+				host.CompositeLayer(command.slot,0,command.draw.opacitySource ? *command.draw.opacitySource : command.opacity,command.clip);
+				++statistics.layerComposites; ++statistics.layerCacheHits;
+			} else {
+				auto& draw=command.draw;
+				if (draw.opacitySource) for (size_t i=0;i<draw.vertices.size();++i) {
+					auto& v=draw.vertices[i]; const auto& c=command.baseColours[i]; const float opacity=*draw.opacitySource;
+					v.r=c[0]*opacity; v.g=c[1]*opacity; v.b=c[2]*opacity; v.a=c[3]*opacity;
+				}
+				if (draw.sampling.coordinates) {
+					const auto& values=*draw.sampling.coordinates;
+					const float u0=float(.5+values[0]-.5*values[2]), v0=float(.5+values[1]-.5*values[3]);
+					const float u1=float(u0+values[2]), v1=float(v0+values[3]);
+					for (size_t i=0;i<draw.vertices.size();++i) {
+						draw.vertices[i].u=u0+command.imageFractions[i].x*(u1-u0);
+						draw.vertices[i].v=v0+command.imageFractions[i].y*(v1-v0);
+					}
+				}
+				DrawNow(draw.Vertices(),draw.Indices(),draw.texture,draw.mesh,draw.revision);
+			}
+		}
+		statistics.visibleVectorCacheBytes=frameVectorBytes;
+		++statistics.frameReplays; return true;
+	}
+	void RecordFrame(bool enabled) { frameCommands.clear(); frameValid=false; recordFrame=enabled; frameRecordedVertices=0; }
+	void FinishRecording() { frameValid=recordFrame && !failed && statistics.liveTextRuns==0; recordFrame=false;
+		frameVectorBytes=statistics.visibleVectorCacheBytes; if (!frameValid) frameCommands.clear(); }
 	Rml::CompiledGeometryHandle CompileGeometry(Rml::Span<const Rml::Vertex> vertices, Rml::Span<const int> indices) override {
 		if (vertices.empty() || vertices.size() > 262144 || indices.empty() || indices.size() % 3 != 0) return 0;
 		for (const int i : indices) if (i < 0 || static_cast<size_t>(i) >= vertices.size()) return 0;
@@ -338,6 +426,11 @@ public:
 	void ReleaseGeometry(Rml::CompiledGeometryHandle handle) override {
 		if (!handle) return;
 		auto* geometry = reinterpret_cast<Geometry*>(handle);
+		frameValid=false;
+		// A replaced image geometry has not been submitted in this recording.
+		// Its independently owned sampling values may remain in a replay.
+		if (recordFrame) for (const auto& command:frameCommands)
+			if (command.draw.mesh==geometry->identity) { recordFrame=false; break; }
 		--statistics.residentGeometryCount; statistics.residentGeometryBytes -= Bytes(*geometry);
 		if (geometry->submission) host.ReleaseMesh(geometry->identity);
 		delete geometry;
@@ -353,17 +446,37 @@ public:
 		if (clipping) { inputs.clip = {left,top,right,bottom}; if (clipMaskEnabled) inputs.polygon = clipPolygon; }
 		if (texture == MultiplyTexture) inputs.multiply = stack.empty() ? host.MultiplyMaterial() : 0;
 		if (!geometry.submission || !geometry.submission->Matches(inputs)) {
-			if (!geometry.submission) geometry.submission = std::make_unique<Geometry::Submission>();
+			// A pending layer or immutable mask may still refer to the previous
+			// submission. Copy on change, never copy its vertices every frame.
+			if (!geometry.submission || geometry.submission.use_count()!=1) geometry.submission = std::make_shared<Geometry::Submission>();
 			auto& output = *geometry.submission;
+			output.firstFrame=host.RenderFrame();
 			output.translation = inputs.translation; output.transform = inputs.transform; output.clip = inputs.clip; output.polygon = inputs.polygon;
 			output.texture = inputs.texture; output.multiply = inputs.multiply;
 			output.hasTransform = inputs.hasTransform; output.clipping = inputs.clipping;
 			Prepare(geometry,output,translation,left,top,right,bottom);
+			if (output.draws) {
+				float x0=OpenClip,y0=OpenClip,x1=-OpenClip,y1=-OpenClip;
+				for (const auto& v:output.vertices) { x0=std::min(x0,v.x); y0=std::min(y0,v.y); x1=std::max(x1,v.x); y1=std::max(y1,v.y); }
+				output.bounds={x0,y0,x1-x0,y1-y0};
+			}
 			++geometry.revision;
 		}
 		const auto& output = *geometry.submission;
 		if (output.fallback) ++statistics.multiplyFallbacks;
-		if (output.draws) Submit(output.vertices,output.inside ? geometry.indices : output.indices,output.material,geometry.identity,geometry.revision);
+		ImageSampling sampling;
+		if (imageSampling && output.draws) {
+			const auto& vertices=output.vertices;
+			if (output.inside && vertices.size()==4) {
+				const auto& a=vertices[0]; const auto& b=vertices[1]; const auto& c=vertices[3];
+				sampling.origin=a; sampling.bx=b.x-a.x; sampling.by=b.y-a.y; sampling.cx=c.x-a.x; sampling.cy=c.y-a.y;
+				sampling.determinant=sampling.bx*sampling.cy-sampling.by*sampling.cx;
+				if (std::abs(sampling.determinant)>1e-6f && std::abs(vertices[2].x-b.x-c.x+a.x)<.001f &&
+					std::abs(vertices[2].y-b.y-c.y+a.y)<.001f) sampling.coordinates=imageSampling;
+			}
+			if (!sampling.coordinates) InvalidateFrame(); // Clipped/perspective sampling keeps the full paint path.
+		}
+		if (output.draws) Submit(output.vertices,output.indices,output.material,geometry.identity,geometry.revision,geometry.submission,sampling);
 	}
 	// Transform, clip and resolve one geometry's submission into its cache.
 	void Prepare(const Geometry& geometry, Geometry::Submission& output, Rml::Vector2f translation, float left, float top, float right, float bottom) {
@@ -416,8 +529,8 @@ public:
 				}
 			}
 		}
-		output.material = texture;
-		if (inside) { output.draws = output.inside = true; return; }
+		output.material = texture==CoverageTexture ? 0 : texture;
+		if (inside) { output.indices=geometry.indices; output.draws = output.inside = true; return; }
 		std::vector<Vertex> clipped, polygon, scratch;
 		auto& indices = output.indices;
 		for (size_t i = 0; i < geometry.indices.size(); i += 3) {
@@ -443,7 +556,10 @@ public:
 	}
 	Rml::TextureHandle LoadTexture(Rml::Vector2i& dimensions, const Rml::String& source) override {
 		if (source == MultiplySource) { dimensions = {1,1}; return MultiplyTexture; }
-		return host.LoadMaterial(source, dimensions.x, dimensions.y);
+		if (source == CoverageSource) { dimensions = {1,1}; return CoverageTexture; }
+		const auto handle=host.LoadMaterial(source, dimensions.x, dimensions.y);
+		if (handle && source.starts_with("q4-add/")) additiveImages.insert(handle);
+		return handle;
 	}
 	Rml::TextureHandle GenerateTexture(Rml::Span<const Rml::byte>, Rml::Vector2i) override {
 		host.Log(true, "Generated textures are not implemented in the retained renderer spike");
@@ -575,7 +691,6 @@ public:
 	// Handles are logical, nonzero even after an allocation failure, so RmlUi
 	// can unwind its stack while this renderer suppresses the failed frame.
 	Rml::LayerHandle PushLayer() override {
-		if (!stack.empty()) Materialize(stack.back());
 		if (++nextHandle == 0) nextHandle = 1;
 		stack.push_back({nextHandle,0,true,{}});
 		statistics.peakLayerDepth = std::max<std::uint64_t>(statistics.peakLayerDepth,stack.size());
@@ -585,16 +700,28 @@ public:
 		if (stack.empty()) { host.Log(true,"Retained composition layer underflow"); failed = true; return; }
 		// A layer that never got a target never changed the host's binding.
 		const bool bound = !stack.back().pending;
-		ReleaseSlot(stack.back().slot); stack.pop_back();
+		if (!stack.back().cached) ReleaseSlot(stack.back().slot);
+		stack.pop_back();
 		// Restore the base even after an allocation failure. No further draws
 		// are accepted in a failed frame, preventing paint on the wrong target.
 		if ((bound || failed) && (!failed || stack.empty())) host.EndLayer(TopLayer());
 	}
 	Rml::CompiledFilterHandle CompileFilter(const Rml::String& name, const Rml::Dictionary& parameters) override {
 		const auto value = parameters.find("value");
-		if (name == "opacity" && value != parameters.end()) {
+		if ((name == "opacity" || name == "q4-opacity") && value != parameters.end()) {
 			const float opacity = value->second.Get<float>();
-			if (std::isfinite(opacity)) return reinterpret_cast<Rml::CompiledFilterHandle>(new Filter{std::clamp(opacity,0.f,1.f)});
+			if (std::isfinite(opacity)) {
+				auto* filter=new Filter{std::clamp(opacity,0.f,1.f)};
+				const auto owner=parameters.find("element");
+				if (name=="q4-opacity" && owner!=parameters.end()) {
+					auto* element=static_cast<Rml::Element*>(owner->second.Get<void*>());
+					if (element && (element->GetTagName()=="q4-node" || element->GetTagName()=="q4-vector")) {
+						filter->opacitySource=static_cast<VectorElement*>(element)->ReplayOpacity();
+						filter->textOpacity=static_cast<VectorElement*>(element)->ReplayOpacityIsText();
+					}
+				}
+				return reinterpret_cast<Rml::CompiledFilterHandle>(filter);
+			}
 		}
 		// The speed streak (backdrop-filter: streak()): drawn by the host.
 		if (name == "streak" && value != parameters.end()) {
@@ -618,6 +745,14 @@ public:
 	}
 	Rml::CompiledFilterHandle SaveLayerAsMaskImage() override {
 		if (failed || stack.empty()) return 0;
+		if (stack.back().pending) {
+			// Freeze the drawing commands, not a full-viewport GPU copy. Their
+			// shared submissions survive geometry edits/releases and layer reuse.
+			auto* filter=new Filter{1,0,viewportWidth,viewportHeight,viewportGeneration};
+			filter->recording=std::make_shared<const std::vector<RecordedDraw>>(stack.back().draws);
+			++statistics.maskSnapshots;
+			return reinterpret_cast<Rml::CompiledFilterHandle>(filter);
+		}
 		Materialize(stack.back());
 		if (failed) return 0;
 		const auto snapshot = AllocateSlot();
@@ -663,47 +798,234 @@ public:
 			host.Log(true,"Unsupported retained layer composition"); failed = true; return;
 		}
 		float opacity = 1;
-		std::vector<std::uint32_t> masks;
+		std::shared_ptr<const float> opacitySource;
+		bool textOpacity=false;
+		std::vector<Filter*> maskFilters;
 		for (auto handle : filters) {
-			const auto& filter = *reinterpret_cast<const Filter*>(handle);
-			opacity *= filter.opacity;
-			if (filter.mask) {
+			auto& filter = *reinterpret_cast<Filter*>(handle);
+			opacity *= filter.opacitySource ? *filter.opacitySource : filter.opacity;
+			if (filters.size()==1) { opacitySource=filter.opacitySource; textOpacity=filter.textOpacity; }
+			if (filter.mask || filter.recording) {
 				if (filter.generation != viewportGeneration) {
 					host.Log(true,"Retained mask snapshot belongs to a different viewport"); failed = true; return;
 				}
-				masks.push_back(filter.mask);
+				maskFilters.push_back(&filter);
 			}
 		}
-		const Bounds clip = ClipBounds();
+		Bounds clip = ClipBounds();
 		auto& layer = *Find(source);
+		// Transparent pixels outside a pending layer's artwork cannot affect the
+		// destination. Small HUD panels must not blend a viewport-sized quad.
+		if (layer.pending) clip=ArtworkClip(layer.draws,clip);
 		// Over the premultiplied destination a zero opacity composite is exact
 		// identity, so a layer still pending need never be drawn at all. Its
 		// recording stays until the pop, should it be composited again.
 		if (layer.pending && (opacity == 0 || clip.width <= 0 || clip.height <= 0)) { ++statistics.layerElisions; return; }
+		// An isolated image or a run of non-overlapping glyph quads needs no
+		// intermediate target: opacity distributes over those disjoint pixels.
+		// Overlapping glyphs, arbitrary meshes and masked groups keep composition.
+		if (layer.pending && !destination && maskFilters.empty() && layer.draws.size()==1 &&
+			layer.draws[0].texture && DisjointQuads(layer.draws[0])) {
+			const auto& draw=layer.draws[0]; auto vertices=draw.Vertices();
+			// A leaf's source belongs to its own single opacity filter. Never
+			// attach it to a parent composite or a compound filter operation.
+			for (auto& v:vertices) { v.r*=opacity; v.g*=opacity; v.b*=opacity; v.a*=opacity; }
+			host.EndLayer(0);
+			DrawNow(vertices,draw.Indices(),draw.texture,0,0,{},draw.sampling);
+			if (recordFrame && opacitySource) {
+				auto& command=frameCommands.back(); command.draw.opacitySource=opacitySource;
+				for (const auto& v:draw.Vertices()) command.baseColours.push_back({v.r,v.g,v.b,v.a});
+			}
+			++statistics.layerElisions; ++statistics.layerComposites; return;
+		}
+		if (layer.pending && maskFilters.size()==1 && maskFilters[0]->recording &&
+			DrawMaskedImages(layer.draws,*maskFilters[0]->recording,destination,opacity,clip)) {
+			++statistics.maskApplications; ++statistics.layerComposites; ++statistics.directMaskDraws; return;
+		}
+		// Leaf vector panels have no time-varying texture content. Their final
+		// masked pixels remain valid while every mesh revision and clip match.
+		// Keep the authored vectors/editability, avoiding repeated GPU clears,
+		// mask copies and composites for a small stationary HUD gauge.
+		std::vector<std::pair<std::uint64_t,std::uint64_t>> cacheKey;
+		const bool cacheText=opacitySource && textOpacity && maskFilters.empty();
+		bool cacheable=host.CanCacheLayers() && layer.pending && !destination && (!maskFilters.empty() || cacheText) && LayerCacheLimit()>0;
+		const auto appendKey=[&](const std::vector<RecordedDraw>& draws) {
+			cacheKey.emplace_back(0,draws.size());
+			for (const auto& draw:draws) {
+				if (!draw.mesh || (draw.texture && !cacheText) || draw.sampling.coordinates) return false;
+				// Fonts can queue their first GPU upload during the first draw.
+				// Admit only a submission already painted in an earlier frame.
+				if (cacheText && (!draw.retained || host.RenderFrame()<=draw.retained->firstFrame)) return false;
+				cacheKey.emplace_back(draw.mesh,draw.revision);
+			}
+			return true;
+		};
+		if (cacheable) cacheable=appendKey(layer.draws);
+		for (const auto* filter:maskFilters) if (cacheable)
+			cacheable=filter->recording && appendKey(*filter->recording);
+		if (cacheable) for (auto& cached:layerCache) if (cached.key==cacheKey &&
+			cached.clip.x==clip.x && cached.clip.y==clip.y && cached.clip.width==clip.width && cached.clip.height==clip.height) {
+			cached.used=++cacheClock;
+			pool->slots[cached.slot].frame=host.RenderFrame();
+			host.CompositeLayer(cached.slot,0,opacity,clip);
+			if (recordFrame) {
+				FrameCommand command; command.slot=cached.slot; command.opacity=opacity; command.clip=clip;
+				command.draw.opacitySource=opacitySource;
+				frameCommands.push_back(std::move(command));
+			}
+			++statistics.layerCacheHits; ++statistics.layerComposites;
+			statistics.maskApplications+=maskFilters.size();
+			return;
+		}
 		Materialize(layer);
 		if (auto* target = Find(destination)) Materialize(*target);
 		if (failed) return;
 		if (clip.width > 0 && clip.height > 0) {
 			std::uint32_t scratch = 0;
-			if (!masks.empty()) {
+			if (!maskFilters.empty()) {
 				scratch = AllocateSlot();
 				if (!scratch) return;
 				// Filters cannot mutate the source: it may be composited again.
 				host.CompositeLayer(layer.slot,scratch,1,clip);
-				for (const auto mask : masks) { host.MaskLayer(mask,scratch,clip); ++statistics.maskApplications; }
+				for (auto* filter : maskFilters) {
+					if (!filter->mask) {
+						filter->mask=AllocateSlot();
+						if (!filter->mask) { ReleaseSlot(scratch); return; }
+						for (const auto& draw:*filter->recording) DrawNow(draw.Vertices(),draw.Indices(),draw.texture,draw.mesh,draw.revision);
+					}
+					host.MaskLayer(filter->mask,scratch,clip); ++statistics.maskApplications;
+				}
+			}
+			if (cacheable && cacheText) {
+				// Keep the completed glyph overlap exactly once. Images cannot use
+				// this cache: their material stages may animate independently.
+				// Transfer this leaf's target lease to the cache when its layer
+				// pops, without another full-size target or intermediate copy.
+				scratch=layer.slot;
+				layer.cached=true;
 			}
 			host.CompositeLayer(scratch ? scratch : layer.slot,Slot(destination),opacity,clip);
-			ReleaseSlot(scratch);
+			if (cacheable && scratch) {
+				while (layerCache.size()>=LayerCacheLimit()) EvictLayerCache();
+				layerCache.push_back({std::move(cacheKey),clip,scratch,++cacheClock});
+				pool->slots[scratch].cached=true;
+			} else ReleaseSlot(scratch);
 			++statistics.layerComposites;
 		}
 	}
 private:
-	struct Draw { std::vector<Vertex> vertices; std::vector<int> indices; std::uintptr_t texture = 0; std::uint64_t mesh = 0, revision = 0; };
+	struct FrameCommand { RecordedDraw draw; std::vector<Rml::Vector2f> imageFractions; std::vector<std::array<float,4>> baseColours;
+		std::uint32_t slot=0; float opacity=1; Bounds clip; };
+	std::shared_ptr<const ImageCoordinates> imageSampling;
+	std::vector<FrameCommand> frameCommands;
+	bool frameValid=false, recordFrame=false;
+	size_t frameRecordedVertices=0;
+	std::uint64_t frameVectorBytes=0;
+	std::set<std::uintptr_t> additiveImages;
+	static bool DisjointQuads(const RecordedDraw& draw) {
+		const auto& vertices=draw.Vertices(); const auto& indices=draw.Indices();
+		if (vertices.empty() || vertices.size()>1024 || vertices.size()%4 || indices.size()!=vertices.size()/4*6) return false;
+		std::vector<Bounds> boxes; boxes.reserve(vertices.size()/4);
+		for (size_t base=0;base<vertices.size();base+=4) {
+			const int a[6]={0,1,2,0,2,3}, b[6]={0,3,1,1,3,2}; bool first=true,second=true;
+			for (int i=0;i<6;++i) { first &= indices[base/4*6+i]==int(base)+a[i]; second &= indices[base/4*6+i]==int(base)+b[i]; }
+			if (!first && !second) return false;
+			float left=vertices[base].x,right=left,top=vertices[base].y,bottom=top;
+			for (int i=0;i<4;++i) {
+				const auto& v=vertices[base+i]; const auto& next=vertices[base+(i+1)%4];
+				if ((v.x==next.x)==(v.y==next.y)) return false;
+				left=std::min(left,v.x); right=std::max(right,v.x); top=std::min(top,v.y); bottom=std::max(bottom,v.y);
+			}
+			if (!(right>left && bottom>top)) return false;
+			for (const auto& box:boxes) if (left<box.x+box.width && right>box.x && top<box.y+box.height && bottom>box.y) return false;
+			boxes.push_back({left,top,right-left,bottom-top});
+		}
+		return true;
+	}
+	static Bounds ArtworkClip(const std::vector<RecordedDraw>& draws, const Bounds& clip) {
+		float left=clip.x+clip.width, top=clip.y+clip.height, right=clip.x, bottom=clip.y;
+		for (const auto& draw:draws) {
+			if (draw.retained) {
+				const auto& b=draw.retained->bounds;
+				left=std::min(left,b.x); top=std::min(top,b.y); right=std::max(right,b.x+b.width); bottom=std::max(bottom,b.y+b.height);
+			} else for (const auto& v:draw.Vertices()) {
+				left=std::min(left,v.x); top=std::min(top,v.y); right=std::max(right,v.x); bottom=std::max(bottom,v.y);
+			}
+		}
+		// Cover the complete pixel footprint, including bilinear target sampling.
+		left=std::max(clip.x,std::floor(left)-1); top=std::max(clip.y,std::floor(top)-1);
+		right=std::min(clip.x+clip.width,std::ceil(right)+1); bottom=std::min(clip.y+clip.height,std::ceil(bottom)+1);
+		return {left,top,std::max(0.f,right-left),std::max(0.f,bottom-top)};
+	}
+	bool DrawMaskedImages(const std::vector<RecordedDraw>& images, const std::vector<RecordedDraw>& masks,
+		Rml::LayerHandle destination, float opacity, const Bounds& clip) {
+		// Addition distributes over a coverage mask. Texture the mask's existing
+		// disjoint cells directly, preserving holes and analytic edge coverage.
+		// Ordinary alpha images, intersecting mask paints and partial image/mask
+		// intersections continue through the general composition path.
+		if (images.empty() || masks.size()!=1 || !masks[0].retained || masks[0].retained->texture!=CoverageTexture) return false;
+		const auto& mask=masks[0];
+		std::vector<RecordedDraw> output;
+		for (const auto& image:images) {
+			const auto& quad=image.Vertices();
+			if (!additiveImages.count(image.texture) || quad.size()!=4 || image.Indices()!=std::vector<int>{0,1,2,0,2,3}) return false;
+			const auto& a=quad[0]; const auto& b=quad[1]; const auto& c=quad[3];
+			const float bx=b.x-a.x, by=b.y-a.y, cx=c.x-a.x, cy=c.y-a.y, determinant=bx*cy-by*cx;
+			if (std::abs(determinant)<1e-6f || std::abs(quad[2].x-b.x-c.x+a.x)>.001f ||
+				std::abs(quad[2].y-b.y-c.y+a.y)>.001f) return false;
+			for (const auto& v:quad) if (v.r!=a.r || v.g!=a.g || v.b!=a.b || v.a!=a.a) return false;
+			RecordedDraw result; result.texture=image.texture; result.sampling=image.sampling;
+			result.indices=mask.Indices(); result.vertices.reserve(mask.Vertices().size());
+			for (const auto& v:mask.Vertices()) {
+				const float x=v.x-a.x, y=v.y-a.y, s=(x*cy-y*cx)/determinant, t=(bx*y-by*x)/determinant;
+				if (s<-.00001f || s>1.00001f || t<-.00001f || t>1.00001f ||
+					v.x<clip.x || v.x>clip.x+clip.width || v.y<clip.y || v.y>clip.y+clip.height) return false;
+				const float coverage=v.a*opacity;
+				result.vertices.push_back({v.x,v.y,a.u+s*(b.u-a.u)+t*(c.u-a.u),a.v+s*(b.v-a.v)+t*(c.v-a.v),
+					a.r*coverage,a.g*coverage,a.b*coverage,a.a*coverage});
+			}
+			output.push_back(std::move(result));
+		}
+		if (auto* target=Find(destination)) Materialize(*target);
+		if (!failed) {
+			host.EndLayer(Slot(destination));
+			for (const auto& draw:output) DrawNow(draw.vertices,draw.indices,draw.texture,0,0,{},draw.sampling);
+		}
+		return true;
+	}
+	struct CachedLayer {
+		std::vector<std::pair<std::uint64_t,std::uint64_t>> key;
+		Bounds clip;
+		std::uint32_t slot=0;
+		std::uint64_t used=0;
+	};
+	std::vector<CachedLayer> layerCache;
+	std::uint64_t cacheClock=0;
+	size_t LayerCacheLimit() const {
+		const auto bytes=std::uint64_t(std::max(1,viewportWidth))*std::max(1,viewportHeight)*4;
+		// All contexts share the host's target storage. Reserve transient space
+		// after accounting for other views' cached pixels, including other DPIs.
+		std::uint64_t budget=256*1024*1024;
+		if (pool) for (const auto& slot:pool->slots) if (slot.owner!=this && slot.cached) {
+			const auto used=std::uint64_t(slot.width)*slot.height*4;
+			if (used>=budget) return 0;
+			budget-=used;
+		}
+		const auto targets=budget/bytes;
+		return targets>6 ? size_t(std::min<std::uint64_t>(8,targets-6)) : 0;
+	}
+	void EvictLayerCache() {
+		if (layerCache.empty()) return;
+		const auto oldest=std::min_element(layerCache.begin(),layerCache.end(),[](const auto& a,const auto& b){return a.used<b.used;});
+		ReleaseSlot(oldest->slot); layerCache.erase(oldest);
+	}
+	void ClearLayerCache() { for (const auto& cached:layerCache) ReleaseSlot(cached.slot); layerCache.clear(); }
 	struct Layer {
 		Rml::LayerHandle handle = 0;
 		std::uint32_t slot = 0; // Host target once materialized; zero after allocation failure.
 		bool pending = true;
-		std::vector<Draw> draws; // Recorded while pending, replayed into the target.
+		bool cached = false;
+		std::vector<RecordedDraw> draws; // Recorded while pending, replayed into the target.
 	};
 	Layer* Find(Rml::LayerHandle handle) {
 		for (auto& layer : stack) if (layer.handle == handle) return &layer;
@@ -713,7 +1035,7 @@ private:
 		const auto* layer = handle ? Find(handle) : nullptr;
 		return layer ? layer->slot : 0;
 	}
-	// Only the top of the stack is ever pending: pushing materializes its parent.
+	// A nested layer can remain pending until its first non-recordable operation.
 	void Materialize(Layer& layer) {
 		if (!layer.pending) return;
 		layer.pending = false;
@@ -721,13 +1043,16 @@ private:
 		if (!layer.slot) { layer.draws.clear(); return; }
 		++statistics.layerPushes;
 		auto draws = std::move(layer.draws); layer.draws.clear();
-		for (const auto& draw : draws) Submit(draw.vertices,draw.indices,draw.texture,draw.mesh,draw.revision);
+		// Materializing a parent while a child is on the stack must draw into
+		// that parent's bound target, never re-record into the child.
+		for (const auto& draw : draws) DrawNow(draw.Vertices(),draw.Indices(),draw.texture,draw.mesh,draw.revision);
 	}
 	std::uint32_t TopLayer() const { return stack.empty() ? 0 : stack.back().slot; }
 	bool ActiveLayer(Rml::LayerHandle handle) {
 		return !handle || Find(handle);
 	}
 	std::uint32_t AllocateSlot() {
+		InvalidateFrame(); // Transient targets and backdrops must execute their full composition.
 		if (failed) return 0;
 		if (!pool) return 0;
 		const auto frame = host.RenderFrame();
@@ -750,10 +1075,32 @@ private:
 				}
 			}
 		}
+		if (!layerCache.empty()) { EvictLayerCache(); return AllocateSlot(); }
+		// A hidden/idle view must not pin cache targets needed by an active
+		// compositor. Same-size reuse remains ordered by the host draw stream;
+		// the frame guard above still prevents resizing a referenced image.
+		for (const auto& slot:pool->slots) if (slot.cached && slot.owner && slot.owner!=this) {
+			slot.owner->EvictLayerCache(); return AllocateSlot();
+		}
+		// After a resolution increase, several free old targets can consume the
+		// budget needed for one larger replacement. Releasing one lease is not
+		// enough: the host must also retire the obsolete allocation. Never touch
+		// a target used by any context in the current deferred submission frame.
+		bool trimmed=false;
+		for (std::uint32_t id=1; id<pool->slots.size(); ++id) {
+			auto& slot=pool->slots[id];
+			if (!slot.owner && slot.width>1 && slot.frame!=frame && host.TrimLayer(id)) {
+				slot={nullptr,1,1,frame}; trimmed=true;
+			}
+		}
+		if (trimmed) return AllocateSlot();
 		host.Log(true,"Cannot allocate retained composition layer"); failed = true; return 0;
 	}
 	void ReleaseSlot(std::uint32_t id) {
-		if (pool && id && id < pool->slots.size() && pool->slots[id].owner == this) pool->slots[id].owner = nullptr;
+		if (pool && id && id < pool->slots.size() && pool->slots[id].owner == this) {
+			if (pool->slots[id].cached) InvalidateFrame();
+			pool->slots[id].owner = nullptr; pool->slots[id].cached=false;
+		}
 	}
 	// The scissor and clip mask intersected; false when neither applies.
 	bool ActiveClip(float& left, float& top, float& right, float& bottom) const {
@@ -780,11 +1127,41 @@ private:
 		return sizeof(Geometry)+geometry.vertices.capacity()*sizeof(Rml::Vertex)+geometry.indices.capacity()*sizeof(int);
 	}
 	void Submit(const std::vector<Vertex>& vertices, const std::vector<int>& indices, std::uintptr_t texture,
-		std::uint64_t mesh = 0, std::uint64_t revision = 0) {
-		if (!stack.empty() && stack.back().pending) { stack.back().draws.push_back({vertices,indices,texture,mesh,revision}); return; }
+		std::uint64_t mesh = 0, std::uint64_t revision = 0, std::shared_ptr<const Geometry::Submission> retained = {}, ImageSampling sampling={}) {
+		if (!stack.empty() && stack.back().pending) {
+			RecordedDraw draw; draw.texture=texture; draw.mesh=mesh; draw.revision=revision; draw.retained=std::move(retained);
+			draw.sampling=std::move(sampling);
+			if (!draw.retained) { draw.vertices=vertices; draw.indices=indices; }
+			stack.back().draws.push_back(std::move(draw)); return;
+		}
+		DrawNow(vertices,indices,texture,mesh,revision,std::move(retained),std::move(sampling));
+	}
+	void DrawNow(const std::vector<Vertex>& vertices, const std::vector<int>& indices, std::uintptr_t texture,
+		std::uint64_t mesh, std::uint64_t revision, std::shared_ptr<const Geometry::Submission> retained={}, ImageSampling sampling={}) {
+		if (recordFrame) {
+			frameRecordedVertices+=vertices.size();
+			if (frameCommands.size()>=4096 || frameRecordedVertices>1048576) InvalidateFrame();
+			else {
+				FrameCommand command; auto& draw=command.draw;
+				draw.texture=texture; draw.mesh=mesh; draw.revision=revision; draw.retained=std::move(retained);
+				draw.sampling=std::move(sampling);
+				if (draw.sampling.coordinates) {
+					draw.mesh=draw.revision=0; draw.retained.reset();
+					const auto& s=draw.sampling;
+					for (const auto& v:vertices) {
+						const float x=v.x-s.origin.x, y=v.y-s.origin.y;
+						command.imageFractions.push_back({(x*s.cy-y*s.cx)/s.determinant,(s.bx*y-s.by*x)/s.determinant});
+					}
+				}
+				if (!draw.retained) { draw.vertices=vertices; draw.indices=indices; }
+				frameCommands.push_back(std::move(command));
+			}
+		}
+		const auto started=statistics.Now();
 		++statistics.drawCalls; statistics.submittedVertices += vertices.size(); statistics.submittedIndices += indices.size();
 		if (mesh) host.DrawMesh(mesh,revision,vertices,indices,texture);
 		else host.Draw(vertices,indices,texture);
+		statistics.hostDrawMilliseconds+=std::chrono::duration<double,std::milli>(statistics.Now()-started).count();
 	}
 	Host& host;
 	RuntimeStatistics& statistics;
@@ -977,6 +1354,7 @@ struct Services {
 	Rml::ElementInstancerGeneric<HudElement> hudInstancer;
 	std::unique_ptr<VectorMaskInstancer> maskInstancer;
 	std::unique_ptr<StreakFilterInstancer> streakInstancer;
+	std::unique_ptr<LeafOpacityFilterInstancer> leafOpacityInstancer;
 	bool initialized = false;
 	Backend* AcquireBackend() {
 		for (auto& backend : backends) if (!backend->leased) {
@@ -1007,11 +1385,13 @@ struct Services {
 		initialized = true;
 		maskInstancer = std::make_unique<VectorMaskInstancer>();
 		streakInstancer = std::make_unique<StreakFilterInstancer>();
+		leafOpacityInstancer = std::make_unique<LeafOpacityFilterInstancer>();
 		Rml::Factory::RegisterElementInstancer("q4-vector",&vectorInstancer);
 		Rml::Factory::RegisterElementInstancer("q4-node",&vectorInstancer);
 		Rml::Factory::RegisterElementInstancer("q4-hud",&hudInstancer);
 		Rml::Factory::RegisterDecoratorInstancer("q4-mask",maskInstancer.get());
 		Rml::Factory::RegisterFilterInstancer("streak",streakInstancer.get());
+		Rml::Factory::RegisterFilterInstancer("q4-opacity",leafOpacityInstancer.get());
 		return true;
 	}
 	~Services() {
@@ -1090,6 +1470,8 @@ struct Runtime::Impl {
 	std::unique_ptr<Document> canonical;
 	Motion motion;
 	State state;
+	struct StateSource { std::string id, cvar; size_t type; };
+	std::vector<StateSource> stateSources;
 	std::string stateError;
 	std::uint64_t appliedStateRevision = 0;
 	Interaction interaction;
@@ -1114,19 +1496,31 @@ struct Runtime::Impl {
 	// ApplyMotion's last applied input for each motion value, by position,
 	// whether a binding owns it, and the state revision and text ratio it was
 	// formatted under.
-	struct AppliedInput { PropertyKey key; Value value; bool bound = false; };
+	struct AppliedInput { PropertyKey key; Value value; bool bound = false; Rml::Element* element = nullptr; };
 	std::vector<AppliedInput> appliedInputs;
+	std::vector<PropertyKey> deferredInputs;
 	std::uint64_t appliedInputRevision = 0;
 	// The motion stamp of the last pass that applied every value (0: none
 	// yet, or a pass left a value for a later one).
 	std::uint64_t appliedMotionRevision = 0;
 	// Each motion value's position in appliedInputs (keys are fixed per document).
-	std::map<PropertyKey,size_t> inputIndexes;
+	struct PropertyHash {
+		size_t operator()(const PropertyKey& key) const noexcept {
+			const auto first=std::hash<std::string>{}(key.first), second=std::hash<std::string>{}(key.second);
+			return first^(second+size_t(0x9e3779b9)+(first<<6)+(first>>2));
+		}
+	};
+	std::unordered_map<PropertyKey,size_t,PropertyHash> inputIndexes;
 	float appliedInputTextRatio = 0;
+	bool presentationDirty = true;
+	bool paintDirty = true;
 	// Canonical ids by one breadth-first walk from the document, in
 	// GetElementById's own order and first match, so eligibility resolves
 	// every node with one walk instead of one search each.
 	std::unordered_map<std::string_view,Rml::Element*> elementIndex;
+	// Canonical nodes survive text/property edits and widget reparenting.
+	// Cache successful layout readbacks for the document's lifetime.
+	mutable std::unordered_map<std::string,Rml::Element*> boundsElements;
 	void IndexElements() {
 		elementIndex.clear();
 		if (!document) return;
@@ -1283,13 +1677,13 @@ struct Runtime::Impl {
 	}
 	void ReadStateSources() {
 		StateValues changes; std::string error;
-		for (const auto& [id,declaration] : state.Declarations()) {
-			if (declaration.cvar.empty()) continue;
+		for (const auto& source : stateSources) {
 			StateValue value;
-			if (!host.ReadCVar(declaration.cvar,declaration.initial.index(),value)) {
-				error = "Unavailable or invalid CVar source '"+declaration.cvar+"' for state '"+id+"'"; break;
+			if (!host.ReadCVar(source.cvar,source.type,value)) {
+				error = "Unavailable or invalid CVar source '"+source.cvar+"' for state '"+source.id+"'"; break;
 			}
-			changes[id] = std::move(value);
+			const auto previous=state.Variables().find(source.id);
+			if (previous==state.Variables().end() || previous->second!=value) changes.emplace(source.id,std::move(value));
 		}
 		if (error.empty()) {
 			// A large document's state is costly to copy: copy it only when a
@@ -1344,7 +1738,7 @@ struct Runtime::Impl {
 	}
 	std::vector<Rml::Vector2f> FocusLayout() const {
 		std::vector<Rml::Vector2f> result;
-		if (!document) return result;
+		if (!document || interaction.Focused().empty()) return result;
 		auto* target = document->GetElementById(interaction.Focused());
 		if (auto* viewport = NumberViewport(target)) target = viewport;
 		for (auto* element = target; element && element != document; element = element->GetParentNode()) {
@@ -1357,7 +1751,7 @@ struct Runtime::Impl {
 		return result;
 	}
 	bool FocusVisible() const {
-		if (!document) return false;
+		if (!document || interaction.Focused().empty()) return false;
 		auto* element = document->GetElementById(interaction.Focused());
 		Rml::Array<Rml::Vector2f,4> quad;
 		if (!element || !element->IsVisible(true) || !Rml::ElementUtilities::GetBorderBoxQuad(quad,element)) return false;
@@ -1378,7 +1772,7 @@ struct Runtime::Impl {
 		focusLayoutId=interaction.Focused();focusLayout=FocusLayout();focusLayoutVisible=FocusVisible();
 	}
 	bool RevealFocus(bool preserveAuthoredAxes = false) {
-		if (!document || !context) return false;
+		if (!document || !context || interaction.Focused().empty()) return false;
 		auto* element = document->GetElementById(interaction.Focused());
 		if (!element) return false;
 		const float margin = 4.f * viewport.DpRatio();
@@ -1520,22 +1914,28 @@ struct Runtime::Impl {
 	bool ApplyMotion(const RuntimeCanvasIdentity* expected=nullptr) {
         const auto current=[&]{return !expected || (ownerCanvas->alive && !ownerCanvas->retiring && ownerCanvas->identity==*expected);};
         if (!document || !canonical || !current()) return false;
+		const float textRatio=viewport.TextRatio();
+		if (!applied.empty() && appliedInputTextRatio==textRatio && appliedInputRevision==state.Revision() &&
+			appliedMotionRevision && appliedMotionRevision==motion.Revision() && appliedInputs.size()>=motion.Values().size()) return current();
 		// The inherited document default participates once. Explicit absolute
 		// typography below replaces it; em values use the resulting parent/font
 		// metrics and must never receive this multiplier a second time.
-		Value defaultFont; defaultFont.type=ValueType::Length; defaultFont.unit="dp";
-		defaultFont.data[0]=16*viewport.TextRatio();
-		const auto defaultCss=defaultFont.Css();
-		if (applied[{"","font-size"}]!=defaultCss) {
-			document->SetProperty("font-size",defaultCss); applied[{"","font-size"}]=defaultCss;
+		if (appliedInputTextRatio!=textRatio || !applied.contains({"","font-size"})) {
+			Value defaultFont; defaultFont.type=ValueType::Length; defaultFont.unit="dp";
+			defaultFont.data[0]=16*textRatio;
+			const auto defaultCss=defaultFont.Css();
+			if (applied[{"","font-size"}]!=defaultCss) {
+				document->SetProperty("font-size",defaultCss); applied[{"","font-size"}]=defaultCss;
+				presentationDirty=true;
+			}
 		}
 		// Motion holds every authored property, nearly all static. An input
 		// already applied under this text ratio formats to the CSS already
 		// applied, so only a changed one is formatted again; a new state
 		// revision can change only the properties bindings own. Text is
 		// translated every time and a backdrop pairs two values.
-		if (appliedInputTextRatio != viewport.TextRatio()) {
-			appliedInputs.clear(); appliedInputTextRatio = viewport.TextRatio();
+		if (appliedInputTextRatio != textRatio) {
+			appliedInputs.clear(); appliedInputTextRatio = textRatio;
 		}
 		const bool stateChanged = appliedInputRevision != state.Revision();
 		appliedInputRevision = state.Revision();
@@ -1553,6 +1953,18 @@ struct Runtime::Impl {
 		// text again through the host it validates the popup against.
 		const bool incremental = !expected && partial && appliedMotionRevision != 0 &&
 			appliedInputs.size() >= motion.Values().size() && inputIndexes.size() == motion.Values().size();
+		if (incremental && stateChanged && !state.TakeChangedProperties(changedKeys))
+			for (const auto& [key,value] : state.Properties()) changedKeys.push_back(key);
+		// A display transition flushes pending inline styles before RmlUi resolves
+		// the newly visible tree. In between, invisible animation still advances
+		// in Motion without repeatedly parsing filters/transforms nobody can see.
+		const bool deferHidden=incremental && controls.empty() && !scrollView.HasScrollbars() &&
+			!interaction.HasAuthoredModals() && !pointerPresent &&
+			std::none_of(changedKeys.begin(),changedKeys.end(),[](const PropertyKey& key){return key.second=="display";});
+		if (!deferHidden) {
+			changedKeys.insert(changedKeys.end(),deferredInputs.begin(),deferredInputs.end());
+			deferredInputs.clear();
+		}
 		appliedMotionRevision = 0;
 		bool complete = true;
 		// One input: formats it only when it changed, then applies it.
@@ -1561,10 +1973,44 @@ struct Runtime::Impl {
 			if (!backdrop && animated.type != ValueType::Text && input.key == key && !(stateChanged && input.bound) && input.value.type == animated.type &&
 				std::memcmp(input.value.data.data(),animated.data.data(),sizeof(animated.data)) == 0 &&
 				input.value.unit == animated.unit && input.value.text == animated.text) return true;
-			const auto bound = state.Properties().find(key);
+			const auto bound = !stateChanged && input.key==key && !input.bound ? state.Properties().end() : state.Properties().find(key);
 			const bool owned = bound != state.Properties().end();
 			const auto& value = owned ? bound->second : animated;
+			if (deferHidden) {
+				auto* element=input.element ? input.element : document->GetElementById(key.first);
+				// A hidden animated property may never have needed an inline
+				// write. Keep its resolved element even while deferring the value,
+				// otherwise every sample searches the entire document again.
+				input.element=element;
+				for (auto* ancestor=element;ancestor;ancestor=ancestor->GetParentNode())
+					if (ancestor->GetComputedValues().display()==Rml::Style::Display::None) {
+						if (std::find(deferredInputs.begin(),deferredInputs.end(),key)==deferredInputs.end()) deferredInputs.push_back(key);
+						input.key={}; // A deferred bound value has not reached its element yet.
+						return current();
+					}
+			}
+			const bool coordinates=key.second == "image-offset-x" || key.second == "image-offset-y" || key.second == "image-scale-x" || key.second == "image-scale-y";
+			if (coordinates) {
+				auto* element=input.element ? input.element : document->GetElementById(key.first);
+				if (!element) { complete=false; return true; }
+				static_cast<VectorElement*>(element)->SetImageCoordinate(key.second,value.data[0]);
+				input={key,animated,owned,element}; return current();
+			}
 			const bool opacity = key.second == "opacity";
+			const bool paintOpacity=opacity && incremental && !presentationDirty && controls.empty() &&
+				!scrollView.HasScrollbars() && !interaction.HasAuthoredModals() && !pointerPresent;
+			if (opacity) {
+				auto* element=input.element ? input.element : document->GetElementById(key.first);
+				if (!element) { complete=false; return true; }
+				const bool reusable=static_cast<VectorElement*>(element)->UpdateReplayOpacity(float(value.data[0]));
+				if (paintOpacity && reusable) {
+					// The compiled leaf filter already reads the live value. Keep
+					// 'applied' as the last CSS actually installed: formatting and
+					// looking up a new CSS string cannot change this cached draw.
+					// Zero/full-opacity crossings still install the new topology.
+					input={key,animated,owned,element}; return current();
+				}
+			}
 			std::string string;
 			if (value.type==ValueType::Length && (value.unit=="dp" || value.unit=="px") &&
 				(key.second=="font-size" || key.second=="line-height" || key.second=="letter-spacing")) {
@@ -1582,22 +2028,39 @@ struct Runtime::Impl {
 			} else string = opacity ? (value.data[0] < 1 ? "opacity("+value.Css()+")" : "none") :
 				value.type == ValueType::Text ? host.Translate(value.text) : value.Css();
 			if(!current())return false;
-			auto previous = applied.find(key);
-			if (previous != applied.end() && previous->second == string) { input = {key,animated,owned}; return true; }
 			// Fit and alignment are authored once and folded into the decorator.
 			if (key.second == "image-fit" || key.second == "image-align-x" || key.second == "image-align-y" || key.second == "image-blend") {
-				applied[key] = string; input = {key,animated,owned}; return true;
+				applied[key] = string; input = {key,animated,owned,input.element}; return true;
 			}
-			auto* element = document->GetElementById(key.first);
+			// Canonical elements survive property/text edits and owned-widget
+			// reparenting. These handles reset with the document or its snapshot.
+			auto* element = input.element ? input.element : document->GetElementById(key.first);
 			if (!element) { complete = false; return true; }
-			if (value.type == ValueType::Text) element->SetInnerRML(Rml::StringUtilities::EncodeRml(string));
+			if (opacity && string!="none" && static_cast<VectorElement*>(element)->ReplayOpacity()) string.insert(0,"q4-");
+			auto previous = applied.find(key);
+			if (previous != applied.end() && previous->second == string) { input = {key,animated,owned,element}; return true; }
+			{
+				// A hidden HUD branch can keep advancing its authored timelines
+				// without relaying out the visible document. Keep its inline values
+				// current; a later display change resolves all pending styles.
+				bool hidden=false;
+				for (auto* ancestor=element; ancestor; ancestor=ancestor->GetParentNode())
+					if (ancestor->GetComputedValues().display()==Rml::Style::Display::None) { hidden=true; break; }
+				if ((!hidden || key.second=="display") && !paintOpacity) presentationDirty=true;
+			}
+			if (paintOpacity) {
+				if (!static_cast<VectorElement*>(element)->SetPresentationOpacity(string,viewport.DpRatio(),
+					{float(viewport.width),float(viewport.height)})) host.Log(true,"Canonical opacity rejected: "+key.first);
+				paintDirty=true;
+			} else if (value.type == ValueType::Text) static_cast<VectorElement*>(element)->SetCanonicalText(string);
 			else if (value.type == ValueType::Image) {
 				const auto* node = canonical->Model().FindNode(key.first);
-				if (!node || !element->SetProperty("decorator",ImageDecorator(*node,value.text))) host.Log(true,"Canonical image rejected: "+key.first);
+				if (!static_cast<VectorElement*>(element)->SetImageSource(value.text) &&
+					(!node || !element->SetProperty("decorator",ImageDecorator(*node,value.text)))) host.Log(true,"Canonical image rejected: "+key.first);
 			}
 			else if (!element->SetProperty(opacity ? "filter" : backdrop ? "backdrop-filter" : key.second,string)) host.Log(true,"Canonical property rejected: "+key.first+"."+key.second);
 			if(!current())return false;
-			applied[key] = string; input = {key,animated,owned};
+			applied[key] = string; input = {key,animated,owned,element};
 			return true;
 		};
 		if (incremental) {
@@ -1607,8 +2070,6 @@ struct Runtime::Impl {
 			// those, not every authored value.
 			// openQ4: a state change reaches only the bound properties whose
 			// values changed (all of them after a full evaluation).
-			if (stateChanged && !state.TakeChangedProperties(changedKeys))
-				for (const auto& [key,value] : state.Properties()) changedKeys.push_back(key);
 			std::sort(changedKeys.begin(),changedKeys.end());
 			changedKeys.erase(std::unique(changedKeys.begin(),changedKeys.end()),changedKeys.end());
 			Stats().motionInputsScanned += changedKeys.size();
@@ -1788,9 +2249,11 @@ void Runtime::Shutdown() {
 	}
 	impl->context = nullptr;
 	impl->document = nullptr;
+	impl->boundsElements.clear();
 	impl->hud = nullptr;
-	impl->canonical.reset(); impl->applied.clear(); impl->appliedInputs.clear(); impl->inputIndexes.clear(); impl->motion.Reset({});
-	impl->state = {}; impl->appliedStateRevision = 0; impl->stateError.clear();
+	impl->paintDirty=true;
+	impl->canonical.reset(); impl->applied.clear(); impl->appliedInputs.clear(); impl->deferredInputs.clear(); impl->inputIndexes.clear(); impl->motion.Reset({});
+	impl->state = {}; impl->stateSources.clear(); impl->appliedStateRevision = 0; impl->stateError.clear();
 	impl->interaction.Reset({}); impl->controls.clear(); impl->pointerPresent = impl->pointerNavigation = false;
 	impl->pendingFocus.clear();
 	impl->initialized = false;
@@ -1804,13 +2267,16 @@ void Runtime::CloseDocument() {
     AbortPreparedDocument();
 
 	impl->sourcePath.clear();
+	impl->boundsElements.clear();
 	impl->hud = nullptr;
 	impl->valueView.Reset();
 	impl->scrollView.Reset();impl->scrollLayoutDirty=impl->preserveRestoredScroll=false;
 	impl->focusLayoutId.clear();impl->focusLayout.clear();impl->focusLayoutVisible=false;
 	impl->numberView.Reset();
-	impl->canonical.reset(); impl->applied.clear(); impl->appliedInputs.clear(); impl->inputIndexes.clear(); impl->motion.Reset({});
-	impl->state = {}; impl->appliedStateRevision = 0; impl->stateError.clear();
+	if (impl->backend) impl->backend->renderer.InvalidateFrame();
+	impl->paintDirty=true;
+	impl->canonical.reset(); impl->applied.clear(); impl->appliedInputs.clear(); impl->deferredInputs.clear(); impl->inputIndexes.clear(); impl->motion.Reset({});
+	impl->state = {}; impl->stateSources.clear(); impl->appliedStateRevision = 0; impl->stateError.clear();
 	impl->interaction.Reset({}); impl->controls.clear(); impl->pointerPresent = impl->pointerNavigation = false;
 	impl->pendingFocus.clear();
 	if (!impl->document) return;
@@ -1843,6 +2309,8 @@ bool Runtime::LoadDocument(const std::string& source, const std::string& sourceP
 	impl->interaction.Reset(candidate->Model());
 	std::string stateError;
 	impl->state.Reset(candidate->Model(),stateError); // Initial state was validated by Document::Load.
+	for (const auto& [id,declaration]:impl->state.Declarations()) if (!declaration.cvar.empty())
+		impl->stateSources.push_back({id,declaration.cvar,declaration.initial.index()});
 	impl->canonical = std::move(candidate);
 	impl->sourcePath = sourcePath;
 	std::vector<const Node*> nodes{&impl->canonical->Model().root};
@@ -1852,8 +2320,10 @@ bool Runtime::LoadDocument(const std::string& source, const std::string& sourceP
 		// Canonical subtrees preserve paint order when opacity crosses 1 and
 		// their temporary filter layer appears or disappears.
 		if (auto* element = impl->document->GetElementById(node->id)) element->SetProperty("z-index","0");
-		if (auto* element = impl->document->GetElementById(node->id))
+		if (auto* element = impl->document->GetElementById(node->id)) {
 			static_cast<VectorElement*>(element)->Configure(*node,impl->host,impl->Stats());
+			static_cast<VectorElement*>(element)->SetImageSamplingInterface(&impl->backend->renderer);
+		}
 		for (const auto& child : node->children) nodes.push_back(&child);
 	}
 	if (!impl->valueView.Initialize(impl->canonical->Model(),*impl->document,
@@ -1885,7 +2355,10 @@ bool Runtime::SetHudPresentation(const std::vector<HudPrimitive>& items,const Vi
 		impl->hud->SetProperty("width","100%"); impl->hud->SetProperty("height","100%");
 		impl->document->AppendChild(std::move(child));
 	}
-	return impl->hud->Prepare(items,impl->canonical->Model().root,viewport.width,viewport.height,impl->Stats(),error);
+	bool changed=false;
+	const bool prepared=impl->hud->Prepare(items,impl->canonical->Model().root,viewport.width,viewport.height,impl->Stats(),error,changed);
+	if (changed || !prepared) impl->paintDirty=true;
+	return prepared;
 }
 bool Runtime::PlayTimeline(const std::string& id, double seconds) {
     if(!Mutate())return false;
@@ -2201,7 +2674,7 @@ bool Runtime::RestoreSnapshot(const std::string& snapshot, std::string& error, d
 		// Publish its checked adoption before any state or presentation changes.
 		if (!impl->interaction.Adopt(std::move(interaction),error)) return false;
 		impl->state = std::move(state); impl->motion = std::move(motion);
-		impl->time = now; impl->pointerPresent = impl->pointerNavigation = false; impl->applied.clear(); impl->appliedInputs.clear(); impl->inputIndexes.clear();
+		impl->time = now; impl->pointerPresent = impl->pointerNavigation = false; impl->applied.clear(); impl->appliedInputs.clear(); impl->deferredInputs.clear(); impl->inputIndexes.clear();
 		impl->pendingFocus.clear();
         impl->preserveRestoredScroll=widgets.version==3;
 		// The restored modals are open already: their saved scroll offsets stand.
@@ -2322,21 +2795,41 @@ bool Runtime::Layout(const Viewport& viewport,double seconds) {
 	if (impl->pointerPresent) viewport.WindowToDocument(impl->windowPointerX,impl->windowPointerY,impl->pointerX,impl->pointerY);
 	if (std::isfinite(seconds)) impl->time = std::max(impl->time, seconds);
 	ContextClock clock(*impl->services,impl->time,impl->strictPreparation?&impl->preparationFailed:nullptr);
+	const auto presentationStart=impl->Stats().Now();
 	impl->ReadStateSources();
+	const auto sourcesEnd=impl->Stats().Now();
 	impl->motion.Advance(impl->time);
 	std::string completionFocus;
 	if (impl->RunCompletions(impl->state,impl->motion,impl->time,impl->completionWrites,&completionFocus)) impl->ApplyControlBindings();
 	if (!completionFocus.empty()) impl->pendingFocus = std::move(completionFocus);
+	const auto motionEnd=impl->Stats().Now();
 	impl->ApplyMotion();
+	const auto presentationEnd=impl->Stats().Now();
+	impl->Stats().sourceMilliseconds+=std::chrono::duration<double,std::milli>(sourcesEnd-presentationStart).count();
+	impl->Stats().motionMilliseconds+=std::chrono::duration<double,std::milli>(motionEnd-sourcesEnd).count();
+	impl->Stats().applyMilliseconds+=std::chrono::duration<double,std::milli>(presentationEnd-motionEnd).count();
+	impl->Stats().presentationMilliseconds+=std::chrono::duration<double,std::milli>(presentationEnd-presentationStart).count();
 	impl->context->SetDimensions({viewport.width, viewport.height});
 	impl->context->SetDensityIndependentPixelRatio(viewport.DpRatio());
-	impl->context->Update();
+	const bool presentationOnly=impl->canonical && impl->controls.empty() && !impl->scrollView.HasScrollbars() &&
+		!impl->interaction.HasAuthoredModals() && !impl->pointerPresent;
+	// UV-only instruments do not invalidate RmlUi style or layout. A quiet
+	// presentation document need not walk thousands of hidden HUD elements.
+	const bool layoutUpdated=!presentationOnly || viewportChanged || impl->presentationDirty;
+	// Canonical presentation documents have no RmlUi CSS animations, controls
+	// or pointer interaction. Their timelines invalidate properties explicitly;
+	// the context's default zero update delay is not evidence of changed layout.
+	if (layoutUpdated) {
+		++impl->Stats().layoutUpdates;
+		impl->context->Update(presentationOnly); impl->presentationDirty=false;
+		impl->paintDirty=true;
+	}
 	// Owned widget wrappers remain derived layout. Bounded settling lets a
 	// newly opened popup measure its authored rows before its first rendering,
 	// including rows it wraps to fit a narrower safe area: showing, narrowing,
 	// re-measuring the wrapped rows and settling take one pass each. A frame
 	// stops at the first pass that changes nothing.
-	for (unsigned pass = 0; pass < 4; ++pass) {
+	for (unsigned pass = 0; !presentationOnly && pass < 4; ++pass) {
 		impl->context->GetRootElement()->UpdateGeometryForProjection();
 		const auto before = impl->interaction.Focused();
 		if(!impl->UpdateInteraction(-1,true))return false;
@@ -2365,24 +2858,34 @@ bool Runtime::Layout(const Viewport& viewport,double seconds) {
 		}
 	}
 	impl->preserveRestoredScroll=false;
-	impl->context->GetRootElement()->UpdateGeometryForProjection();
+	if (layoutUpdated) impl->context->GetRootElement()->UpdateGeometryForProjection();
 	impl->RememberFocusLayout();
+	impl->Stats().layoutMilliseconds+=std::chrono::duration<double,std::milli>(impl->Stats().Now()-presentationEnd).count();
 	return true;
 }
-void Runtime::Frame(const Viewport& viewport, double seconds) {
-    if(!Mutate())return;
+bool Runtime::Frame(const Viewport& viewport, double seconds) {
+    if(!Mutate())return false;
 
 	auto& statistics = impl->Stats();
 	const auto residentCount = statistics.residentGeometryCount, residentBytes = statistics.residentGeometryBytes;
 	statistics = {};
+	statistics.timingsEnabled=impl->host.CollectTimings();
 	statistics.residentGeometryCount = residentCount; statistics.residentGeometryBytes = residentBytes;
-	const auto start = std::chrono::steady_clock::now();
-	if(!Layout(viewport,seconds))return;
+	const auto start = statistics.Now();
+	if(!Layout(viewport,seconds))return false;
 	ContextClock clock(*impl->services,impl->time,impl->strictPreparation?&impl->preparationFailed:nullptr);
-	const auto updated = std::chrono::steady_clock::now();
+	const auto updated = statistics.Now();
 	impl->backend->renderer.BeginFrame(viewport.width,viewport.height);
-	impl->context->Render();
+	const bool replayCandidate=impl->host.CanReplayFrames() && impl->canonical && !impl->paintDirty && impl->controls.empty() &&
+		!impl->scrollView.HasScrollbars() && !impl->interaction.HasAuthoredModals() && !impl->pointerPresent;
+	const bool replayed=replayCandidate && impl->backend->renderer.ReplayFrame();
+	if (!replayed) {
+		impl->backend->renderer.RecordFrame(replayCandidate);
+		impl->context->Render();
+	}
 	impl->backend->renderer.EndFrame();
+	if (!replayed) impl->backend->renderer.FinishRecording();
+	impl->paintDirty=false;
 	// RmlUi resolves transform state while rendering. Hit/navigation bounds
 	// therefore follow the just-presented frame, not stale transform matrices.
 	impl->UpdateInteraction(-1,true);
@@ -2391,14 +2894,23 @@ void Runtime::Frame(const Viewport& viewport, double seconds) {
 		impl->pointerNavigation = false;
 		if (impl->interaction.Focus(focus)) { impl->RevealFocus(); impl->Feedback(impl->time); }
 	}
-	const auto end = std::chrono::steady_clock::now();
+	const auto end = statistics.Now();
 	statistics.updateMilliseconds = std::chrono::duration<double,std::milli>(updated-start).count();
 	statistics.renderMilliseconds = std::chrono::duration<double,std::milli>(end-updated).count();
 	statistics.frameMilliseconds = std::chrono::duration<double,std::milli>(end-start).count();
+	return impl->backend->renderer.Succeeded();
 }
 bool Runtime::GetBounds(const std::string& id, Bounds& bounds) const {
     if(impl->viewport.width<=0 || impl->viewport.height<=0)return false;
-	auto* element = impl->document ? impl->document->GetElementById(id) : nullptr;
+	Rml::Element* element = nullptr;
+	if (impl->canonical) {
+		const auto found = impl->boundsElements.find(id);
+		if (found != impl->boundsElements.end()) element = found->second;
+	}
+	if (!element && impl->document) {
+		element = impl->document->GetElementById(id);
+		if (element && impl->canonical && impl->canonical->Model().FindNode(id)) impl->boundsElements.emplace(id,element);
+	}
 	if (!element) return false;
 	const auto position = element->GetAbsoluteOffset(Rml::BoxArea::Border);
 	const auto size = element->GetBox().GetSize(Rml::BoxArea::Border);

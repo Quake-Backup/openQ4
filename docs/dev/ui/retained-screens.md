@@ -1,4 +1,4 @@
-# Retained title, pause and loading screens
+# Retained menus, initialization, loading and view effects
 
 This increment extends the retained (RmlUi) interface beyond the SYSTEM page to
 the title screen, the single-player pause menu and the stock loading screens,
@@ -9,26 +9,166 @@ adds partial evidence for `FLOW-024`, `FLOW-047`, `FLOW-048`, `ART-030` and
 `REN-014` in the [requirement register](product-requirements.md); the
 remaining screen migrations and the final gates stay open.
 
-## 7 October 2026: retained scopes and view effects
+## 11 October 2026: death and crash awakening
+
+The shared SP/MP view effect now layers death's existing 1800 ms colour drain
+with one focus swell (320 ms rise, gone by 1570 ms) and an inward charcoal
+shade that arrives from 300–2400 ms. The extra sigma joins the existing death
+filter, rather than blurring the scene twice. The red afterimage uses eased
+ends. Reduced Motion or Reduced Flashing suppresses the swell and afterimage;
+the quiet colour loss and peripheral shade remain.
+
+Air Defense Trenches receives its own warmer treatment. Only the active
+`cin_opening` camera on `airdefense1`, in single player, qualifies. The
+installed `airdefense1::cinFadeBackIn` black fades open a 16 dp / 0.62
+saturation focus treatment, warm edge wash and asymmetric soft eyelid shade.
+Each clears over the original fade plus 2300 ms, with one small focus
+hesitation omitted by either accessibility preference. The two authored
+100 ms blackouts close it under the original screen fade. No scripts,
+dialogue, audio, cameras, fade deadlines or retail assets are replaced.
+Camera departure or a skipped cinematic clears the state; death takes
+precedence, restore clears transient state, and Classic never submits it.
+
+The presentation remains below the HUD and uses the existing editable
+`view_effects.q4ui` gradients and backdrop filter. The generator is
+`tools/ui/build_retained_effects.py`. The production-method fixture
+`tools/tests/retained_view_effects.py` exercises the actual shared implementation
+with a controlled clock: death/revival, clock rollback, both accessibility
+preferences, wheel submission isolation, map/camera/MP exclusions, three
+wakes/two blackouts, camera exit, restore/reset, spectators and MCC recovery.
+The native screen suite checks filter composition and viewport coverage.
+`tools/ui/capture_ui_continuity.py` adds death focus/tunnel checkpoints,
+reduced-settings and MP cases, and full original crash playback using engine
+screenshots with host input disabled. Qualification evidence belongs under
+`.tmp/view-effects-refinement/`.
+
+The Windows x64 build and staging pass. The focused native suite passes 956
+checks, its registered `openq4-ui-view-effects` Meson test passes, and the
+production-method fixture and generated-document check pass. OpenGL 1280x720
+captures qualify normal/reduced death and the complete three-wake/two-blackout
+crash sequence; Vulkan 720x960 captures qualify SP/MP death and the reduced
+crash sequence through clear gameplay and clean exit (39 engine screenshots).
+The latter needs the cinematic-specific 300-second harness allowance; the
+first attempt reached the final awakening but exceeded the old 240-second
+limit, so it is excluded from complete-run acceptance. The first GL MP
+probe was rejected because the listen-server `kill` command needs a client
+index; the corrected Vulkan `kill 0` capture shows the dead player and sharp
+respawn/match overlays. Source/runtime hashes and the exact staged-document
+comparison are in `identities.json`.
+
+Limits and unrelated findings: the broad retained-screen suite timed out at
+240 seconds in the debug build, before completing its full UI coverage.
+Meson reports an RmlUi wrap-revision warning and include-directory sandbox
+warnings; MP warmup reports non-pre-cached material/table warnings. The
+effect captures have no retained-UI diagnostics or geometry-ring overflow.
+Other platforms and VR remain untested. Automatic approval review rejected
+deletion of verified task-created caches with “blocked by policy”; those
+caches remain beside the useful screenshots and logs. See
+`.tmp/view-effects-refinement/validation-summary.json` for accepted and
+rejected runs.
+
+## 7 October 2026: initialization, fourth level and view continuity
+
+`PrintLoadingMessage` now draws `initialization.q4ui` through an early retained
+view, before the ordinary GUI manager starts. The session fallback uses the
+same document. Stage text remains localized; the view retires when a menu or
+gameplay takes over, and Classic or an unavailable document uses the original
+splash. The plate band, teeth, sweep, halo, embers, glint and progress accents
+follow the presentation clock. Reduced motion fixes the light and omits the
+decorative accents. Radial and conic paints consolidate the ring/sweep meshes:
+native 3840×2160 validation counts 457,764 vertices, below 30 MiB including
+room for the final black overlay. Round-stroke
+coverage clamps sub-quantization residue within 0.0001 pixel area while still
+rejecting larger overlap errors.
+
+`retained_menu_levels.py` supplies the shared next-level band step, fitted
+breadcrumbs, label carry and reversible descent. Both campaign branches use
+`campaign_skill.q4ui`, including the existing campaign reload continuation.
+The five localized difficulties and Turbo remain drafts until Start Game;
+Back discards them. The top and bottom frame stay at the physical view edges,
+and the isotropic content centers vertically in portrait windows. The route
+audit found no other currently implemented fourth-level main-menu page:
+Settings tabs and Arena's tier/match selection edit in place, multiplayer
+browser/create/demos are third-level routes, and dialogs remain modals.
+The planned Chapters route and other future children must use the same helper.
+
+All three scopes now use a 13.5 dp Gaussian backdrop with a 38 u aperture
+feather and 0.86 saturation outside the sight. The crisp center retains its
+isotropic circle or diamond. A single full-view gradient supplies each feather
+mask without redundant circular coverage edges. The nailgun uses one graded
+glow throughout acquisition; its resting tint stays within one 8-bit channel
+value of the stock measurement, and its locked tint is exact. Native 4K counts
+are 318,360 / 350,176 / 651,816 vertices for machinegun / railgun / nailgun,
+and 690,300 for a locked nailgun. Vulkan's shared vertex ring grows from 32 to
+96 MiB per frame slot to leave room for the world and stencil shadows beneath these high-resolution
+optics; index and uniform ring allocations are unchanged. The capture harness
+now rejects geometry-ring overflow explicitly.
+
+`RetainedViewEffects.inl`, shared by SP/MP, draws
+the MCC recovery and death presentation below the readable HUD. It follows
+the original `mcc_2` treatment fades, then consumes the sequence after the
+white fade following bed exit. Death smoothly drains color over 1800 ms, with
+soft peripheral shading and a brief restrained afterimage; original camera,
+respawn and black-fade timing are unchanged. Transient UI state resets on
+restore, respawn and disabling the retained interface.
+
+Map transitions finish a wall-clock 240 ms smooth fade (80 ms with reduced
+motion) before loading work starts. The outgoing menu stays alive through its
+last black frame. `ui_retainedCaptureLoadFade 1` is an unarchived diagnostic
+that calls the registered engine screenshot command at the middle and end;
+the capture harness checks that every terminal pixel is zero.
+
+Evidence is under `.tmp/ui-continuity/`:
+
+- `optics-native-final.log`, `geometry-budget-final.txt`, `initialization-paints.log`,
+  `gate-geometry-final.log` and `adapter.log`: native screen/paint/view tests,
+  4K geometry budget, 360 session checks, server/loading contracts and compiled
+  adapter mutation checks. Every generated document also passes `--check`.
+- `verified-gl` and `final-recovery-vulkan`: real `mcc_2` treatment captures,
+  preserving the three recovery events and final bed exit.
+  `qualified-scopes-vulkan` and `qualified-scopes-portrait`: each scope, rail ammo and
+  nailgun lock, plus live Classic fallback over real gameplay.
+  `qualified-scopes-offscreen4k` exercises 3840×2160 rendering of all optics,
+  including the locked nailgun, without mesh or frame-ring overflow. Its images
+  are rejected for visual acceptance: the oversized screenshot path tiles
+  retained render-target effects incorrectly. Normal window-sized captures
+  render correctly. This separate screenshot-export defect remains open.
+- `final-4k-vulkan`, `final-portrait`, `final-german` and `final-progression`:
+  final menu/death captures, corrected portrait framing, German labels,
+  reduced motion, repeated entry and a real campaign start with difficulty 2
+  and Turbo enabled. Windows resized the large requested window to
+  2538×1312; `offscreen4k` separately exercises the engine's explicit
+  3840×2160 screenshot command as a geometry stress check, subject to the
+  oversized-capture limitation above. Terminal loading frames are verified black.
+- `validation-summary.json`: source/binary identities, captured image hashes,
+  checked scope and remaining platform/input limits. These are development
+  checks, not complete UI migration or platform-release acceptance.
+
+## 7 October 2026: title motion, loading anchors and scopes
+
+The title's image retains pointer parallax, while its vector light/grid and
+framing groups stay stationary. Fractional pointer movement previously rebuilt
+their analytic pixel coverage. The native screen test now proves that pointer
+motion leaves these paths cached; the independent animated emblem glint remains.
+The screen generator also caches font metrics instead of reparsing a font for
+every localized label measurement.
+
+Loading uses `canvas: {height: 720, minWidth: 960}`. The optional bounded
+`minWidth` makes the scale `min(viewHeight/height, viewWidth/minWidth)`; omitted,
+the existing height-based contract remains. Objectives/tips/server details use
+the leading edge, identity/progress use the trailing edge, lower furniture uses
+the actual bottom edge, and corner brackets follow all four view corners.
+The background still covers the complete view. Native bounds tests cover 32:9
+and 9:16; engine captures cover 1920×810 GL and 720×1280 Vulkan.
 
 `tools/ui/build_retained_scopes.py` builds the machinegun, railgun and nailgun
 overlays from the atlas's authored paths and visual specification 14.13. Optical
 centers use the same fit-to-width-or-height canvas, preserving circular and
 diamond geometry; outer veils/haze fill every exposed band. Continuous radial
-and diamond paints replace stepped concentric bands. No retail bitmap mask is
-added. Rail ammo cells and motion, yaw compasses and nailgun target lock events
-remain driven by game state and presentation timelines.
-
-All three scopes use a 13.5 dp Gaussian backdrop with a 38 u aperture feather
-and 0.86 saturation outside the sight. The crisp center retains its isotropic
-circle or diamond. A single full-view gradient supplies each feather mask
-without redundant circular coverage edges. The nailgun uses one graded glow
-throughout acquisition; its resting tint stays within one 8-bit channel value of
-the stock measurement, and its locked tint is exact. Native 4K counts are
-318,360 / 350,176 / 651,816 vertices for machinegun / railgun / nailgun, and
-690,300 for a locked nailgun. Vulkan's shared vertex ring grows from 32 to
-96 MiB per frame slot to leave room for the world and stencil shadows beneath
-these high-resolution optics; index and uniform ring allocations are unchanged.
+and diamond paints replace stepped concentric bands. The initial machinegun
+radial smear is superseded by the Gaussian treatment above. No retail bitmap
+mask is added. Rail ammo cells and motion, yaw compasses and nailgun target lock
+events remain driven by game state and presentation timelines.
 
 The shared `src/game/gamesys/RetainedScope.h` selects only the three shipped
 scope paths behind `ui_retained`, for SP, MP and vehicle weapons. Differently
@@ -38,20 +178,51 @@ replacement and releases the old unique instance. Save restore consumes its
 serialized GUI first, then resets only the transient selection cache. Named lock
 state is restored; both player and vehicle presentation publish state before draw.
 
-`RetainedViewEffects.inl`, shared by SP/MP, draws the MCC recovery and death
-presentation below the readable HUD. It follows the original `mcc_2` treatment
-fades, then consumes the sequence after the white fade following bed exit.
-Death smoothly drains color over 1800 ms, with soft peripheral shading and a
-brief restrained afterimage; original camera, respawn and black-fade timing are
-unchanged. Transient UI state resets on restore, respawn and disabling the
-retained interface.
+Validation is retained locally under `.tmp/ui-fixes/`:
 
-`tools/ui/capture_retained_scopes.py --assets <Quake 4> --output .tmp/<dir>
---size WxH` takes the five scope-state captures. For overlay captures,
-`ui_testGuiInGame 1` draws the loaded scene behind `testGUI`; its default
-remains the black inspection background.
+- `native-verified.log`: all five screen/vector/three-scope paint tests pass;
+  gradient budgets include 4K. `scope-routing-test.log`, `gate-test2.log`,
+  `adapter-test.log` and `shader-test.log` cover routing/fallback/restore,
+  session behavior, compiled adapter mutations and the Vulkan shader header.
+- `accepted-gl` and `accepted-vk`: hidden windowed `game/airdefense1` captures,
+  `in_mouse 0`, no host input, using the engine's `screenshot`. Scope compass,
+  rail ammo and nail lock states render over the actual map. The live machinegun
+  reports `.q4ui → .gui → .q4ui` as the gate changes. No retained rendering
+  errors remain; the existing non-precache declarations and the generated scope
+  material's first-use non-precache notice are not rendering failures.
+- `scopes-4x3/report.json`: the reusable scope capture harness also passes at
+  1280×960 OpenGL, including all three optics and live gate fallback.
+- `performance-before` and `performance-after`: the same staged debugoptimized
+  executable, 1280×720 GL, and 90 moving-pointer samples, with the previous title
+  document supplied through a private test mod for the baseline. Median retained
+  CPU time falls **46.7568 → 7.4827 ms** (84%); p95 **71.4682 → 19.3318 ms**.
+  These are retained CPU timings, not an FPS measurement: the hidden console
+  sequence and logging affect frame intervals.
+- `monster-materials/report.json`: stock Berserker, Strogg Marine and Gladiator
+  traces select flesh and monster-metal FX separately. The installed flesh FX
+  names `bullet_impact_flesh`. `ModelTrace` now requests the existing posed
+  collision snapshot; visible MD5/MD5R snapshots omit the collision-only meshes
+  carrying these maps. The pre-fix Berserker probe selected default impacts for
+  all 832 sampled hits. No monster-wide flesh override is used.
+- `openq4-atlas.html` and `atlas-validation.json`: full atlas with the tracked
+  Medical Labs implant sheet, five aspect ratios, in-bounds readouts and no
+  JavaScript errors. The design and timeline prototype are complete; the broader
+  vehicle HUD migration remains tracked separately as `FLOW-062`.
 
-## One gate
+For repeatable monster checks run `tools/tests/monster_hit_materials.py` with
+`--assets`, a fresh project-local `--output`, and optional `--renderer vulkan`.
+`tools/ui/capture_retained_scopes.py` takes the same arguments plus `--size WxH`
+for the five scope-state captures. The register revision and source-binding
+audit passes in `requirement-audit-final.json`; historical acceptance states stay intact.
+For overlay captures, `ui_testGuiInGame 1` draws the loaded scene behind
+`testGUI`; its default remains the black inspection background.
+
+Unrelated findings: the font generator's repeated font parsing was corrected
+alongside this work. Existing non-precache declarations remain in gameplay logs,
+and several immutable historical register descriptions already contain replacement
+characters; this revision preserves those descriptions as the register requires.
+
+## One gate (session screens)
 
 `ui_retained` is the only switch for these screens. It is on by default and
 archived, so a player who sets it to 0 keeps the stock screens. While it is 0
@@ -964,10 +1135,10 @@ The hand-off to the Welcome card was traced and captured on listen servers and a
 - The Welcome card's own opening runs on the clock the load left standing
   and ends at once, so the hand-off reveals the card already softened. A
   first card frame slower than the fade still cuts it short.
-- The sub-page level covers Single Player's Campaign only. Arena opens its
+- The sub-page level covers Single Player's Campaign and its difficulty setup
+  uses the fourth level. Arena opens its
   stock selector, Multiplayer's Join Game, Create Server and Demos keep the
-  stock menus, and Campaign's New Campaign and Chapters are not yet levels of
-  their own. The Single Player page keeps the home navigation plates and the
+  stock menus, and Chapters is not implemented. The Single Player page keeps the home navigation plates and the
   BACK row instead of the section layout (navigation from 14 u, content from
   228 u) and the Back action in the bottom band; Classic is not built. A
   change going back cannot be reversed, and the crumb of a title too long for

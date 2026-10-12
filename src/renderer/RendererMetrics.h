@@ -55,6 +55,7 @@ void R_RendererMetrics_EndUploadRetirement( unsigned long long begin );
 
 void R_RendererMetrics_BeginFrame( int frameCount );
 void R_RendererMetrics_MarkCpuFrameBegin( void );
+void R_RendererMetrics_MarkFrameSubmitBegin( void );
 void R_RendererMetrics_RecordSubmitMsec( int submitMsec );
 void R_RendererMetrics_AddVisibilityMsec( int msec );
 void R_RendererMetrics_AddPacketBuildMsec( int msec );

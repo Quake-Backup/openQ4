@@ -30,6 +30,136 @@ static bool Shown(const Runtime& runtime, const std::string& id) {
 	return value && value->text != "none";
 }
 
+// Grain must cover the full swept area, including the instant either side
+// of its loop boundary. A sparse sheet that scrolls out of the mask passes
+// a first-frame screenshot but leaves the gauges bare for most of the loop.
+static void CheckStroggGaugeGrain(ScreenHost& host, const std::string& source) {
+	const bool previousReducedMotion=host.reducedMotion;
+	host.reducedMotion=false;
+	Runtime runtime(host);
+	std::vector<Diagnostic> diagnostics;
+	std::string error;
+	Runtime::EventEffects effects;
+	Check(runtime.Initialize() && runtime.LoadDocument(source,"guis/hud/strogg-grain.q4ui",diagnostics),"Strogg grain document loads");
+	StateValues values=RemasteredLayout(1280,720);
+	values.insert({{"player_health",100.0},{"player_healthpct",1.0},{"player_armor",100.0},{"player_armorpct",1.0},
+		{"player_ammo",50.0},{"player_totalammo",100.0},{"player_clip_size",50.0},{"player_ammopct",1.0}});
+	Check(runtime.SetState(values,error,0) && runtime.RunEvent("hudJoin",0,effects,error),"Strogg grain starts with the HUD");
+	for (double phase : {.1,.5,1.0,1.5,1.99,2.01}) {
+		host.draws.clear();
+		runtime.Frame(RemasteredViewport(1280,720),phase);
+		for (const char* kind : {"ammo","health","armor"}) {
+			const std::string prefix=std::string(kind)+"-static";
+			Bounds mask;
+			const auto translation=runtime.PresentedValue(prefix,"transform");
+			Check(translation && runtime.GetBounds(prefix+"-mask",mask) && Near(mask.width,129*1.5f,.1f) && Near(mask.height,67*1.5f,.1f),
+				"every grain mask retains the complete gauge rectangle");
+			float left=1e9f,top=1e9f,right=-1e9f,bottom=-1e9f;
+			for (int row=0;row<5;++row) for (int column=0;column<2;++column) {
+				const std::string tile=prefix+"-r"+std::to_string(row)+"-c"+std::to_string(column);
+				Bounds bounds;
+				Check(runtime.GetBounds(tile,bounds) && Near(bounds.width,mask.width,.1f) && Near(bounds.height,mask.height,.1f) &&
+					Near(bounds.x,mask.x+column*mask.width,.1f) && Near(bounds.y,mask.y+(row-4)*mask.height,.1f),
+					"the grain images form a contiguous two-column five-row tile sheet");
+				const auto image=runtime.PresentedValue(tile,"image"), blend=runtime.PresentedValue(tile,"image-blend"),
+					tint=runtime.PresentedValue(tile,"image-color");
+				Check(image && image->text=="gfx/guis/hud/s_static" && blend && blend->text=="additive" && tint &&
+					Near(float(tint->data[0]),22/255.f,.001f) && Near(float(tint->data[1]),22/255.f,.001f) &&
+					Near(float(tint->data[2]),22/255.f,.001f) && Near(float(tint->data[3]),1,.001f),
+					"Strogg grain uses installed stock noise with additive #161616 tint");
+				left=std::min(left,bounds.x+float(translation->data[0]));
+				top=std::min(top,bounds.y+float(translation->data[1]));
+				right=std::max(right,bounds.x+bounds.width+float(translation->data[0]));
+				bottom=std::max(bottom,bounds.y+bounds.height+float(translation->data[1]));
+			}
+			Check(left<=mask.x+.1f && top<=mask.y+.1f && right>=mask.x+mask.width-.1f && bottom>=mask.y+mask.height-.1f,
+				"animated grain covers the entire local mask at every sampled phase");
+		}
+	}
+	Check(std::find(host.materials.begin(),host.materials.end(),"q4-add/gfx/guis/hud/s_static")!=host.materials.end(),
+		"the grain resolves through the installed additive material");
+	host.reducedMotion=true;
+	runtime.SetReducedMotion(true,2.1);
+	runtime.Frame(RemasteredViewport(1280,720),2.2);
+	std::vector<Value> still;
+	for (const char* kind : {"ammo","health","armor"}) still.push_back(*runtime.PresentedValue(std::string(kind)+"-static","transform"));
+	runtime.Frame(RemasteredViewport(1280,720),3.2);
+	int index=0;
+	for (const char* kind : {"ammo","health","armor"}) {
+		const auto transform=runtime.PresentedValue(std::string(kind)+"-static","transform");
+		Check(transform && Near(float(transform->data[0]),float(still[index].data[0]),.001f) &&
+			Near(float(transform->data[1]),float(still[index].data[1]),.001f),"reduced motion leaves the grain translation still");
+		++index;
+	}
+	Check(host.errors==0,"Strogg grain phases produce no runtime diagnostics");
+	runtime.Shutdown();
+	host.reducedMotion=previousReducedMotion;
+}
+
+static void CheckHudInstruments(ScreenHost& host, const std::string& source, bool strogg) {
+	Runtime runtime(host); std::vector<Diagnostic> diagnostics; std::string error; Runtime::EventEffects effects;
+	Check(runtime.LoadDocument(source,"instruments.q4ui",diagnostics),"HUD instruments load");
+	auto state=RemasteredLayout(1280,720);
+	state.insert({{"player_health",100.0},{"player_healthpct",1.0}});
+	Check(runtime.SetState(state,error,0) && runtime.RunEvent("hudJoin",0,effects,error),"instruments start");
+	const float width=(strogg ? 129.f : 125.f)*1.5f, height=(strogg ? 67.f : 59.f)*1.5f;
+	for (bool reduced : {false,true}) {
+		const double epoch=reduced ? 10 : 0;
+		runtime.SetReducedMotion(reduced,epoch);
+		Check(runtime.RunEvent("hudJoin",epoch,effects,error),"instrument playback restarts");
+		for (double time : {.1,1.25,2.63,2.64,4.99,5.01}) {
+			host.draws.clear(); runtime.Frame(RemasteredViewport(1280,720),epoch+time);
+			for (int wave=0;wave<(strogg ? 2 : 1);++wave) {
+				const std::string id="health-ekg-normal-"+std::to_string(wave);
+				const auto shift=runtime.PresentedValue(id,"image-offset-x");
+				const double speed=wave==1 ? .38 : .2;
+				// The standard HUD timeline inserts its authored start at 1 ms.
+				Check(shift && Near(float(shift->data[0]),float(-std::fmod(time*speed,1.0)),.001f),
+					"ECG keeps its scroll speed and full texture period, including reduced motion");
+				Bounds first;
+				Check(runtime.GetBounds(id,first) && Near(first.width,width,.02f) && Near(first.height,height,.02f),
+					"one stationary ECG quad covers the mask throughout UV wrapping");
+				const auto image=runtime.PresentedValue(id,"image"), blend=runtime.PresentedValue(id,"image-blend");
+				const std::string expected=strogg ? (wave==1 ? "gfx/guis/hud/s_ekg2.tga" : "gfx/guis/hud/s_ekg.tga") : "gfx/guis/hud/ekg.tga";
+				Check(image && image->text==expected && blend && blend->text=="additive","ECG uses installed bitmap light");
+			}
+		}
+	}
+	Check(runtime.SetState({{"player_health",20.0},{"player_healthpct",.2}},error,16) && runtime.RunEvent("updateHealth",16,effects,error),"low ECG state");
+	runtime.Frame(RemasteredViewport(1280,720),16.1);
+	const auto low=runtime.PresentedValue("health-ekg-low-0","image-color");
+	Check(Shown(runtime,"health-ekg-low") && !Shown(runtime,"health-ekg-normal") && low && Near(float(low->data[0]),76/255.f,.001f),"low health keeps the red ECG tint");
+	Check(runtime.SetState({{"player_health",100.0},{"player_healthpct",1.0}},error,17) && runtime.RunEvent("updateHealth",17,effects,error),"ECG recovers");
+	Check(runtime.RunEvent("radioChatterUp",17,effects,error),"radio graph shows");
+	Check(!runtime.GetState().contains("radio.peak.0"),"preset radio graph has no per-frame audio bindings");
+	runtime.SetReducedMotion(false,18);
+	Check(runtime.RunEvent("hudJoin",18,effects,error),"preset graph starts");
+	const double waveTable[]={.95,.4,1,.5,.8,1,.6,1.4,.95,.6,.75,1.2,.7,1.3,.6,.8,.95,.6,1,.7,.95};
+	for (int sample=0;sample<48;++sample) {
+		const double phase=(sample+.5)/(21*.6);
+		host.draws.clear(); runtime.Frame(RemasteredViewport(1280,720),18+phase);
+		const auto shift=runtime.PresentedValue("radio-graph","image-offset-x");
+		Check(shift && Near(float(shift->data[0]),float(std::fmod(phase*.6,1.0)),.001f),"legacy audiograph scrolls at .6 texture widths per second");
+		const double tablePhase=std::fmod(phase*.6,1.0)*21;
+		const int index=int(tablePhase); const double fraction=tablePhase-index;
+		const auto scale=runtime.PresentedValue("radio-graph","image-scale-y");
+		Check(scale && std::abs(scale->data[0]-(waveTable[index]*(1-fraction)+waveTable[(index+1)%21]*fraction))<.0001,
+			"legacy waveform interpolates every stock table interval, including the duplicated end and wrap sample");
+		Bounds wave; Check(runtime.GetBounds("radio-graph",wave) && Near(wave.width,41*1.5f,.01f) && Near(wave.height,25*1.5f,.01f),
+			"the legacy waveform uses its complete source rectangle, not the narrower mask width");
+	}
+	Check(std::find(host.materials.begin(),host.materials.end(),"q4-add/_repeat/gfx/guis/hud/waveform.tga")!=host.materials.end(),
+		"the audiograph repeats the installed legacy bitmap with additive light");
+	runtime.SetReducedMotion(true,22);
+	runtime.Frame(RemasteredViewport(1280,720),22.1);
+	const auto still=*runtime.PresentedValue("radio-graph","image-offset-x");
+	const auto stillScale=*runtime.PresentedValue("radio-graph","image-scale-y");
+	runtime.Frame(RemasteredViewport(1280,720),23);
+	Check(runtime.PresentedValue("radio-graph","image-offset-x")->data==still.data &&
+		runtime.PresentedValue("radio-graph","image-scale-y")->data==stillScale.data,"reduced motion freezes both waveform UV channels");
+	Check(host.errors==0,"HUD instruments have no runtime diagnostics");
+}
+
 static void CheckRemasteredHud(ScreenHost& host, const char* path, const std::string& id, bool strogg) {
 	const auto source = Read(path);
 	Document document; std::vector<Diagnostic> diagnostics;
@@ -37,6 +167,8 @@ static void CheckRemasteredHud(ScreenHost& host, const char* path, const std::st
 	Check(diagnostics.empty() && document.Model().id == id,"Remastered HUD validates");
 	Check(document.Model().canvasHeight == 720 && document.Model().canvasMinWidth == 960,"Remastered HUD uses the 4:3 center-screen canvas");
 	RemasteredLayoutPreference(host,1);
+	CheckHudInstruments(host,source,strogg);
+	if (strogg) CheckStroggGaugeGrain(host,source);
 	Runtime runtime(host);
 	Check(runtime.Initialize(),"retained runtime");
 	Check(runtime.LoadDocument(source,"guis/hud/remastered.q4ui",diagnostics),"Remastered HUD loads into a runtime");
@@ -60,6 +192,9 @@ static void CheckRemasteredHud(ScreenHost& host, const char* path, const std::st
 	Check(Near(ammo.x,160+first*1.5f) && Near(health.x,160+second*1.5f) && Near(armor.x,160+third*1.5f),
 		"the status bar sits centred with the stock gaps at 16:9");
 	Check(Near(ammo.y,(strogg ? 419 : 420)*1.5f),"gauges rest on the bottom edge");
+	for (const auto& gauge : {ammo, health, armor})
+		Check(Near(gauge.width,(strogg ? 129 : 125)*1.5f) && Near(gauge.height,(strogg ? 67 : 59)*1.5f),
+			"each centered gauge keeps its legacy rectangle size");
 	// Armor at zero hides its gauge without moving the others.
 	values["player_armor"] = 0.0; values["player_armorpct"] = 0.0;
 	Check(runtime.SetState(values,error,.2),error.c_str());
@@ -71,25 +206,30 @@ static void CheckRemasteredHud(ScreenHost& host, const char* path, const std::st
 	Check(runtime.SetState(values,error,.3),error.c_str());
 	// The armor fill drains toward the numerals: at 20% only the trailing
 	// part from 120 - 115 x 0.2 = 97 u shows, cut parallel to the sheared
-	// sides. Fill paint is #B2CF6D at 0.35; its vertices start no further
-	// left than the cut (plus the 0.22 shear over the gauge height).
+	// sides. The texture's bevel modulates the tint at constant alpha. Its
+	// silhouette layer is composed through the moving fill window; vertices
+	// submitted into that intermediate layer are deliberately not pre-clipped.
 	host.draws.clear();
 	runtime.Frame(RemasteredViewport(1280,720),.32);
 	{
-		// The Strogg fill (s_valbar, #FF9000 at 0.35) runs 119 u to 124 u: 100.2 u at 20%.
-		const float lead = strogg ? 124 - 119*.2f : 97, fillR = strogg ? 1.f : 0xB2/255.f, fillG = strogg ? 0x90/255.f : 0xCF/255.f;
+		// The Strogg fill runs 119 u to 124 u: 100.2 u at 20%.
+		const float lead = strogg ? 124 - 119*.2f : 97, fillR = strogg ? 1.f : .698f, fillG = strogg ? .564f : .811f;
+		const float alpha = strogg ? .35f : .349f;
 		Bounds gauge; runtime.GetBounds("armor-gauge",gauge);
 		const auto window = runtime.PresentedValue("armor-fill-window","left");
-		float minX = 1e9f; size_t count = 0;
+		const auto width = runtime.PresentedValue("armor-fill-window","width");
+		size_t count = 0;
 		for (const auto& draw : host.draws) for (const auto& v : draw.vertices)
-			if (std::abs(v.r-fillR*.35f) < .02f && std::abs(v.g-fillG*.35f) < .02f && std::abs(v.a-.35f) < .02f &&
-				v.x > gauge.x-20 && v.x < gauge.x+gauge.width+20) { minX = std::min(minX,v.x); ++count; }
-		const float cut = gauge.x + lead*1.5f - .22f*29.5f*1.5f - 2;
-		std::fprintf(stderr,"armor window left %.2f, fill vertices %zu min x %.1f (cut at about %.1f, gauge %.1f..%.1f), clip masks %llu fallbacks %llu\n",
-			window ? window->data[0] : -1.f,count,minX,cut,gauge.x,gauge.x+gauge.width,
+			if (std::abs(v.a-alpha) < .005f && v.r > 0 && std::abs(v.g/v.r-fillG/fillR) < .025f &&
+				v.r >= fillR*alpha*.67f && v.r <= fillR*alpha*1.01f &&
+				v.x > gauge.x-20 && v.x < gauge.x+gauge.width+20) ++count;
+		std::fprintf(stderr,"armor window left %.2f, shaded fill vertices %zu, clip masks %llu fallbacks %llu\n",
+			window ? window->data[0] : -1.f,count,
 			(unsigned long long)runtime.Statistics().clipMasks,(unsigned long long)runtime.Statistics().clipMaskFallbacks);
 		Check(window && Near(float(window->data[0]),lead*1.5f,.01f),"the fill window's leading edge follows the armor");
-		Check(count > 0 && minX >= cut,"the fill is cut at its leading edge");
+		Check(count > 0 && width && Near(float(width->data[0]),((strogg ? 129 : 125)-lead)*1.5f,.01f) &&
+			runtime.Statistics().clipMasks > 0 && runtime.Statistics().clipMaskFallbacks == 0,
+			"the shaded fill is composed through its trailing clip window without fallback");
 	}
 	values["player_armorpct"] = .57;
 	Check(runtime.SetState(values,error,.35),error.c_str());
@@ -203,6 +343,20 @@ static void CheckRemasteredHud(ScreenHost& host, const char* path, const std::st
 	runtime.Frame(RemasteredViewport(1280,720),7.86);
 	Check(Shown(runtime,"hit") && Shown(runtime,"pickups") && Near(float(runtime.PresentedValue("hud-root","opacity")->data[0]),1),
 		"the groups and the full opacity return");
+	// Reduced flashing (13.10, 14.7) caps the dome and its chevron at 0.40.
+	host.cvars["ui_reducedFlashing"] = true;
+	Check(runtime.RunEvent("playerHit",7.865,effects,error),"a hit under reduced flashing runs");
+	runtime.Frame(RemasteredViewport(1280,720),7.866);
+	{
+		const auto peak = runtime.PresentedValue("hit-fade","opacity");
+		const auto disc = runtime.PresentedValue("hit-dome-disc","opacity");
+		const auto mark = runtime.PresentedValue("hit-chevron","opacity");
+		Check(peak && disc && mark && peak->data[0] * disc->data[0] <= .401 && peak->data[0] * disc->data[0] > .35 &&
+			Near(float(disc->data[0]),float(mark->data[0])),"reduced flashing caps the hit indicator at 0.40");
+	}
+	host.cvars["ui_reducedFlashing"] = false;
+	runtime.Frame(RemasteredViewport(1280,720),7.868);
+	Check(Near(float(runtime.PresentedValue("hit-dome-disc","opacity")->data[0]),1),"the full indicator returns without reduced flashing");
 
 	// A ride (the flatbed, the tram) replaces the three gauges with its silhouette gauge.
 	const char* healthKey = strogg ? "tram_healthpct" : "vehicle_health";
@@ -284,6 +438,57 @@ static void CheckRemasteredHud(ScreenHost& host, const char* path, const std::st
 		Check(Shown(runtime,"ship") && Shown(runtime,"ship-target1") && !runtime.GetBounds("ship-cone",cone),
 			"on foot the panel appears without the gun's view cone");
 	}
+	// Independent readouts: reloading grows the clip and leaves reserve still.
+	Check(runtime.SetState({{"mp",false}},error,9),error.c_str());
+	Check(runtime.RunEvent("ammoClipGain",9,effects,error),"clip gain runs");
+	runtime.Frame(RemasteredViewport(1280,720),9.02);
+    const float reserveSize=72*(strogg?.26f:.32f);
+    const auto clipPop=runtime.PresentedValue("ammo-clip","font-size"), reserveStill=runtime.PresentedValue("ammo-reserve","font-size");
+    Check(clipPop && clipPop->data[0]>36*1.15 && reserveStill && Near(float(reserveStill->data[0]),reserveSize,.001f),
+        "clip gain grows only the clip's original textscale");
+    runtime.Frame(RemasteredViewport(1280,720),9.3);
+    Check(Near(float(runtime.PresentedValue("ammo-clip","font-size")->data[0]),36,.001f),"clip gain settles after 250 ms");
+    Check(runtime.RunEvent("ammoReserveGain",9.31,effects,error),"reserve gain runs");
+    runtime.Frame(RemasteredViewport(1280,720),9.33);
+    Check(runtime.PresentedValue("ammo-reserve","font-size")->data[0]>reserveSize*1.15 &&
+        Near(float(runtime.PresentedValue("ammo-clip","font-size")->data[0]),36,.001f),"reserve gain leaves the clip still");
+    runtime.Frame(RemasteredViewport(1280,720),9.6);
+    Check(runtime.RunEvent("ammoPulse",9.61,effects,error),"legacy inventory pulse remains accepted");
+    runtime.Frame(RemasteredViewport(1280,720),9.63);
+    Check(Near(float(runtime.PresentedValue("ammo-reserve","font-size")->data[0]),reserveSize,.001f) &&
+        Near(float(runtime.PresentedValue("ammo-clip","font-size")->data[0]),36,.001f),"unrelated pickup does not pop the active readout");
+    host.legacyRequests.clear();
+    Check(runtime.SetState({{"player_health",1234.0},{"player_armor",57.0},{"oq4.weaponImage",std::string("gfx/guis/hud/icons/gun_machinegun")}},error,9.7),error.c_str());
+    runtime.Frame(RemasteredViewport(1280,720),9.7);
+    bool legacyHealth=false;
+    for (const auto& r:host.legacyRequests) if (r.text=="1234") {
+        Check(r.clip,"legacy health windows clip their glyphs");
+        legacyHealth=r.family==(strogg?"r_strogg":"chain") && Near(r.scale,.5f,.001f) &&
+            Near(r.width,strogg?60.f:52.f,.1f) && Near(r.height,26.f,.1f) && r.align==2;
+    }
+    Check(legacyHealth,"the complete uncapped number reaches the original font, textscale, window and trailing alignment");
+    host.legacyRequests.clear();
+    runtime.Frame(RemasteredViewport(1280,720),9.7);
+    Check(std::none_of(host.legacyRequests.begin(),host.legacyRequests.end(),[](const auto& r){return r.text=="1234";}),
+        "unchanged legacy readouts reuse their glyph layout");
+    Check(runtime.SetState({{"player_health",1235.0}},error,9.8),error.c_str());
+    runtime.Frame(RemasteredViewport(1280,720),9.8);
+    Check(std::any_of(host.legacyRequests.begin(),host.legacyRequests.end(),[](const auto& r){return r.text=="1235";}),
+        "a changed readout lays out its new glyphs immediately");
+    Check(runtime.PresentedValue("ammo-weapon-bitmap","image")->text=="gfx/guis/hud/icons/gun_machinegun",
+        "the ammo backdrop keeps the original bitmap source");
+	// Compare actual laid-out labels when the boss and every notice coexist.
+	Check(runtime.SetState({{"oq4.boss",true},{"oq4.saved",true},{"oq4.missile",true},{"oq4.exit",true}},error,10),error.c_str());
+	runtime.Frame(RemasteredViewport(1280,720),10.02);
+	Bounds exitLabel,savedLabel,missileLabel;
+	Check(runtime.GetBounds("exit-text",exitLabel) && runtime.GetBounds("saved-text",savedLabel) && runtime.GetBounds("missile-text",missileLabel),
+		"simultaneous notices lay out");
+	// GetBounds reports layout boxes before their parent's paint transform.
+	exitLabel.y+=float(runtime.PresentedValue("exit","transform")->data[1]);
+	savedLabel.y+=float(runtime.PresentedValue("saved","transform")->data[1]);
+	missileLabel.y+=float(runtime.PresentedValue("missile","transform")->data[1]);
+	Check(exitLabel.y>89.2f*1.5f && savedLabel.y>=exitLabel.y+exitLabel.height && missileLabel.y>=savedLabel.y+savedLabel.height,
+		"boss, exit, save and missile notices occupy separate rows");
 	Check(host.errors == 0,"no runtime diagnostics across the HUD exercise");
 	runtime.Shutdown();
 }
@@ -330,7 +535,8 @@ static void CheckRemasteredMpHud(ScreenHost& host, const char* path) {
 	Check(runtime.GetBounds("feed0-c",line) && Near(line.y,(70-11.5f)*1.5f,1.f),"the Tourney feed sits under the strip");
 	// Tourney's message bar, its timer and the ROUND and ARENA plate sit at the
 	// top of the center screen under the strip; the standing's timer gives way.
-	Check(runtime.SetState({{"oq4_tourney_round",std::string("ROUND 2")},{"oq4_mb_sub",std::string("ARENA 3")}},error,.42),error.c_str());
+	Check(runtime.SetState({{"oq4_tourney_round",std::string("ROUND 2")},{"oq4_mb_sub",std::string("ARENA 3")},
+		{"oq4_tourney_label",std::string("Quarter Finals")},{"spectatetext0",std::string("Arena 3; old round wording")}},error,.42),error.c_str());
 	runtime.Frame(RemasteredViewport(1280,720),.46);
 	Bounds tbar, tunder;
 	const auto troundText = runtime.PresentedValue("tplace-round","text"), tarenaText = runtime.PresentedValue("tplace-arena","text");
@@ -339,6 +545,42 @@ static void CheckRemasteredMpHud(ScreenHost& host, const char* path) {
 		"Tourney's bar and timer sit in the center screen under the strip");
 	Check(troundText && troundText->text == "ROUND 2" && tarenaText && tarenaText->text == "ARENA 3" && Shown(runtime,"ttimer-c"),
 		"the plate names the round and the arena beside the timer");
+	Check(runtime.PresentedValue("tourney-bar-text","text")->text=="Quarter Finals",
+		"the Tourney bar uses the banner's round wording instead of the stock arena description");
+	Check(runtime.SetState({{"oq4_state",4.0},{"oq4_countdown",false},{"oq4_clock_warn",0.0},
+		{"spectatetext1",std::string("Join arena")},{"spectatetext2",std::string("Cycle arenas")}},error,.47),error.c_str());
+	runtime.Frame(RemasteredViewport(1280,720),.475);
+	Check(Shown(runtime,"ttimer-sd") && Shown(runtime,"ttimer-inf") && !Shown(runtime,"ttimer-clock") && !Shown(runtime,"ttimer-urgent"),
+		"arena sudden death shows infinity rather than an expired countdown");
+	Check(Shown(runtime,"tourney-help1") && Shown(runtime,"tourney-help2"),"Tourney keeps join and arena-cycle instructions");
+	Check(runtime.SetState({{"oq4_state",2.0},{"oq4_countdown",true},{"oq4_tourney_label",std::string("")},
+		{"spectatetext0",std::string("STARTING GAME IN 4")}},error,.476),error.c_str());
+	runtime.Frame(RemasteredViewport(1280,720),.477);
+	Check(!Shown(runtime,"tourney-bar") && Shown(runtime,"ttimer-starts"),"the Tourney countdown appears only in the timer");
+	const std::string longHelp="Use the tournament menu to choose another arena and follow its players while you wait for the next round. "
+		"This deliberately extended localized instruction must keep every word readable and move the following instruction down to a separate row.";
+	Check(runtime.SetState({{"spectatetext1",longHelp},{"spectatetext2",longHelp}},error,.478),error.c_str());
+	runtime.Frame(RemasteredViewport(1280,720),.4785);
+	Bounds helpBlock, helpFirst, helpSecond;
+	Check(runtime.GetBounds("tourney-help",helpBlock) && runtime.GetBounds("tourney-help1",helpFirst) &&
+		runtime.GetBounds("tourney-help2",helpSecond) && Near(helpBlock.x,160+8*1.5f,1.f) && Near(helpBlock.width,624*1.5f,1.f) &&
+		helpBlock.y>=tunder.y+tunder.height && helpFirst.height>13*1.5f && helpSecond.height>13*1.5f &&
+		helpSecond.y>=helpFirst.y+helpFirst.height-.5f && helpSecond.y+helpSecond.height<=helpBlock.y+helpBlock.height+.5f,
+		"long Tourney instructions wrap across the center width in separate rows below the timer");
+	const auto helpOverflow=runtime.PresentedValue("tourney-help2","text-overflow");
+	Check(runtime.PresentedValue("tourney-help2","text")->text==longHelp && (!helpOverflow || helpOverflow->text!="ellipsis"),
+		"Tourney instructions retain all localized words without ellipsis");
+	Check(runtime.SetState({{"spectatetext1",std::string("")}},error,.479),error.c_str());
+	runtime.Frame(RemasteredViewport(1280,720),.4795);
+	Check(!Shown(runtime,"tourney-help1") && runtime.GetBounds("tourney-help2",helpSecond) && Near(helpSecond.y,helpBlock.y,.5f),
+		"an absent first instruction leaves no blank row before the second");
+	Check(runtime.SetState({{"oq4_state",1.0},{"oq4_countdown",false},{"showready",true},{"oq4_mb_ready",std::string("READY 3/8")}},error,.48),error.c_str());
+	runtime.Frame(RemasteredViewport(1280,720),.485);
+	Check(Shown(runtime,"ttimer-ready") && runtime.PresentedValue("ttimer-ready","text")->text=="READY 3/8","warm-up uses the compact ready count");
+	Check(runtime.SetState({{"oq4_mb_ready",std::string("")}},error,.49),error.c_str());
+	runtime.Frame(RemasteredViewport(1280,720),.495);
+	Check(!Shown(runtime,"ttimer-ready"),"a bot-only warm-up does not show READY 0/0");
+	Check(runtime.SetState({{"oq4_state",3.0},{"showready",false}},error,.499),error.c_str());
 	Check(runtime.SetState({{"gametype",1.0},{"oq4_feed0_live",false}},error,.5),error.c_str());
 
 	// Standing: the leader and you, your gap, the limit.
@@ -368,6 +610,15 @@ static void CheckRemasteredMpHud(ScreenHost& host, const char* path) {
 	Check(Shown(runtime,"team0-flag-pulse") && Shown(runtime,"team0-flag-bang") && Shown(runtime,"team0-carrier") &&
 		Shown(runtime,"team1-flag-base"),"a taken flag pulses under ! with its carrier");
 	Check(runtime.GetBounds("timer",clock) && Near(clock.y,90*1.5f),"the timer sits under the team panels");
+	Check(runtime.SetState({{"gametype",10.0},{"showround",true},{"roundtext",std::string("ROUND 2")},
+		{"roundtime",std::string("1:12")},{"showroundtime",false}},error,.76),error.c_str());
+	runtime.Frame(RemasteredViewport(1280,720),.77);
+	Check(Shown(runtime,"round-c") && Shown(runtime,"round-clock") && runtime.PresentedValue("round-clock","text")->text=="1:12",
+		"the entire timed round has a clock even before Classic's last-thirty-second flag");
+	Check(runtime.SetState({{"roundtime",std::string("")}},error,.78),error.c_str());
+	runtime.Frame(RemasteredViewport(1280,720),.79);
+	Check(!Shown(runtime,"round-clock"),"an untimed or inactive round has no stale countdown");
+	Check(runtime.SetState({{"gametype",4.0},{"showround",false}},error,.795),error.c_str());
 
 	// Timer: the last minute in #FFBE23, the last ten seconds pulsing #E46D56.
 	Check(runtime.SetState({{"oq4_clock_warn",1.0},{"oq4_clock",std::string("0:42")}},error,.8),error.c_str());
@@ -377,7 +628,7 @@ static void CheckRemasteredMpHud(ScreenHost& host, const char* path) {
 	Check(runtime.SetState({{"oq4_clock_warn",2.0},{"oq4_clock",std::string("0:08")}},error,.9),error.c_str());
 	runtime.Frame(RemasteredViewport(1280,720),.95);
 	Check(Shown(runtime,"timer-urgent") && !Shown(runtime,"timer-clock"),"the last ten seconds pulse");
-	Check(runtime.SetState({{"oq4_state",1.0},{"showready",true},{"readytext",std::string("Ready 3/8")}},error,1.0),error.c_str());
+	Check(runtime.SetState({{"oq4_state",1.0},{"showready",true},{"oq4_mb_ready",std::string("READY 3/8")}},error,1.0),error.c_str());
 	runtime.Frame(RemasteredViewport(1280,720),1.05);
 	Check(Shown(runtime,"timer-warm") && Shown(runtime,"timer-ready") && !Shown(runtime,"timer-clock"),"warm-up shows the ready count");
 	Check(runtime.SetState({{"oq4_state",3.0}},error,1.1),error.c_str());
@@ -408,6 +659,19 @@ static void CheckRemasteredMpHud(ScreenHost& host, const char* path) {
 	Check(Shown(runtime,"chat0") && Shown(runtime,"chat0-tag") && runtime.GetBounds("chat0",chat) && Near(chat.x,8*1.5f,1.f) &&
 		Near(chat.y+chat.height,720-59*1.5f,2.f),"a team chat line sits on the leading edge clear of the status bar");
 	Check(!Shown(runtime,"chatin"),"no input at rest");
+	StateValues wrappedChat;
+	for (int i=0;i<4;++i) {
+		const auto prefix=std::string("oq4_chat")+std::to_string(i);
+		wrappedChat[prefix+"_live"]=true; wrappedChat[prefix+"_alpha"]=1.0;
+		wrappedChat[prefix+"_text"]=std::string("A long chat message with enough words to wrap onto several lines in the narrow side screen. Repeated detail keeps each message well beyond one line.");
+	}
+	Check(runtime.SetState(wrappedChat,error,3.96),error.c_str());
+	runtime.Frame(RemasteredViewport(1280,720),3.97);
+	Bounds restedHistory;
+	Check(runtime.GetBounds("chatlog",restedHistory) && restedHistory.height<=8*13.3f*1.5f+1,
+		"wrapped messages stay within eight lines while chat input is closed");
+	Check(runtime.SetState({{"oq4_chat1_live",false},{"oq4_chat2_live",false},{"oq4_chat3_live",false},
+		{"oq4_chat0_text",std::string("rail on the bridge")}},error,3.98),error.c_str());
 
 
 	// Vote and follow card.
@@ -415,6 +679,19 @@ static void CheckRemasteredMpHud(ScreenHost& host, const char* path) {
 		{"oq4_following",true},{"oq4_follow_name",std::string("Vex")}},error,4.1),error.c_str());
 	runtime.Frame(RemasteredViewport(1280,720),4.15);
 	Check(Shown(runtime,"vote") && Shown(runtime,"vote-l1") && !Shown(runtime,"vote-l2"),"the vote card lists its fields");
+	Check(runtime.SetState({{"oq4_vote_yes_key",std::string("F1")},{"oq4_vote_no_key",std::string("F2")}},error,4.151),error.c_str());
+	runtime.Frame(RemasteredViewport(1280,720),4.152);
+	Check(Shown(runtime,"vote-yes-chip") && Shown(runtime,"vote-no-chip") && runtime.PresentedValue("vote-yes-key","text")->text=="F1",
+		"desktop vote bindings use labelled keycaps");
+	Check(runtime.SetState({{"oq4_vote_yes_key.glyph",2.0},{"oq4_vote_no_key.glyph",3.0}},error,4.153),error.c_str());
+	runtime.Frame(RemasteredViewport(1280,720),4.154);
+	Check(Shown(runtime,"vote-yes-cross") && Shown(runtime,"vote-no-circle") && !Shown(runtime,"vote-yes-chip") && !Shown(runtime,"vote-no-chip"),
+		"vote prompts follow the active controller glyph family");
+	Check(runtime.SetState({{"oq4_vote_voted",true}},error,4.155),error.c_str());
+	runtime.Frame(RemasteredViewport(1280,720),4.156);
+	Check(!Shown(runtime,"vote-yes-glyph") && !Shown(runtime,"vote-no-glyph") && Shown(runtime,"vote-yes-cells"),
+		"after voting the tallies remain and both device prompts disappear");
+	Check(runtime.SetState({{"oq4_vote_voted",false},{"oq4_vote_yes_key.glyph",0.0},{"oq4_vote_no_key.glyph",0.0}},error,4.157),error.c_str());
 	Check(Shown(runtime,"follow") && Shown(runtime,"follow-name") && !Shown(runtime,"spec-free"),"the follow card names the followed player");
 	Check(runtime.SetState({{"oq4_key_prev",std::string("MWHEELDOWN")}},error,4.16),error.c_str());
 	runtime.Frame(RemasteredViewport(1280,720),4.17);
@@ -445,7 +722,7 @@ static void CheckRemasteredMpHud(ScreenHost& host, const char* path) {
 	Check(!Shown(runtime,"tag0"),"following, the tags go");
 
 	// Respawn: the attack control's Respawn in the lower third, fading in as it
-	// appears; while overtime holds the respawn, the seconds left instead.
+	// appears; every server delay keeps that control beside the seconds left.
 	Check(runtime.SetState({{"oq4_spectating",false},{"oq4_following",false},{"oq4_respawn",1.0},
 		{"oq4_key_attack",std::string("MOUSE1")}},error,4.2),error.c_str());
 	Check(runtime.RunEvent("oq4_respawn",4.2,effects,error),"the respawn prompt appears");
@@ -460,13 +737,13 @@ static void CheckRemasteredMpHud(ScreenHost& host, const char* path) {
 		"dead, the attack control's Respawn shows instead of the follow card");
 	const auto key = runtime.PresentedValue("respawn-key","text");
 	Check(key && key->text == "MOUSE1","the prompt names the attack control");
-	Check(runtime.GetBounds("respawn-c",respawn) && Near(respawn.x+respawn.width/2,640,1.5f) && respawn.y > 720*2/3.f &&
-		respawn.y+respawn.height < 720-51*1.5f,"the prompt is centred in the lower third, clear of the status bar");
+	Check(runtime.GetBounds("respawn-c",respawn) && Near(respawn.x+respawn.width/2,640,1.5f) && Near(respawn.y,318*1.5f,1.f) &&
+		respawn.y+respawn.height < 720-51*1.5f,"the prompt uses the atlas's lower-third position, clear of the status bar");
 	Check(runtime.SetState({{"oq4_respawn",2.0},{"oq4_respawn_in",4.0}},error,4.6),error.c_str());
 	runtime.Frame(RemasteredViewport(1280,720),4.65);
 	const auto seconds = runtime.PresentedValue("respawn-in","text");
-	Check(Shown(runtime,"respawn-held") && !Shown(runtime,"respawn-ready") && seconds && seconds->text == "4",
-		"a held respawn counts down its seconds");
+	Check(Shown(runtime,"respawn-held") && Shown(runtime,"respawn-ready") && Shown(runtime,"respawn-glyph") && seconds && seconds->text == "4",
+		"a held respawn keeps its control and Respawn label beside the countdown");
 	Check(runtime.SetState({{"oq4_respawn",0.0}},error,4.7),error.c_str());
 	Check(runtime.RunEvent("oq4_respawn",4.7,effects,error),"the respawn prompt leaves");
 	runtime.Frame(RemasteredViewport(1280,720),4.75);
@@ -484,6 +761,27 @@ static void CheckRemasteredMpHud(ScreenHost& host, const char* path) {
 	Check(runtime.SetState({{"oq4_respawn",0.0}},error,4.9),error.c_str());
 	runtime.Frame(RemasteredViewport(1280,720),4.95);
 	Check(Shown(runtime,"tl-full") && Shown(runtime,"tr-full"),"Remastered brings them back");
+
+	// The live managed card uses one summary; warm-up/pause still show all
+	// populated lines, without losing the record kept for the scoreboard.
+	Check(runtime.SetState({{"match_context_visible",1.0},{"match_context_phase",std::string("LIVE")},
+		{"match_context_role",std::string("Player")},{"match_context_series",std::string("Series 1-0")},
+		{"match_context_timeouts",std::string("Timeouts 1/2")},{"match_context_proposal",std::string("Map proposal")},
+		{"match_context_compact",false},{"match_context_summary",std::string("Series 1-0")}},error,4.951),error.c_str());
+	runtime.Frame(RemasteredViewport(1280,720),4.952);
+	Bounds expandedContext, compactContext;
+	Check(runtime.GetBounds("ctx",expandedContext) && Shown(runtime,"ctx-series") && Shown(runtime,"ctx-timeouts") && !Shown(runtime,"ctx-summary"),
+		"the expanded context retains its full localized record");
+	Check(runtime.SetState({{"match_context_compact",true}},error,4.96),error.c_str());
+	runtime.Frame(RemasteredViewport(1280,720),4.961);
+	Check(runtime.GetBounds("ctx",compactContext) && compactContext.height<expandedContext.height && Near(compactContext.y,expandedContext.y) &&
+		Shown(runtime,"ctx-phase") && Shown(runtime,"ctx-summary") && !Shown(runtime,"ctx-role") && !Shown(runtime,"ctx-series") &&
+		!Shown(runtime,"ctx-timeouts") && !Shown(runtime,"ctx-proposal"),"live play collapses the card to phase and one summary in its existing slot");
+	Check(runtime.PresentedValue("ctx-series","text")->text=="Series 1-0","collapsing the HUD does not erase the full record");
+	Check(runtime.SetState({{"match_context_compact",false}},error,4.97),error.c_str());
+	runtime.Frame(RemasteredViewport(1280,720),4.971);
+	Check(Shown(runtime,"ctx-series") && Shown(runtime,"ctx-proposal") && !Shown(runtime,"ctx-summary"),"a pause or warm-up expands the record again");
+	Check(runtime.SetState({{"match_context_visible",0.0}},error,4.98),error.c_str());
 
 	// The input (atlas mpChat) opens at the box's bottom and pushes the lines,
 	// now history, up: the prompts, then the field with the channel tag and
@@ -609,7 +907,7 @@ static void CheckRemasteredMpHud(ScreenHost& host, const char* path) {
 		error.c_str());
 	Check(runtime.RunEvent("show_transmit_self",7.65,effects,error) && runtime.RunEvent("show_transmit",7.65,effects,error),"the talkers run");
 	runtime.Frame(RemasteredViewport(1280,720),7.7);
-	const auto mine = runtime.PresentedValue("voice-self-b0","background-color"), theirs = runtime.PresentedValue("voice-other-b0","background-color");
+	const auto mine = runtime.PresentedValue("voice-self-graph","image-color"), theirs = runtime.PresentedValue("voice-other-graph","image-color");
 	const auto talker = runtime.PresentedValue("voice-other-name","text");
 	Check(Shown(runtime,"voice-self") && Shown(runtime,"voice-other") && talker && talker->text == "Kaz","both talker plates show");
 	Check(mine && Near(float(mine->data[1]),0x8E/255.f,.01f) && theirs && Near(float(theirs->data[1]),0xE3/255.f,.01f),
@@ -999,6 +1297,19 @@ static void CheckRemasteredVehicleHud(ScreenHost& host, const char* path) {
 	Check(runtime.GetBounds("vhit-l",hitLeft) && runtime.GetBounds("vhit-r",hitRight) && runtime.GetBounds("vhit-t",hitTop) &&
 		runtime.GetBounds("vhit-b",hitBottom) && Near(hitLeft.x,0) && Near(hitRight.x+hitRight.width,1280,1.f) && Near(hitTop.y,0) &&
 		Near(hitBottom.y+hitBottom.height,720,1.f) && Near(hitRight.width,0.22f*640*1.5f,1.f),"the flash's strips hold all four edges of the view");
+	{
+		// Reduced flashing (13.10) caps every strip at 0.40.
+		host.cvars["ui_reducedFlashing"] = true;
+		runtime.Frame(RemasteredViewport(1280,720),6.36);
+		bool capped = true;
+		for (const char* strip : {"vhit-l","vhit-r","vhit-t","vhit-b"}) {
+			const auto value = runtime.PresentedValue(strip,"opacity");
+			capped = capped && value && Near(float(value->data[0]),.4f,.001f);
+		}
+		Check(capped,"reduced flashing caps the vehicle hit glow at 0.40");
+		host.cvars["ui_reducedFlashing"] = false;
+		runtime.Frame(RemasteredViewport(1280,720),6.37);
+	}
 	runtime.Frame(RemasteredViewport(1280,720),6.9);
 	const auto gone = runtime.PresentedValue("vhit","opacity");
 	Check(gone && gone->data[0] < 1e-3,"the flash is gone after 500 ms");
@@ -1806,12 +2117,15 @@ static void CheckRemasteredScoreboardHud(ScreenHost& host, const char* path) {
 // the runtime (events, state batches, frames), for performance work.
 static void BenchRemasteredHud(const char* path) {
 	ScreenHost host;
+	host.cacheLayers=true;
 	const auto source = Read(path);
 	std::vector<Diagnostic> diagnostics;
 	RemasteredLayoutPreference(host,1);
 	Runtime runtime(host);
 	Check(runtime.Initialize(),"retained runtime");
-	Check(runtime.LoadDocument(source,"guis/hud/bench.q4ui",diagnostics),"bench document loads");
+	const bool loaded=runtime.LoadDocument(source,"guis/hud/bench.q4ui",diagnostics);
+	for (const auto& diagnostic:diagnostics) std::fprintf(stderr,"HUD_BENCH %s: %s\n",diagnostic.pointer.c_str(),diagnostic.message.c_str());
+	Check(loaded,"bench document loads");
 	std::string error;
 	Runtime::EventEffects effects;
 	StateValues values = RemasteredLayout(1280,720);
@@ -1849,9 +2163,46 @@ static void BenchRemasteredHud(const char* path) {
 	std::printf("HUD_BENCH document=%s event_ms=%.3f state_ms=%.3f frame_ms=%.3f state_frame_ms=%.3f errors=%d\n",path,eventMs,stateMs,frameMs,changedFrameMs,host.errors);
 	runtime.Frame(RemasteredViewport(1280,720),t);
 	const auto s = runtime.Statistics();
-	std::printf("HUD_BENCH_FRAME update_ms=%.3f render_ms=%.3f vector_compile_ms=%.3f vectors=%llu compiled=%llu hits=%llu geometry_compiles=%llu draws=%llu vertices=%llu layers=%llu\n",
+	std::printf("HUD_BENCH_FRAME update_ms=%.3f render_ms=%.3f vector_compile_ms=%.3f vectors=%llu compiled=%llu hits=%llu geometry_compiles=%llu draws=%llu vertices=%llu layers=%llu layer_cache_hits=%llu direct_masks=%llu\n",
 		s.updateMilliseconds,s.renderMilliseconds,s.vectorCompileMilliseconds,(unsigned long long)s.vectorElements,(unsigned long long)s.vectorPathsCompiled,
 		(unsigned long long)s.vectorCacheHits,(unsigned long long)s.geometryCompiles,(unsigned long long)s.drawCalls,(unsigned long long)s.submittedVertices,
-		(unsigned long long)s.layerComposites);
+		(unsigned long long)s.layerComposites,(unsigned long long)s.layerCacheHits,(unsigned long long)s.directMaskDraws);
 	runtime.Shutdown();
+}
+
+// Bounded playback-graph cost, with actual state evaluation and drawing.
+// Synthetic peaks avoid microphone/network input; engine audio_graphs.py
+// separately exercises the real decoded sound channel and render target.
+static void BenchHudAudio(const char* path) {
+	ScreenHost host; RemasteredLayoutPreference(host,1);
+	Runtime runtime(host); std::vector<Diagnostic> diagnostics; std::string error; Runtime::EventEffects effects;
+	Check(runtime.LoadDocument(Read(path),"audio-bench.q4ui",diagnostics),"audio benchmark document loads");
+	const bool radio=runtime.HasEvent("radioChatterUp");
+	const bool live=runtime.GetState().contains(radio ? "radio.peak.0" : "voice.self.peak.0");
+	Check(runtime.SetState(RemasteredLayout(1280,720),error,0) && runtime.RunEvent("hudJoin",0,effects,error),"audio benchmark starts");
+	double time=0;
+	for (int mode : {0,1,2,0}) {
+		for (const char* event : radio ? std::vector<const char*>{mode ? "radioChatterUp" : "radioChatterDown"} :
+			std::vector<const char*>{mode ? "show_transmit_self" : "hide_transmit_self",mode ? "show_transmit" : "hide_transmit"})
+			Check(runtime.RunEvent(event,time,effects,error),"audio benchmark visibility");
+		double total=0,render=0,update=0; std::uint64_t vertices=0,compiled=0;
+		for (int frame=0;frame<140;++frame) {
+			time+=1.0/60; host.draws.clear();
+			StateValues values;
+			if (mode && live) for (const char* prefix : radio ? std::vector<const char*>{"radio.peak."} :
+				std::vector<const char*>{"voice.self.peak.","voice.other.peak."})
+				for (int i=0;i<40;++i) values[std::string(prefix)+std::to_string(i)]=mode==1 ? .5 : double((frame*7+i*13)%101)/100;
+			const auto start=std::chrono::steady_clock::now();
+			Check(runtime.SetState(values,error,time),"audio benchmark peak batch");
+			runtime.Frame(RemasteredViewport(1280,720),time);
+			if (frame<20) continue;
+			total+=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count();
+			const auto& s=runtime.Statistics(); render+=s.renderMilliseconds; update+=s.updateMilliseconds;
+			vertices+=s.submittedVertices; compiled+=s.vectorPathsCompiled;
+		}
+		std::printf("AUDIO_BENCH document=%s mode=%s frame_ms=%.4f update_ms=%.4f render_ms=%.4f vertices=%llu compiled=%.2f\n",
+			path,mode==0 ? "hidden" : mode==1 ? "steady" : "changing",total/120,update/120,render/120,
+			(unsigned long long)(vertices/120),double(compiled)/120);
+	}
+	Check(host.errors==0,"audio benchmark has no runtime diagnostics");
 }

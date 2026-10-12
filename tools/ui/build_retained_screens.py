@@ -19,12 +19,15 @@ it; do not hand-edit its outputs.
 
 from __future__ import annotations
 
+import types
+import retained_menu_levels
 import argparse
 import json
 import math
 import re
 import struct
 import sys
+from functools import lru_cache
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -36,6 +39,7 @@ OUTPUTS = {
     "loading": PAK0 / "guis" / "loading" / "loading.q4ui",
     "singleplayer": PAK0 / "guis" / "menu" / "singleplayer.q4ui",
     "campaigns": PAK0 / "guis" / "menu" / "campaigns.q4ui",
+    "skill": PAK0 / "guis" / "menu" / "campaign_skill.q4ui",
     "mp_escape": PAK0 / "guis" / "menu" / "mp_escape.q4ui",
     "mp_welcome": PAK0 / "guis" / "menu" / "mp_welcome.q4ui",
     "mp_summary": PAK0 / "guis" / "menu" / "mp_summary.q4ui",
@@ -1026,9 +1030,12 @@ def title_document() -> dict:
     root = group("screen", {**FULL, "background-color": colour([0, 0, 0, 1]), "font-family": font("marine"),
                             "font-size": length(16), "color": colour([1, 1, 1, 0.8])}, [
         depth_layer(doc, "depth-backdrop", 1.0, [montage(doc)]),
-        depth_layer(doc, "depth-light", 0.66, lit_field("field", 0.7)),
+        # The scene retains continuous parallax. Keep pixel-coverage vector
+        # furniture still: fractional translation would retessellate the
+        # grid and every broad band/glow on each pointer movement.
+        group("depth-light", {**FULL, "pointer-events": keyword("none")}, lit_field("field", 0.7)),
         stage,
-        depth_layer(doc, "depth-frame", 0.33, framing_bands("band")),
+        group("depth-frame", {**FULL, "pointer-events": keyword("none")}, framing_bands("band")),
         content,
         prompt_bar(doc, [("#str_107019", "#str_200747"), ("#str_107020", "#str_200013")]),
         title_carry(doc, [("singlePlayer", "#str_42000", 212.2), ("loadGame", "#str_200001", 242.2),
@@ -1086,10 +1093,9 @@ def localized(key: str) -> dict:
     return texts
 
 
-def text_width(face: str, text: str, size: float) -> float:
-    """The width in dp of `text` set in a shipped face at `size` dp, as the
-    retained host lays it out: each glyph's advance at pixels / unitsPerEm,
-    no kerning, '?' for a missing glyph."""
+@lru_cache(maxsize=8)
+def font_metrics(face: str) -> tuple:
+    """Read each shipped face once per build, shared by all localized rows."""
     data = (ROOT / "content" / "baseoq4" / "pak0" / "fonts" / f"{face}.ttf").read_bytes()
     tables = {}
     for index in range(struct.unpack(">H", data[4:6])[0]):
@@ -1129,7 +1135,13 @@ def text_width(face: str, text: str, size: float) -> float:
     def advance(glyph: int) -> int:
         at = tables["hmtx"] + 4 * min(glyph, metrics - 1)
         return struct.unpack(">H", data[at:at + 2])[0]
-    return sum(advance(glyphs.get(ord(char)) or glyphs.get(ord("?"), 0)) for char in text) * size / units
+    return units, {code: advance(glyph) for code, glyph in glyphs.items() if glyph}, advance(glyphs.get(ord("?"), 0))
+
+
+def text_width(face: str, text: str, size: float) -> float:
+    """Native unkerned glyph advances in dp, '?' for missing characters."""
+    units, advances, fallback = font_metrics(face)
+    return sum(advances.get(ord(char), fallback) for char in text) * size / units
 
 
 def crumb_fits(key: str) -> dict:
@@ -1356,10 +1368,18 @@ def campaign_document(campaigns: bool) -> dict:
         doc.events["onActivate"] = [{"op": "playTimeline", "timeline": "arrive"}]
         doc.events["subpageEnter"] = [{"op": "playTimeline", "timeline": "subpageEnter"}, *by_language(doc, "crumbEnter", fits)]
         doc.events["subpageReturn"] = [{"op": "playTimeline", "timeline": "subpageReturn"}]
-    return doc.build(group("screen", {**FULL, "background-color": colour([0, 0, 0, 1])}, [
+    import retained_menu_levels
+    if campaigns:
+        title_node = titles_group["children"][1]
+        title_node["properties"]["left"] = length(0)
+        titles_group["children"][1] = group("detail-title-clip", {**absolute(left=U * SUBPAGE_SLOT[0],top=0,width=U * PAGE_TITLE_W,height=U * 40),"overflow":keyword("hidden")}, [title_node])
+        titles_group["children"].append(retained_menu_levels.child_transition(types.SimpleNamespace(**globals()),doc,3,[("Quake4","#str_230039"),("Awakening","#str_230040")],"#str_230038"))
+    result = doc.build(retained_menu_levels.fit_page(types.SimpleNamespace(**globals()),group("screen", {**FULL, "background-color": colour([0, 0, 0, 1])}, [
         *lit_field("field", 0.7), *bands, content, titles_group,
         prompt_bar(doc, [("#str_107019", "#str_200747"), ("#str_107020", "#str_230045")]),
-    ]))
+    ])))
+    result["canvas"]["minWidth"] = 960
+    return result
 
 
 # ------------------------------------------------------------------- the pause
@@ -2434,8 +2454,12 @@ def loading_document() -> dict:
     doc.events["FinishedLoading"] = [{"op": "setState", "values": {"loading_ready": True}},
                                      {"op": "playTimeline", "timeline": "continuePulse"}]
     # Loading bands (Appendix B.2): black 0.80 with one 45-degree riser each.
-    top_edge = [(edge(0), U * 28.8), (vx(268.8), U * 28.8), (vx(290), U * 9.3), (edge(1), U * 9.3)]
-    bottom_edge = [(edge(0), U * 468.5), (vx(165), U * 468.5), (vx(207.5), U * 426), (edge(1), U * 426)]
+    # Edge furniture belongs to the left/right virtual screens. A narrow
+    # view fits the 960 dp center screen to its width and gains top/bottom
+    # space; every bottom anchor must therefore follow the actual height.
+    foot = lambda u: {"fraction": 1, "dp": round(U * (u - 480), 3)}
+    top_edge = [(edge(0), U * 28.8), (U * 268.8, U * 28.8), (U * 290, U * 9.3), (edge(1), U * 9.3)]
+    bottom_edge = [(edge(0), foot(468.5)), (U * 165, foot(468.5)), (U * 207.5, foot(426)), (edge(1), foot(426))]
 
     def spill(edge_points, down: bool) -> list:
         # The *_edgeadd companions add #181D0A from the inner edge into the
@@ -2451,7 +2475,7 @@ def loading_document() -> dict:
     top_band = vector("load-top", dict(FULL), spill(top_edge, True) + [
         path("band", [(edge(1), -400), (edge(0), -400)] + top_edge, fill=solid([0, 0, 0, 0.8]))])
     bottom_band = vector("load-bottom", dict(FULL), spill(bottom_edge, False) + [
-        path("band", bottom_edge + [(edge(1), U * 480 + 400), (edge(0), U * 480 + 400)], fill=solid([0, 0, 0, 0.8]))])
+        path("band", bottom_edge + [(edge(1), foot(480 + 400 / U)), (edge(0), foot(480 + 400 / U))], fill=solid([0, 0, 0, 0.8]))])
     shot = picture("load-shot", "", {**FULL, "transform": transform()})
     doc.bind("load-shot.image", "load-shot", "image", {"state": "loading_levelshot"})
     # Remastered: the levelshot drifts in by 3% over the load; reduced motion
@@ -2460,11 +2484,14 @@ def loading_document() -> dict:
         1, {"op": "*", "args": [0.03, {"op": "clamp", "args": [{"state": "map_loading"}, 0, 1]}]}]}]}
     doc.bind("load-shot.transform", "load-shot", "transform", [0, 0, drift, drift, 0])
 
-    brackets = group("brackets", {"display": keyword("block"), **absolute(top=0, width=CANVAS_W, height=720), "left": length(50, "%"), "margin-left": length(-CANVAS_W / 2)}, [
-        corner_bracket("bracket-tl", 8, 28, False, False), corner_bracket("bracket-tr", 580, 28, True, False),
-        group("brackets-low", absolute(left=0, top=0, width=CANVAS_W, height=720), [
-            corner_bracket("bracket-bl", 8, 374, False, True), corner_bracket("bracket-br", 580, 374, True, True)]),
-    ])
+    corners = []
+    for suffix, right, bottom in (("tl", False, False), ("tr", True, False), ("bl", False, True), ("br", True, True)):
+        node = corner_bracket(f"bracket-{suffix}", 0, 0, right, bottom)
+        node["properties"] = absolute(**{"right" if right else "left": U * 8,
+                                         "bottom" if bottom else "top": U * (54 if bottom else 28),
+                                         "width": U * 52, "height": U * 52})
+        corners.append(node)
+    brackets = group("brackets", {"display": keyword("block"), **FULL}, corners)
     doc.bind("brackets.display", "brackets", "display", {"op": "select", "args": [{"state": "loading_intro"}, "none", "block"]})
     # The dot matrix: ten by two 4 u squares on a 9 u pitch, top-leading.
     dots = []
@@ -2473,10 +2500,10 @@ def loading_document() -> dict:
             x0, y0 = U * (12 + 9 * column), U * (4 + 9 * row)
             dots.append(path(f"dot-{column}-{row}", [(x0, y0), (x0 + U * 4, y0), (x0 + U * 4, y0 + U * 4), (x0, y0 + U * 4)],
                              fill=solid(rgb(DOTS, 1))))
-    dot_matrix = vector("dots", {**absolute(top=0, width=CANVAS_W, height=U * 40), "left": length(50, "%"), "margin-left": length(-CANVAS_W / 2)}, dots)
+    dot_matrix = vector("dots", absolute(left=0, top=0, width=CANVAS_W, height=U * 40), dots)
 
     # Identity: the level name trails at the top over a name strip (section 9).
-    identity = group("identity", {"display": keyword("block"), **absolute(top=U * 34, width=CANVAS_W, height=U * 60), "left": length(50, "%"), "margin-left": length(-CANVAS_W / 2)}, [
+    identity = group("identity", {"display": keyword("block"), **absolute(right=0, top=U * 34, width=CANVAS_W, height=U * 60)}, [
         # The strip also darkens the message line, which must read over any levelshot.
         vector("name-strip", absolute(left=U * 300, top=0, width=U * 340, height=U * 44), [
             path("strip", [(0, 0), ({"fraction": 1}, 0), ({"fraction": 1}, {"fraction": 1}), (0, {"fraction": 1})],
@@ -2491,7 +2518,7 @@ def loading_document() -> dict:
     doc.bind("identity.display", "identity", "display", {"op": "select", "args": [{"state": "loading_intro"}, "none", "block"]})
 
     # Objectives on the leading side, in the objectives display's open plate (section 14.11).
-    objectives = group("objectives", {"display": keyword("block"), **absolute(top=U * 120, width=U * 250, height=U * 180), "left": length(50, "%"), "margin-left": length(-CANVAS_W / 2 + U * 18)}, [
+    objectives = group("objectives", {"display": keyword("block"), **absolute(left=U * 18, top=U * 120, width=U * 250, height=U * 180)}, [
         vector("objectives-plate", absolute(left=0, top=0, width=U * 250, height=U * 180), [
             path("fill", [(0, 0), (U * 250, 0), (U * 250, U * 180), (U * 20, U * 180), (0, U * 160)],
                  fill=linear((0, 0), (U * 250, 0), [(0, rgb("#B0CD6B", 0.2)), (0.3, rgb("#B0CD6B", 0.2)), (0.56, rgb("#B0CD6B", 0)), (1, rgb("#B0CD6B", 0))])),
@@ -2549,8 +2576,7 @@ def loading_document() -> dict:
                                                         height=SERVER_ROSTER_PITCH * SERVER_ROSTER_ROWS),
                                              **typeface("lowpixel", 14, SERVER_ROSTER_PITCH, [1, 1, 1, 0.8]), "white-space": keyword("pre"),
                                              "overflow": keyword("hidden")})]
-    server = group("server", {"display": keyword("block"), **absolute(top=0, width=CANVAS_W, height=720), "left": length(50, "%"),
-                              "margin-left": length(-CANVAS_W / 2), "pointer-events": keyword("none")}, [
+    server = group("server", {"display": keyword("block"), **FULL, "pointer-events": keyword("none")}, [
         group("server-card", {**absolute(left=U * 18, bottom=720 - U * 384, width=cw), "height": keyword("auto"),
                               "padding-bottom": length(12)}, [
             vector("server-frame", {**absolute(left=0, top=0, width=cw), "height": length(100, "%")}, [
@@ -2639,8 +2665,7 @@ def loading_document() -> dict:
         return label(ident, key, {"position": keyword("relative"), "display": keyword("block"),
                                   **typeface("lowpixel", 14, U * 10, tint), "white-space": keyword("nowrap"), **more})
 
-    progress = group("progress", {**absolute(top=U * 426, width=CANVAS_W, height=U * 54), "left": length(50, "%"),
-                                  "margin-left": length(-CANVAS_W / 2)}, [
+    progress = group("progress", absolute(right=0, bottom=0, width=CANVAS_W, height=U * 54), [
         prompt_row("progress-prompt-shadow", 1.5, [0, 0, 0, 0.8]),
         prompt_row("progress-prompt", 0, [1, 1, 1, 1]),
         vector("progress-track", absolute(left=bar_x, top=U * 26, width=bar_w, height=U * 6), [
@@ -2695,8 +2720,7 @@ def loading_document() -> dict:
         doc.bind(f"{ident}.image-color", ident, "image-color",
                  [{"state": f"load_icon_r_{index}"}, {"state": f"load_icon_g_{index}"}, {"state": f"load_icon_b_{index}"}, 1])
         doc.timelines.add(f"arsenal{index}", 150, [track(ident, "opacity", [(0, number(0)), (1, number(0)), (150, number(1))])])
-    arsenal = group("arsenal", {"display": keyword("block"), **absolute(top=U * 426, width=CANVAS_W, height=U * 54),
-                                "left": length(50, "%"), "margin-left": length(-CANVAS_W / 2)}, icons)
+    arsenal = group("arsenal", {"display": keyword("block"), **absolute(left=0, bottom=0, width=CANVAS_W, height=U * 54)}, icons)
     doc.bind("arsenal.display", "arsenal", "display", {"op": "select", "args": [{"state": "loading_mp"}, "block", "none"]})
     # Single player tips (section 14.17): the thick band's leading part, where
     # multiplayer has its arsenal, holds a localized tip of at most two lines
@@ -2709,8 +2733,7 @@ def loading_document() -> dict:
         return label(ident, "#str_230030", {**absolute(left=U * TIP_LEFT, top=U * 12, width=U * TIP_WIDTH, height=U * 2 * TIP_LINE),
                                             **typeface("lowpixel", TIP_SIZE, U * TIP_LINE, [1, 1, 1, 0]), "white-space": keyword("normal"),
                                             "overflow": keyword("hidden")})
-    tips = group("tips", {"display": keyword("none"), **absolute(top=U * 426, width=CANVAS_W, height=U * 54), "left": length(50, "%"),
-                          "margin-left": length(-CANVAS_W / 2)}, [
+    tips = group("tips", {"display": keyword("none"), **absolute(left=0, bottom=0, width=CANVAS_W, height=U * 54)}, [
         label("tip-tag", "#str_230051", {**absolute(left=U * TIP_LEFT, top=U * 2.5, width=U * TIP_WIDTH, height=U * 9),
                                          **typeface("lowpixel", TIP_SIZE, U * 9, rgb(OBJECTIVE_HEAD)), "white-space": keyword("nowrap")}),
         tip_slot("tip-a"), tip_slot("tip-b"),
@@ -2741,7 +2764,9 @@ def loading_document() -> dict:
         vector("load-grid", dict(FULL), [grid_path()]),
         top_band, bottom_band, brackets, dot_matrix, identity, objectives, server, arsenal, tips, progress,
     ])
-    return doc.build(root)
+    result = doc.build(root)
+    result["canvas"]["minWidth"] = CANVAS_W
+    return result
 
 
 HEADER = """// Copyright (C) 2026 DarkMatter Productions. GPL-3.0-or-later.
@@ -2779,6 +2804,7 @@ def main() -> int:
     documents = {"title": title_document(), "pause": pause_document(), "pause_strogg": pause_document(strogg=True),
                  "loading": loading_document(),
                  "singleplayer": campaign_document(False), "campaigns": campaign_document(True),
+                 "skill": retained_menu_levels.skill_document(types.SimpleNamespace(**globals())),
                  "mp_escape": escape_document(), "mp_welcome": welcome_document(), "mp_summary": summary_document()}
     stale = []
     for name, document in documents.items():

@@ -192,6 +192,8 @@ struct openq4AsyncTimingStats_t {
 
 void				openQ4_GetAsyncTimingStats( openq4AsyncTimingStats_t &stats, int maxSamples = 60 );
 void				openQ4_BeginPresentationFrame( void );
+// Main-thread cooperative startup redraw; true while startup owns presentation.
+bool                openQ4_UpdateInitialization( void );
 // The presentation cap the throttle actually paces to. Callers that budget work
 // against a frame period must use this rather than com_maxfps directly, or their
 // budget and the throttle's period disagree and they sleep away the difference.

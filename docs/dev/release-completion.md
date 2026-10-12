@@ -1,8 +1,150 @@
 # openQ4 Release Completion List
 
+## 0.14.000 prerelease candidate
+
+- [x] Restore the shipping `ui_retained 0` default because retained gameplay
+  overhead is still not negligible. Preserve archived player preferences and
+  document `seta ui_retained 0` for existing profiles that opted in.
+- [x] Include the pending workspace changes in a prerelease, with curated
+  [player-facing notes](releases/v0.14.000.md) that explicitly state the UI
+  performance limitation and save/module upgrade requirements.
+- [x] Add a manual release workflow prerelease selector. Keep the stable latest
+  release unchanged when publishing a prerelease, retain asset verification
+  before publication, and verify the resulting draft/prerelease state.
+- [ ] Publish and verify the manual Actions prerelease and its complete assets.
+
 ## 0.13.2 release candidate
 
-- [x] Bring the multiplayer bots to professional grade
+- [x] Restore the actual legacy HUD audiograph and reduce repeated UI work. Radio and
+  voice use the installed legacy waveform with its complete height table;
+  editable SVG-derived icon meshes remain cached. Pending state deltas,
+  presentation-only layout, deferred mask snapshots, cached vector panels,
+  direct additive mask drawing and reduced target rebinding lower repeated
+  work. Native runtime, screen, all HUD families and generated-source checks
+  pass, including hidden-branch reveal and animation continuity. Staged OpenGL
+  and Vulkan captures qualify bitmap animation and Reduced Motion. Native
+  Marine/Strogg/MP-overlay frame work falls to 0.147/0.258/0.064 ms. Shared cache
+  budget and cross-view eviction checks also pass. Evidence:
+  `.tmp/ui-legacy-fidelity-perf/REPORT.md`.
+
+- [x] Reuse settled HUD drawing while preserving live bitmap animation and
+  editable vector sources. Bounded coverage atlases, presentation replay,
+  direct disjoint-glyph opacity and deferred hidden properties reduce repeated
+  work. Allocation recovery and immediate legacy fallback are qualified;
+  fourteen native suites and the compiled adapter with 17 rejected mutations
+  pass. The build wrapper also accepts numeric PowerShell arguments. Follow-up
+  captures preserve gauge pixels outside the live ECG and qualify all three
+  families' bitmap animation/Reduced Motion on OpenGL and Vulkan. Named image
+  uploads preserve samplers; overlapping coverage retains original GPU blending.
+  Fading leaf text/images reuse live opacity; overlapping text keeps a bounded
+  composed target after an earlier-frame warm-up, avoiding a Vulkan first-draw
+  font-upload gap. Six opacity levels match ordinary composition exactly on
+  OpenGL and Vulkan, and HUD state forwarding uses case-insensitive hash lookup.
+  Detailed retained stopwatches now run only on a profiler request; eight native
+  suites pass with geometry parity when timing is disabled.
+  Live leaf opacity also avoids redundant CSS formatting. Seven sequential
+  opacity samples match ordinary composition on both APIs, including returning
+  to an earlier value and crossing fully hidden/visible states (28 captures).
+  Gameplay evidence: `.tmp/ui-negligible-overhead/REPORT.md`.
+
+- [ ] Reach negligible new-UI overhead against legacy. The initial isolated 720p
+  gameplay comparisons still add 0.60 ms in SP/Vulkan and 1.25 ms in MP/OpenGL;
+  the coordinated visible-window retry removes the earlier 500 ms presentation
+  stalls and measures smoothed-snapshot differences of +0.343/+0.570 ms.
+  These were initially mislabelled as whole-window means; a dedicated arithmetic
+  window mean now includes every interval since reset for acceptance runs.
+  After background jobs were paused, default-settings arithmetic-window testing
+  adds 0.049 ms SP and 0.358 ms MP. The latest build's +0.011 ms MP aggregate
+  hides opposing block differences (+0.364/-0.605 ms); a longer-settled repeat
+  still adds 0.218 ms (+4.93%). These do not establish negligible overhead.
+  Work pauses after this validation checkpoint at the user's request. Follow-up crosshair
+  replay, opacity reuse, conditional readbacks and legacy script-only evaluation
+  are visually and natively qualified; performance acceptance remains open.
+  The improvement above does not complete this requirement. Other platforms,
+  the full density matrix and 4K GPU qualification also remain open. See
+  [HUD submission measurements](ui/runtime-performance.md#legacy-instruments-and-hud-submission-11-october-2026).
+
+- [x] Qualify the refined death and Air Defense crash screen effects on Windows
+  x64 OpenGL/Vulkan. Death
+  has one settling focus swell and a delayed inner vignette; `cin_opening`
+  follows the original three wake fades and two blackouts with warm focus
+  recovery and soft eyelid shading. Both respect reduced motion/flashing and
+  retain camera, gameplay and fade deadlines. The focused native suite passes
+  956 checks; production timing/cleanup checks pass. Engine captures cover
+  SP/MP death, normal/reduced settings, landscape/portrait and the full crash
+  sequence through gameplay handoff. The wider UI debug suite's 240-second
+  timeout and other-platform qualification remain separate. Validation and captures:
+  `.tmp/view-effects-refinement/`; implementation record:
+  [retained screens](ui/retained-screens.md).
+
+- [x] Keep initialization animation updating between startup stages with
+  bounded drawing cost. Cached rotating artwork, a cooperative 30 Hz ceiling
+  and cost-based backoff reduce warmed native frame cost from 13.53 to 0.53 ms
+  at 720p. OpenGL/SP and Vulkan/MP gameplay entry, animated engine captures,
+  Reduced Motion, native clipping/scale/pacing and loading-reentry checks pass.
+  Long indivisible startup operations can still pause presentation. See
+  [measurements and limits](ui/runtime-performance.md#initialization-animation-11-october-2026)
+  and `.tmp/initialization-animation/` for evidence.
+
+- [x] Qualify centered HUD gauge size, internal placement and background colour
+  parity with legacy. The vector fills now include the stock texture luminance,
+  soft bevel and translucent armor cells. Native checks pass for all four
+  on-foot documents; staged engine captures cover Marine/SP and MP on OpenGL,
+  Strogg and portrait/SP on Vulkan, low health, zero armor and 125% scaling.
+  A flat Marine fill sample matches legacy red/green exactly and differs by
+  one blue-channel level out of 255. Evidence: `.tmp/hud-status-parity/`.
+
+- [x] Reduce Remastered HUD instrument cost and restore visible sound graphs
+  ([performance evidence](ui/runtime-performance.md#gameplay-instrument-performance)).
+  The approved installed ECG bitmaps preserve scrolling, masks and health
+  response; radio and talker displays initially used preset activity traces
+  after live audio columns proved costly (superseded by the actual legacy bitmap
+  in the follow-up above). Four matched gameplay repeats improve
+  UI-on FPS by 33.6–150.1% locally, with substantial host variability and some
+  remaining multiplayer UI overhead. Three native suites, generated-document
+  checks, decoder/playback checks and OpenGL/Vulkan engine captures pass.
+  Captures confine existing-HUD differences to the approved ECG area and show
+  visible graphs with Reduced Motion respected. Logs, hashes, timing windows
+  and exclusions are in `.tmp/ui-perf-fix-20261011/REPORT.md`. Microphone/network
+  voice and other platforms remain outside this qualification.
+
+- [ ] Qualify status-bar TTF parity and original weapon bitmap backdrops in the
+  optimized staged client. Four on-foot retained document suites cover the
+  legacy layout dispatch, uncapped readouts, gains and bitmap bindings. Engine
+  screenshots and HUD timing evidence belong under `.tmp/hud-ttf-parity/`.
+
+- [x] Packaged qualification of the second Awakening m01 dropship pass.
+  The across-aisle rescue camera now updates its view axis as well as its map
+  target, preserves headroom and holds Darnell's reaching performance. Atkins'
+  warning finishes before the fall; Markswell's ship harness follows his sit.
+  Tak's repair runs at 0.85 animation rate with two cutting-sound windows while
+  the squad exits. Dekard's final camera starts only after the main column clears.
+  Scene mix cues bypass room occlusion, fade out at descent and stop at handoff;
+  the helper's sound/effect manifest is loaded during map setup. All media still
+  comes from the user's installed content. Saves made with a different revision
+  of the map script can require restarting m01 (scripts are recompiled on load).
+  The input-free `tools/tests/awakening_m01_cinematic.py` supports candidate
+  overlays, direct OpenAL Soft wave-file recording, task-owned cache reuse and
+  Reduced Flashing. Full original hangar-to-gameplay playback passed at 283.008
+  game seconds; final focused framing/audio playback and same-build save/load
+  passed, with handoff at 133.552 seconds. Full-map automatic cinematic skip with
+  Reduced Flashing also passed. Logs, engine render-target captures, recordings,
+  tested binary/content identities and the source freeze are under
+  `.tmp/m01-cinematic/pass2-*`. The combined debugoptimized stage passed focused
+  playback, audio output and save/load with all eight runtime hashes unchanged;
+  packed scene files equal source and their preload warnings are gone.
+  Further content work: hand-contact/harness animation, brief passing-body
+  occlusion during the early repair shot, and subjective mix/listening review.
+  The focused run also records an unexplained opening-bed StopSound after about
+  23 seconds; reproduce that in full-path playback before attributing its cause.
+
+- [ ] Qualify Awakening freeze persistence, damage gates, animation speed,
+  Retch ownership, cockpit target validity and Goob/Napalm ammo status.
+  The implementation uses save format 4 with a bounded v3 decoder; the native
+  behavioral checks and save contracts pass. Staged gameplay and old/new save
+  validation are recorded in [Awakening status and targeting](awakening-status-targeting.md).
+
+- [x] Improve multiplayer bot navigation and decision-making
   ([Multiplayer bots](mp-bots.md)). Navigation: hazard volumes, long drops,
   proven gap jumps, sealed jump-pad and teleporter volumes, exact reachability,
   ALT landmarks, body-free agent sweeps, off-route recovery and drop
@@ -14,6 +156,43 @@
   decision, link compaction and node-major landmark rows. Verified with the
   in-tree contract and native fixture suites and `tools/tests/mp_bot_audit.py`
   runs on q4dm5 (DM and Team DM with a follow order).
+
+- [ ] Extend bot landing qualification across shipped maps. The continuation
+  now checks actual player hulls, supported touchdown and a walkable return
+  to the destination for gap and raised-platform jumps. Airborne steps retain
+  their momentum, movement speed remains consistent while looking aside,
+  and bots check whether their health and armor can survive a pad or drop
+  landing before entering it. Voluntary hops retain their checked movement
+  direction through flight; off-mesh recovery checks edges and permits slow
+  inward recovery only with continuous hull support. Every fresh routed jump
+  checks the actual launch position, momentum and command; objective holds
+  wait for landing, and active pads without safe routes still block ordinary
+  walking through their launch volume. Twelve native/contract
+  suites pass, including reproduced unsafe-platform and narrow-gap cases,
+  with broad-platform routes and supported rim recovery retained. The
+  combined optimized build completed a four-map diagnostic and all 32 shipped
+  MP maps without an engine failure. The 32-map run recorded three measured
+  world deaths, no warmup deaths and 306 completed traversals; strict safety
+  qualification remains failed. Two deaths followed enemy knockback; one
+  followed an unforced WALK fall after a successful jump landing. The separate
+  four-map run exposed a favorable-health self-blast that pushed its shooter
+  off a ledge. Bounded support/impulse corrections and their final targeted
+  qualification are in progress. Persistent approaches on CTF6/7 remain open
+  navigation issues. Build, pack and gameplay evidence is retained in
+  `.tmp/claude-continuation/bots/` without replacing the earlier failed runs.
+
+- [x] Validate the continued HUD reconstruction in bounded Windows OpenGL
+  gameplay ([HUD](ui/remastered-hud.md), [weapon wheels](ui/weapon-wheels.md)).
+  Native fixtures cover gauge geometry, isolated ammo gains, notice placement,
+  wheel motion/input/fit, compact match context, respawn rules and wrapped
+  Tourney instructions. Engine captures qualify both wheel families, Couch
+  scale and safe inset, Classic damage/reduced flashing, cold MP medal loading,
+  controller vote glyphs, normal respawn holds, full-round Clan Arena clocks,
+  actual Tourney sudden-death transitions and continuous Strogg grain.
+  Capture reports retain their tested binary/pack identities under
+  `.tmp/claude-continuation/hud/`. Physical-device, full-platform and broader
+  UI product acceptance remain open in the product register; this checkpoint
+  does not complete the voice, touch, subtitle or full HUD corpus work.
 
 - [x] Stop hashing the openQ4 runtime packs at every launch
   ([Runtime pack verification](runtime-pack-verification.md)). Startup
@@ -55,7 +234,11 @@
   damage direction, pickup messages and weapon strip toggles
   (`ui_hudDamageDirection`, `ui_hudPickups`, `ui_hudWeaponStrip`), and Toggle
   Objectives (`g_objectivesToggle`), which opens and closes the objectives
-  display with presses, with a Close prompt. HUD prompts draw the controller
+  display with presses, with a Close prompt. Reduced Flashing
+  (`ui_reducedFlashing`, section 13.10) caps the damage direction indicator at
+  0.40 in every layout (Classic plays a 0.40 copy of the stock indicator), caps
+  the vehicle hit glow at 0.40, starts the game's white teleport and spawn
+  flashes at 0.40 and drops the death afterimage. HUD prompts draw the controller
   button's glyph in the family of the controller in use (`in_promptStyle`
   forces one), and Remastered Tourney sets its message bar, timer and ROUND
   and ARENA plate under the bracket strip. The HUD's alarms follow section
@@ -92,19 +275,30 @@
   gameplay, with Marine/Strogg variants, independent scale and safe inset,
   and same-frame fallback to stock gauges. [Implementation and validation](ui/status-bar.md).
 
+- [x] Restore the intended camera-shake strength and range after audio modernization.
+  Air Defense's cannon uses the retail camera envelope and map-unit distance; simultaneous
+  channels on one emitter no longer multiply the shake. Light flicker and controller rumble
+  keep their separate audio behavior. Regression coverage and retail binary evidence:
+  [screen-shake-regression.md](screen-shake-regression.md).
+
 - [x] Drive the incoming-transmission graph from decoded radio playback and
   give the atlas separate audio-file playback for radio and voice graphs.
   [Playback graph evidence and remaining voice integration](ui/audio-graphs.md).
 - [ ] Restore the multiplayer microphone capture/codec/playback backend before
   qualifying live voice graphs; the inherited backend remains stubbed.
-- [x] Feather Gaussian focus outside every scope, preserve the MCC treatment
-  sequence while refining its recovery and add a restrained death grade.
+- [x] Replace the legacy initialization presentation, add shared fourth-level
+  campaign setup transitions, feather Gaussian focus outside every scope,
+  preserve the MCC treatment sequence while refining its recovery, add a
+  restrained death grade and complete the black fade before loading.
   Windowed GL/Vulkan gameplay, native layout/geometry and gate evidence are
   recorded in `docs/dev/ui/retained-screens.md`; wider UI migration stays open.
-- [x] Add retained weapon scopes: SP/MP and vehicle scopes select the retained
-  documents with stock/mod fallback. Native screen/vector/routing tests and
-  windowed OpenGL/Vulkan gameplay captures are recorded in
-  `docs/dev/ui/retained-screens.md`.
+- [x] Resolve title pointer lag, wide/tall loading anchors, retained weapon
+  scopes and monster flesh impacts. The title keeps scene parallax while its
+  vector framing stays cached; loading furniture uses opposite virtual edges;
+  SP/MP and vehicle scopes select the retained documents with stock/mod fallback;
+  model hitscan requests the posed collision snapshot carrying retail flesh and
+  armour maps. Native screen/vector/routing tests and windowed OpenGL/Vulkan
+  gameplay captures are recorded in `docs/dev/ui/retained-screens.md`.
 - [x] Add the Medical Labs implant activation to visual specification 1.15 and
   the interactive atlas, preserving stock timing and specifying wide/tall edge
   anchors. This completes the requested design/atlas coverage; its full retained
@@ -257,8 +451,9 @@
   finished variants, frame-rate independent cushion fade, global channels past
   positional range, filters committed once a frame, air absorption from the
   room preset (`s_airAbsorption`), and static voices restart after a device
-  reopen. Shakes: the game's shake query reaches the world and follows
-  `shakeData` or a measured envelope. Memory: Doom 3 level purge restored
+  reopen. Shakes: the game's shake query reaches the world and follows authored
+  `shakeData` with the corrected retail camera scale and map-unit falloff; the measured
+  envelope remains for rumble and lights. Memory: Doom 3 level purge restored
   (airdefense1 then airdefense2: 233 MB to 121 MB of PCM), exact-size Ogg decode,
   and loaders that fail without uploading the beep or ending the session.
   Level loads decode Ogg samples on job workers (`s_asyncSampleDecode`): the

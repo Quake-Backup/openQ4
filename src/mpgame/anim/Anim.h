@@ -691,6 +691,8 @@ class idAnimator{
 
 // jshepard: rate of playback change
 	void						SetPlaybackRate(float multiplier);
+	// Temporary status effects compose with the authored/scripted playback rate.
+	void						SetPlaybackRateScale( float scale );
 // abahr:
 	void						SetPlaybackRate( const char* animName, float rate );
 	void						SetPlaybackRate( int animHandle, float rate );
@@ -773,6 +775,7 @@ private:
 // RAVEN BEGIN
 // jshepard: multiplier for the animation rate for all anims under this animator
 	float						rateMultiplier;
+	float						playbackRateScale;
 // RAVEN END
 };
 

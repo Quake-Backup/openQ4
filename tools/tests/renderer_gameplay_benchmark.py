@@ -1967,6 +1967,7 @@ def extract_last_line(
 
 
 def parse_frame_pacing(line: str) -> dict[str, str]:
+    """Parse the live pacing diagnostics; present is a smoothed recent average."""
     if not line:
         return {}
     match = re.search(
@@ -1994,6 +1995,15 @@ def parse_frame_pacing(line: str) -> dict[str, str]:
     return result
 
 
+def parse_frame_window(line: str) -> dict[str, str]:
+    """Parse every measured interval since reset, including long frames."""
+    match = re.search(r"Frame timing window .*?samples=(\d+), span_ms=(\d+), mean_ms=([0-9.]+)", line)
+    if not match:
+        return {}
+    samples, span_ms, mean_ms = match.groups()
+    return {"pacingWindowSamples": samples, "pacingWindowSpanMs": span_ms, "pacingWindowMeanMs": mean_ms}
+
+
 def extract_summary(text: str) -> dict[str, str]:
     interaction_summary_offset = text.rfind("Renderer shared interaction:")
     interaction_tail = (
@@ -2007,6 +2017,7 @@ def extract_summary(text: str) -> dict[str, str]:
         "benchmarkCapture": extract_last_line(text, "rendererBenchmark capture("),
         "benchmarkInfo": extract_last_line(text, "Renderer benchmark:"),
         "framePacing": extract_last_line(text, "Frame pacing"),
+        "framePacingWindow": extract_last_line(text, "Frame timing window"),
         "selectedTier": extract_last_line(text, "Selected renderer tier:"),
         "tierContract": extract_last_line(text, "Renderer tier contract:"),
         "pbrMaterialResources": extract_last_line(
@@ -2075,6 +2086,7 @@ def extract_summary(text: str) -> dict[str, str]:
                 summary["thresholdPass"] = match.group(1)
                 break
     summary.update(parse_frame_pacing(summary["framePacing"]))
+    summary.update(parse_frame_window(summary["framePacingWindow"]))
     return summary
 
 

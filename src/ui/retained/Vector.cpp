@@ -446,7 +446,11 @@ public:
 			while (index < events.size() && events[index].y == row) {
 				const int x = events[index].x;
 				do { sum += events[index++].delta; } while (index < events.size() && events[index].y == row && events[index].x == x);
-				if (sum < -1e-7 || sum > 1+1e-7) {
+				// Intersections of tightly joined round strokes can accumulate a
+				// few ten-thousandths of pixel area (the initialization wordmark's
+				// Q is one case). Clamp that sub-quantization residue; keep rejecting
+				// genuine overlapping coverage. 1e-4 is < 0.026 of an 8-bit alpha.
+				if (sum < -1e-4 || sum > 1+1e-4) {
 					std::ostringstream message;
 					message.precision(17);
 					message << "normalized coverage escaped zero-to-one range at " << x << "," << row << ": " << sum;

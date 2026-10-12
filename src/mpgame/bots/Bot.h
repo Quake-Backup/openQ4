@@ -144,6 +144,11 @@ private:
 	void					UpdateEnemy( idPlayer *self );
 	void					UpdateGoal( idPlayer *self );
 	void					UpdateMovement( idPlayer *self, usercmd_t &cmd );
+	bool					HoldForPad( idPlayer *self, idVec3 &moveDir );
+	void					AdoptPadLaunch( idPlayer *self );
+	void					TryDodgeJump( idPlayer *self, const idVec3 &direction, usercmd_t &cmd );
+	bool					HoldDodgeJump( idPlayer *self, usercmd_t &cmd );
+	void					ResetDodgeJump( void );
 	void					UpdateAim( idPlayer *self, usercmd_t &cmd );
 	void					UpdateWeapon( idPlayer *self );
 	void					UpdateFire( idPlayer *self, usercmd_t &cmd );
@@ -221,6 +226,10 @@ private:
 	bool					IsAvoided( const idEntity *ent ) const;
 	void					Avoid( idEntity *ent, int forMsec );
 	void					ResetTraversal( void );
+	bool					GuardLandingHealth( idPlayer *self, usercmd_t &cmd );
+	bool					AlignJumpDropApproach( idPlayer *self, usercmd_t &cmd );
+	bool					HandleJumpTakeoff( idPlayer *self, usercmd_t &cmd );
+	bool					GuardLandingContinuation( idPlayer *self, usercmd_t &cmd );
 
 	void					ApplyMove( const idVec3 &moveDir, usercmd_t &cmd ) const;
 	void					PressJump( usercmd_t &cmd ) const;
@@ -276,6 +285,17 @@ private:
 	int						traversalStartTime;
 	bool					traversalEntered;
 	bool					traversalStarted;
+	int						landingCheckPathTime;
+	int						landingCheckCorner;
+	float					landingCheckLimit;
+
+	// A voluntary hop is proved for one world-space input. Aim and firing may
+	// change in flight, but the movement must keep that input until touchdown.
+	bool					dodgeHopActive;
+	bool					dodgeHopAirborne;
+	int						dodgeHopStartTime;
+	idVec3					dodgeHopDirection;
+	float					dodgeHopWishSpeed;
 
 	// Off-mesh recovery target, cached because finding it is a wide search.
 	idVec3					recoverTarget;
@@ -310,6 +330,12 @@ private:
 	int						stuckPathCorner;
 	float					stuckCornerDistance;
 	int						combatSteeringTime;	// last frame combat footwork altered the route direction
+	int						jumpRetries;		// run-ups taken at the current route's failed jump
+	int						jumpRetryPathTime;	// pathTime of the route jumpRetries counts for
+	int						climbCheckTime;		// since when the bot has pressed toward climbCheckTarget, 0 for not
+	idVec3					climbCheckTarget;	// the corner above it, or the volume it is stepping into
+	float					climbCheckDistance;	// how far off that target was then
+	int						padHoldSince;		// since when the bot has waited at a pad for its corridor to clear
 
 	// -- combat --
 	idEntityPtr<idPlayer>	enemy;

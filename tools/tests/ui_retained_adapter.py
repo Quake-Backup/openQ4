@@ -57,15 +57,17 @@ enum { SE_KEY=1,SE_MOUSE,K_TAB=10,K_SHIFT,K_UPARROW,K_DOWNARROW,K_LEFTARROW,K_RI
        K_HOME,K_END,K_PGUP,K_PGDN,K_MWHEELUP,K_MWHEELDOWN,K_CTRL,K_ALT,K_RIGHT_ALT,K_BACKSPACE,K_DEL,K_INS,K_LAST_KEY=512 };
 struct idKeyInput {
     static inline bool shift=false; static bool IsDown(int key) { return key==K_SHIFT && shift; }
+    static inline int nameReads=0;
     // Prompt glyphs name keys (UserInterfaceRetained.cpp's KeyEscapeNames).
-    static const char* KeyNumToString(int key,bool) { static std::string name; name="KEY"+std::to_string(key); return name.c_str(); }
+    static const char* KeyNumToString(int key,bool) { ++nameReads; static std::string name; name=key==K_JOY3 ? "JOY3" : "KEY"+std::to_string(key); return name.c_str(); }
 };
 // The HUD's presentation readbacks format numbers; prompt glyphs ask SDL for
 // the controller's family, which no controller here reports (generic).
 inline const char* va(const char* format,...) {
     static char text[1024]; va_list args; va_start(args,format); std::vsnprintf(text,sizeof(text),format,args); va_end(args); return text;
 }
-inline int Sys_SDL_GamepadGlyphFamily(int faceLabels[4]) { for (int i=0;i<4;++i) faceLabels[i]=0; return 0; }
+static int promptFamily=0,promptFace=0;
+inline int Sys_SDL_GamepadGlyphFamily(int faceLabels[4]) { for (int i=0;i<4;++i) faceLabels[i]=promptFace; return promptFamily; }
 class idFile {
 public:
     std::string bytes;
@@ -159,6 +161,10 @@ struct Decls { const void* FindMaterial(const char*) { return nullptr; } } decls
 
 RUNTIME = r'''
 namespace openq4::ui {
+bool HasImageCoordinates(const Node& node) {
+    return node.properties.contains("image-offset-x") || node.properties.contains("image-offset-y") ||
+        node.properties.contains("image-scale-x") || node.properties.contains("image-scale-y");
+}
 // This ordinary-input fixture has no native owner/provider. Abort if a native
 // endpoint is unexpectedly reached; ui_managed_native_owner compiles the real
 // Runtime/Interaction settlement path including allocation-free publication.
@@ -425,7 +431,7 @@ public:
     int validations=0;
     std::string FocusedControl() const {return selected;}
     unsigned long long StateRevision() const {return 0;}
-    struct Stats {unsigned long long activeContexts=1,vectorElements=0,vectorPathsCompiled=0,vectorUploads=0,vectorCacheHits=0,submittedVertices=0,submittedIndices=0;};
+    struct Stats {unsigned long long activeContexts=1,vectorElements=0,vectorPathsCompiled=0,vectorUploads=0,vectorCacheHits=0,submittedVertices=0,submittedIndices=0,layoutUpdates=0;};
     Stats stats;
     Stats Statistics() const {return stats;}
     Bounds bounds{1,2,3,4};
@@ -485,8 +491,8 @@ public:
         EventEffects candidate{plan.changes,plan.invocations};
         StateValues next=state;
         for(const auto& [id,value]:application)next[id]=value;
+        if(plan.pendingBrightness)candidate.actions.at(0).arguments["value"]=next.at("number");
         for(const auto& [id,value]:candidate.stateChanges)next[id]=value;
-        if(plan.pendingBrightness)candidate.actions.at(0).arguments["value"]=application.at("number");
         if(validate)for(const auto& action:candidate.actions) {++validations; if(!validate(action,error))return false;}
         state=std::move(next); effects=std::move(candidate);
         if(!plan.disableControl.empty())disabledControls.insert(plan.disableControl);
@@ -798,6 +804,37 @@ static std::vector<std::pair<std::string,std::string>> Dictionary(const idUserIn
     }
     return result;
 }
+static void CheckPromptUpdates() {
+    const auto original=modelTemplate;
+    modelTemplate.state["prompt"]={std::string(""),""};
+    modelTemplate.state["prompt.glyph"]={0.0,""};
+    {
+        idUserInterfaceRetained gui; assert(gui.InitFromFile("test.q4ui"));
+        gui.SetStateString("prompt",va("^ik%02X",K_JOY3)); gui.StateChanged(0);
+        assert(std::get<double>(Live().state.at("prompt.glyph"))==6);
+        const int reads=idKeyInput::nameReads;
+        gui.StateChanged(0); gui.StateChanged(0);
+        assert(idKeyInput::nameReads==reads);
+        promptFamily=1; promptFace=1; gui.StateChanged(0);
+        assert(std::get<double>(Live().state.at("prompt.glyph"))==1 && std::get<std::string>(Live().state.at("prompt"))=="A");
+        promptFamily=2; promptFace=5; gui.StateChanged(0);
+        assert(std::get<double>(Live().state.at("prompt.glyph"))==2);
+        eventPlans["promptwrite"]={{{"prompt",std::string("^ikFF")}}, {}};
+        gui.HandleNamedEvent("promptWrite"); gui.StateChanged(0);
+        assert(std::get<double>(Live().state.at("prompt.glyph"))==0 && std::get<std::string>(Live().state.at("prompt"))=="KEY255");
+        eventPlans.erase("promptwrite");
+        gui.SetStateString("prompt",va("^ik%02X",K_JOY3)); gui.StateChanged(0);
+        gui.SetStateString("PROMPT","^ikFF"); gui.StateChanged(0);
+        assert(std::get<double>(Live().state.at("prompt.glyph"))==0 && std::get<std::string>(Live().state.at("prompt"))=="KEY255");
+        gui.DeleteStateVar("prompt"); gui.StateChanged(0);
+        assert(std::get<double>(Live().state.at("prompt.glyph"))==0 && std::get<std::string>(Live().state.at("prompt")).empty());
+        gui.SetStateString("prompt","^ikFF"); gui.StateChanged(0);
+        const int beforeReload=idKeyInput::nameReads;
+        views.front()->callback(views.front()->owner,retainedUIViewEvent_t::Restored); gui.StateChanged(0);
+        assert(idKeyInput::nameReads>beforeReload);
+    }
+    promptFamily=promptFace=0; modelTemplate=original;
+}
 static void CheckPresentationBridge() {
     assert(views.empty());
     idUserInterfaceRetained gui;
@@ -955,12 +992,38 @@ static void CheckCompletionWrites() {
     // submission in this frame. Failure must invalidate a previous receipt.
     idStr receipt;
     assert(gui.GetPresentationValue("__retained::drawSucceeded",receipt) && std::string(receipt.c_str())=="1");
+    Live().stats.layoutUpdates=0;
+    assert(gui.GetPresentationValue("__retained::layoutChanged",receipt) && std::string(receipt.c_str())=="0");
+    Live().stats.layoutUpdates=1;
+    assert(gui.GetPresentationValue("__retained::layoutChanged",receipt) && std::string(receipt.c_str())=="1");
     rejectDraw=true; gui.Redraw(1);
     assert(gui.GetPresentationValue("__retained::drawSucceeded",receipt) && std::string(receipt.c_str())=="0");
     rejectDraw=false; gui.Redraw(2);
     assert(gui.GetPresentationValue("__retained::drawSucceeded",receipt) && std::string(receipt.c_str())=="1");
     gui.Redraw(3,false);
     assert(gui.GetPresentationValue("__retained::drawSucceeded",receipt) && std::string(receipt.c_str())=="0");
+}
+static void CheckApplicationDeltas() {
+    assert(views.empty());
+    idUserInterfaceRetained gui;
+    assert(gui.InitFromFile("test.q4ui")); gui.StateChanged(0);
+    auto& runtime=Live();
+    gui.SetStateFloat("NuMbEr",2); gui.SetStateString("text","changed"); gui.StateChanged(0);
+    assert(runtime.state.at("number")==StateValue(2.0) && runtime.state.at("text")==StateValue(std::string("changed")));
+    assert(runtime.stateCalls.back().contains("number") && runtime.stateCalls.back().contains("text"));
+    gui.SetStateFloat("number",2); gui.SetStateString("text","changed"); gui.StateChanged(0);
+    assert(!runtime.stateCalls.back().contains("number") && !runtime.stateCalls.back().contains("text"));
+    gui.DeleteStateVar("NUMBER"); gui.StateChanged(0);
+    assert(runtime.state.at("number")==modelTemplate.state.at("number").initial);
+    const auto previous=runtime.state;
+    gui.SetStateString("number","not a number"); gui.SetStateString("text","pending correction"); gui.StateChanged(0);
+    assert(runtime.state==previous);
+    gui.SetStateFloat("number",2.75f); gui.StateChanged(0);
+    assert(runtime.state.at("number")==StateValue(2.75) && runtime.state.at("text")==StateValue(std::string("pending correction")));
+    runtime.failState=true; gui.SetStateFloat("number",3); gui.StateChanged(0);
+    assert(runtime.state.at("number")==StateValue(2.75));
+    runtime.failState=false; gui.StateChanged(0);
+    assert(runtime.state.at("number")==StateValue(3.0));
 }
 static void CheckEventBridge() {
     assert(views.empty()); cvars=CVars{}; consoleObject.open=false; windowFocused=true;
@@ -2352,6 +2415,7 @@ int main() {
     modelTemplate.root.control=Control{}; modelTemplate.root.control->action="brightness";
     files.sources={{"test.q4ui","valid"},{"bad.q4ui","invalid"},{"next.q4ui","next"},{"menuXq4ui","valid"}};
     CheckPresentationBridge();
+    CheckPromptUpdates();
     {
         idUserInterfaceRetained gui;
         gui.SetStateFloat("number",1.25f); gui.SetStateBool("flag",true);
@@ -2477,6 +2541,7 @@ int main() {
     unsafe=modelTemplate; unsafe.actions["brightness"].arguments["extra"]=Expression{}; assert(!ValidateApplication(unsafe,error));
     unsafe=modelTemplate; unsafe.state["NUMBER"]={1.0,""}; assert(!ValidateApplication(unsafe,error));
     unsafe=modelTemplate; unsafe.state["NaMe"]={1.0,""}; assert(!ValidateApplication(unsafe,error));
+    CheckApplicationDeltas();
     CheckEventBridge();
     CheckCompletionWrites();
     CheckEventEligibility();
@@ -2523,6 +2588,10 @@ def main():
     header = (ROOT / 'src/ui/UserInterfaceRetained.h').read_text(encoding='utf-8')
     factory = (ROOT / 'src/ui/UserInterface.cpp').read_text(encoding='utf-8')
     support = DICTIONARY_SUPPORT[:DICTIONARY_SUPPORT.index('struct idFile {')]
+    support = support.replace('bool IsEmpty() const { return empty(); }',
+                              'bool IsEmpty() const { return empty(); } void ToLower() { for(char& c:*this)c=static_cast<char>(std::tolower(static_cast<unsigned char>(c))); }')
+    support = support.replace('struct idVec4 { void Zero() {} }',
+                              'struct idVec4 { void Zero() {} const char* ToString() const { return "0 0 0 0"; } }')
     support = support.replace('int evType=0,evValue=0,evValue2=0;', 'int evType=0,evValue=0,evValue2=0,evPtrLength=0; void* evPtr=nullptr;')
     # The imported stand-in constructs length bytes even after NUL. Settings
     # prefix checks now exercise short IDs; match real idStr's bounded scan.
@@ -2535,6 +2604,9 @@ def main():
         }
         return 0;
     }''')
+    # Keep failed assertions in captured output on Windows as well as POSIX;
+    # the CRT's GUI abort path can otherwise return only a fast-fail code.
+    support += '\n#undef assert\n#define assert(value) do { if (!(value)) { std::fprintf(stderr, "assertion line %d: %s\\n", __LINE__, #value); std::abort(); } } while (0)\n'
     code = support + ENGINE + RUNTIME + SETTINGS
     code += function_body(public, 'class idUserInterface {') + ';\n'
     code += function_body(managed, 'class idUserInterfaceManaged :') + ';\n'
@@ -2557,7 +2629,7 @@ def main():
         ('ordinary-action-check-skipped',
          '} else if (node->control && (node->control->event.empty() ?', '} else if (false && (node->control->event.empty() ?'),
         ('draft-caller-authority', 'if (!NumberDraftState(name)) return true;', 'return true;'),
-        ('draft-application-authority', ' || NumberDraftState(name.c_str())) continue;', ') continue;'),
+        ('draft-application-authority', ' || NumberDraftState(name.c_str())) return true;', ') return true;'),
         ('draft-settings-dispatch', 'impl->ConflictsWithNumberDraft(pending,drafts)', 'false'),
         ('draft-dismiss',
          'if (!impl->QueryNumberDrafts(drafts) || !drafts.blocking.empty()) {',

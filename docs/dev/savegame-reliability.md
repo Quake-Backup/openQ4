@@ -23,12 +23,12 @@ markers, bounded reads, reference validation, a whole-file integrity check, and 
 recoverable commit protocol; it does not come from guessing how an incompatible
 payload was intended to be laid out.
 
-## Version 3 Layout and Integrity
+## Version 4 Layout and Integrity
 
-Current writers emit gameplay compatibility version 3. After the outer session
+Current writers emit gameplay compatibility version 4. After the outer session
 header, the GameLib writes:
 
-1. `OQ4S`, payload version 3, build number, generated source hash, source-file
+1. `OQ4S`, payload version 4, build number, generated source hash, source-file
    count, and the wire-ABI stamp;
 2. the positional object and gameplay state, with `OQ4Y` class-boundary sequence
    markers;
@@ -44,7 +44,7 @@ the footer to occupy the end of the protected region, the footer offset to match
 its physical position, and the CRC to match. This rejects truncation, inserted or
 trailing bytes, and accidental modification anywhere in the protected save.
 
-The complete `.save`, including the 16-byte v3 integrity trailer, is limited to
+The complete `.save`, including the 16-byte integrity trailer, is limited to
 512 MiB. A staged writer must fit the trailer within that limit before it starts
 the CRC scan or append. Load and recovery validation reject an empty, negative,
 or oversized reported file length before reading its header or scanning its
@@ -57,11 +57,20 @@ it provides no confidentiality. The description and preview sidecars are not
 covered by the `.save` CRC; they are validated and committed separately as part
 of the same slot transaction.
 
-The current v3 reader requires a matching wire ABI and a build number of at least
+The v4 reader and retained v3 decoder require a matching wire ABI and a build number of at least
 661. Build/source differences above that floor are diagnostic, but two player
 fields still depend on historical build thresholds: `swimSpeed` at 661 and
 `nextLiquidSurfaceSoundTime` at 721. Payload-version discipline remains necessary;
 the build count is not a substitute for an explicit future schema revision.
+
+Version 4 appends typed animator playback multipliers in both libraries and
+Awakening freeze/buff state to SP AI records. It changes no raw-write structure,
+footer or integrity-trailer encoding. The raw-write inventory below therefore
+remains unchanged. The v3 decoder skips these additions and recovers solid ice
+with a fresh four-second timer, thaws partial chill, and reconstructs Retch buffs
+after the complete entity graph restores. The
+[compatibility policy](savegame-compatibility-policy.md#version-4-and-the-version-3-decoder)
+defines these fields and the upgrade boundary.
 
 Release compilation must use complete engine Git history. A shallow checkout
 incorrectly produces build 1, causing the engine to reject its own staged saves

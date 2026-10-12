@@ -34,7 +34,7 @@ a protected master bus, streaming), not with any one game's tuning, which is not
 | Distance filtering | None | Attenuation low-pass | None | Air absorption from the room preset (`s_airAbsorption`) |
 | Gain headroom | Unclamped sounds above unity | Bus headroom | Clamped to 1 by `AL_MAX_GAIN` | 16x headroom |
 | Device loss | n/a (console first) | Device handling | Static voices stayed stopped after a reopen | Stopped voices restart at their offset |
-| Shakes and rumble | Amplitude data | Meter / RTPC | Game query returned 0; amplitude stubbed at 1 | `shakeData` envelope, else the measured sample envelope |
+| Shakes and rumble | Amplitude data | Meter / RTPC | Game query returned 0; amplitude stubbed at 1 | Authored camera envelope with retail strength/range; separate audible rumble envelope |
 | Sample residency | Purged per level | Streaming banks | Every map's PCM kept for the session | Doom 3 purge rules restored |
 | Sample decode | Offline-encoded, loaded per level | Asynchronous loading | Decoded on the main thread as each shader parsed | Decoded on job workers during the level load (`s_asyncSampleDecode`) |
 | Per-voice update cost | One matrix per voice | Batched | Filters and sends re-sent by every setter (5-6 times a frame) | Once a frame (`CommitMix`) |
@@ -107,12 +107,22 @@ a protected master bus, streaming), not with any one game's tuning, which is not
 ### Shakes, rumble and sound-driven lights
 
 `idSoundSystem::CurrentShakeAmplitudeForPosition`, which `idPlayerView::CalculateShake` and
-`idEarthQuake` call, returned 0. It now returns the game world's shake sum. A channel's
-amplitude comes from its shader's `shakeData` (Raven's 30 Hz letter envelope, already read for
-lights) or else from a 60 Hz peak envelope measured from the PCM at upload, since no `.amp`
-files ship. Shake strength uses the sound's volume before `s_volume`, as retail did. The stock
-`airdefense_cannon_fire` (`shakes 1`) peaks at 0.91 and decays along its envelope;
-`s_showVoices 1` prints the shake and rumble totals.
+`idEarthQuake` call, previously returned 0. The first restoration reused the material/light
+amplitude and mixer falloff, producing excessive shake, particularly in Air Defense. Camera
+shake now follows its own retail calculation: the authored 30 Hz `shakeData` envelope uses
+600 units per letter instead of the light-flicker scale of 2800, and direct distance is
+measured in Quake 4 map units. Shader volume, `shakes` and distance falloff are applied before
+the arctangent; channels on one emitter take their maximum, and independent emitters add.
+The query uses the supplied position and the current playback clock, independently of the
+master volume, hardware voice budget and audio mix. Missing `shakeData` and `no_flicker`
+do not invent camera motion. `s_constantAmplitude` holds lights constant and suppresses shake.
+
+The stock `airdefense_cannon_fire` (`shakes 1`, -4 dB) has a nearby peak of about 0.358
+degrees, about 0.183 at 2750 map units, and zero at its 5000-unit maximum. Rumble and
+sound-driven lights retain their existing envelope, including the measured PCM fallback.
+`s_showVoices 1` prints the separate shake and rumble totals. See
+[screen-shake regression evidence](screen-shake-regression.md) for the retail verification
+and tests.
 
 ### Memory and loading
 
@@ -156,6 +166,10 @@ restores it on profiles still on the minimum, lowpower or performance preset.
 
 ## Deferred
 
+- **Audible distance units.** The inherited mixer still converts listener distance to
+  metres while Quake 4 shaders and speaker overrides store ranges in map units; its source
+  radius also converts these ranges as though they were metres. Camera shake no longer uses
+  that path. Correcting and qualifying the audible mix is separate work.
 - **Streaming music and long voice-over.** All 43 music tracks decode to 393 MB of PCM. The
   voice already queues three buffers; streaming from the compressed Ogg would hold about 33 MB.
 - **Centre channel on 5.1.** `SetCenterChannel`, `SSF_CENTER` and `s_centerFractionVO` have no
@@ -170,6 +184,7 @@ restores it on profiles still on the minimum, lowpower or performance preset.
 
 - `tools/tests/sound_settings.py` and `tools/tests/sound_recovery.py` (the device-layout and
   limiter paths), `tools/tests/sound_retail_reverb_contract.py`,
+  `tools/tests/sound_screen_shake.py` (camera strength, range and aggregation),
   `tools/tests/macos_openal_provider_policy.py`, `tools/tests/ui_performance_presets.py` and the
   in-engine `performancePresetSelfTest`.
 - The log reports `OpenAL voices: source radius on, direct stereo on (remixed), resampler 11th

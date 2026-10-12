@@ -97,7 +97,9 @@ Coincident resolved endpoints produce a path diagnostic rather than undefined co
 For `conic`, `from` is the center and `to` gives the zero-angle direction.
 Stops map one clockwise turn in the UI's downward-positive Y coordinates;
 the angle wraps from 1 to 0. Matching endpoint colors keep the seam continuous.
-It shares radial paint's adaptive interpolation and coverage budgets.
+It shares radial paint's adaptive interpolation and coverage budgets. The
+initialization sweep uses two conic paths, and its machined rings and teeth
+use radial color stops, avoiding hundreds of overlapping coverage meshes.
 
 Linear gradients split triangles at every stop plane. Middle stops survive even
 when no original vertex lies there. Colors interpolate as premultiplied sRGB;

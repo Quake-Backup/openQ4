@@ -48,6 +48,11 @@ double RetainedUI_PresentationTime();
 // command chain. Allows a deferred resource rebuild before the next draw; this
 // is not a GPU fence and does not replace renderer-owned resource retirement.
 void RetainedUI_FrameSubmitted();
+// Startup runs before the legacy GUI manager exists. This non-interactive view
+// shares the native renderer host, and is retired when the session takes over.
+bool RetainedUI_DrawInitialization(const char* message);
+bool RetainedUI_CanUpdateInitialization();
+void RetainedUI_EndInitialization();
 
 struct sysEvent_s;
 struct retainedUIInput_t {

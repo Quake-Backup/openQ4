@@ -6,8 +6,8 @@ its single-player campaign from your copy of that content, using openQ4's own
 engine and game code. It never loads the expansion's leaked game DLL, and
 openQ4 ships none of the expansion's files.
 
-This page lists what openQ4 changes to make the campaign run and play as it was
-built. To install the content and choose the campaign, see
+This page lists what openQ4 changes to make the campaign run, including a first
+direction pass on the unfinished opening. To install the content and choose the campaign, see
 [Campaigns](campaigns.md).
 
 ## At a glance
@@ -91,6 +91,13 @@ alpha's own code:
   flamethrower's flame, with your character holding the flamethrower's pose.
   Spikes knock bodies back towards the wall they pin them to, and keep their
   launch orientation in flight.
+- **Freeze and support effects.** Frozen enemies resume their shatter countdown
+  after loading. Freeze hits respect boss invulnerability and work on enemies
+  with one health point. Thawing preserves the Pain Lord's enraged speed, and
+  Retch buffs coexist with ice without stacking or erasing each other's effects.
+- **Cockpit targeting.** Missile locks require a visible target in range. A
+  distant enemy near the crosshair no longer blocks a valid closer target, and
+  rockets and target markers follow the aim offsets of large enemies.
 - **Vehicles.** The dropship and MCC cannons keep their gunner from harm,
   recentre when you leave, and freeze during m03's scripted ammo jam. Their
   pulse cannon's barrels kick back with every shot and fold out of the way while
@@ -138,8 +145,21 @@ fixes them:
 
 ## Deliberate differences from the alpha
 
-openQ4 departs from the alpha's behaviour in a few places, to keep your
-settings or to keep the game fair:
+openQ4 departs from the alpha's behaviour in a few places, to improve unfinished
+scenes, keep your settings or keep the game fair:
+
+- **The opening dropship (m01).** The failed rescue now holds a view across
+  the aisle, with room for Darnell's reach and Atkins' rising chair. The warning
+  precedes the fall, Markswell's harness follows his sit, and Tak cuts the jammed
+  harnesses while the squad exits. The final escape camera waits for the main
+  column to clear. Engine, impact, alarm, wind and cutting cues accompany the
+  lighting change and hull breach; the cabin mix fades out before the ground
+  encounter. Existing voices and animations still provide the performances,
+  so this remains a polish pass on unfinished alpha content. Reduced Flashing
+  omits the added spark bursts. For comparison, set `g_awakeningM01Cinematic 0`
+  before starting the map to use the alpha's direction. Restart m01 after
+  updating the sequence: saves made with a different revision of its script
+  may require a fresh map start.
 
 - **Your field of view is yours.** The alpha's m03 gun scripts and the speeder
   bike's boost rewrote your FOV setting. openQ4 applies those changes to the
@@ -159,8 +179,9 @@ settings or to keep the game fair:
 
 ## Known issues in the alpha
 
-These are holes in the expansion's content itself; no code change can supply
-them, and openQ4 ships no replacement assets:
+These are holes in the expansion's content itself. The authored opening-scene
+direction reuses installed media; it does not supply missing performances or
+replacement art:
 
 - Some voice-over never plays: thirteen scripted voice-over files are never
   loaded by the expansion's own scripts.

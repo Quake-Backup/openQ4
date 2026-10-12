@@ -16503,6 +16503,8 @@ windowDef Desktop
 			set "set_game_hudpickups_hover::visible" "1" ;
 			set "set_game_hudstrip::visible" "1" ;
 			set "set_game_hudstrip_hover::visible" "1" ;
+			set "set_game_hudflash::visible" "1" ;
+			set "set_game_hudflash_hover::visible" "1" ;
 			set "set_game_corpsesink::visible" "1" ;
 			set "set_game_corpsesink_hover::visible" "1" ;
 			set "set_game_corpsetime::visible" "1" ;
@@ -16603,6 +16605,7 @@ windowDef Desktop
 			set "set_game_huddamagedir::noevents" "0" ;
 			set "set_game_hudpickups::noevents" "0" ;
 			set "set_game_hudstrip::noevents" "0" ;
+			set "set_game_hudflash::noevents" "0" ;
 			set "set_game_corpsesink::noevents" "0" ;
 			set "set_game_corpsetime::noevents" "0" ;
 			set "set_game_language_value::noevents" "0" ;
@@ -16740,6 +16743,8 @@ windowDef Desktop
 			set "set_game_hudpickups_hover::visible" "0" ;
 			set "set_game_hudstrip::visible" "0" ;
 			set "set_game_hudstrip_hover::visible" "0" ;
+			set "set_game_hudflash::visible" "0" ;
+			set "set_game_hudflash_hover::visible" "0" ;
 			set "set_game_corpsesink::visible" "0" ;
 			set "set_game_corpsesink_hover::visible" "0" ;
 			set "set_game_corpsetime::visible" "0" ;
@@ -16840,6 +16845,7 @@ windowDef Desktop
 			set "set_game_huddamagedir::noevents" "1" ;
 			set "set_game_hudpickups::noevents" "1" ;
 			set "set_game_hudstrip::noevents" "1" ;
+			set "set_game_hudflash::noevents" "1" ;
 			set "set_game_corpsesink::noevents" "1" ;
 			set "set_game_corpsetime::noevents" "1" ;
 			set "set_game_language_value::noevents" "1" ;
@@ -19083,6 +19089,7 @@ windowDef Desktop
 				set "set_game_huddamagedir_background::matcolor_w" "0.4" ;
 				set "set_game_hudpickups_background::matcolor_w" "0.4" ;
 				set "set_game_hudstrip_background::matcolor_w" "0.4" ;
+				set "set_game_hudflash_background::matcolor_w" "0.4" ;
 				
 				set "t_settings_title::text" "#str_200008" ;
 				

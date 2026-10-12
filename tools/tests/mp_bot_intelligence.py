@@ -431,7 +431,7 @@ def validate_objectives_items_and_goals(
             "botManager.GoalClaimCount( this, item )",
             "claimScale",
             "ItemPendingMsec( item )",
-            "navMesh.FindPath( origin, candidates[i].item->GetPhysics()->GetOrigin(), goalPath )",
+            "navMesh.FindPath( origin, candidates[i].item->GetPhysics()->GetOrigin(), goalPath, false, BotMaxSafeFallDelta( self ) )",
         ),
         "rvBot::PickItemGoal routed utility and claims",
     )

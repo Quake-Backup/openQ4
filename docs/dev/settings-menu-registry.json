@@ -3521,6 +3521,29 @@
       "accessibility": "Focusable choiceDef row. No keeps the weapon strip hidden on a weapon change in the Remastered and Minimal HUD."
     },
     {
+      "id": "game.hudflash",
+      "pane": "Game Options",
+      "section": "HUD",
+      "source": "game",
+      "target_type": "cvar",
+      "restart_required": false,
+      "path": "Settings > Game Options > HUD > Reduced Flashing",
+      "container": "set_game_hudflash",
+      "widgets": [
+        "set_game_hudflash_value"
+      ],
+      "widget_type": "choice",
+      "label_key": "#str_231274",
+      "choices_key": "#str_200059",
+      "values": [
+        "0",
+        "1"
+      ],
+      "target": "ui_reducedFlashing",
+      "default": "0",
+      "accessibility": "Focusable choiceDef row. Yes caps the damage direction indicator and the vehicle hit glow at 0.40, dims full-screen white flashes and drops the death afterimage, in every HUD layout."
+    },
+    {
       "id": "game.auto_skip_cinematics",
       "pane": "Game Options",
       "section": "Gameplay And View",

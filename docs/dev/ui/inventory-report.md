@@ -93,14 +93,39 @@ The 17 unresolved artwork references after lexical name disambiguation include
 colored weapon/teammate symbols and console/test-loading imagery. They need
 engine-generated/alias, source-presence or unused-resource investigation before
 being called missing assets. No artwork has yet been classified as an approved
-bitmap exception; simple furniture remains mandatory vector reconstruction.
+bitmap exception in this original seed; simple furniture remains mandatory
+vector reconstruction. Later implementation exceptions are recorded below
+without rewriting the immutable source inventory.
 
 `guis/maps/tram1/bridge1.gui` has an extra lexical closing brace. Its behavior
 must be recorded before translation. Subsequent native preprocessing and
 structured import consume its full token stream successfully. This lexical
 observation is not evidence of a runtime failure or permission to drop it.
 
+### HUD implementation exception, 9 October 2026
+
+The Remastered Strogg gauges load `gfx/guis/hud/s_static.tga` from the player's
+installed Quake 4 assets. The stock full-field grain is complex imagery whose
+appearance depends on that texture, within section 6's existing grain
+exception. Its gauge mask, tint, repeated layout and reduced-motion-aware
+animation remain editable. The shared Awakening Strogg construction uses the
+same exception. No extracted texture is included in the repository. This
+implementation record does not accept a GUI migration or change the pending
+source-inventory rows.
+
 ## Validation
+
+### HUD ECG exception, 11 October 2026
+
+The product owner approved the installed `gfx/guis/hud/ekg.tga`, `s_ekg.tga`
+and `s_ekg2.tga` for the Remastered Marine/Strogg ECG, including Awakening.
+The repeated vector strokes and glow caused substantial submission work.
+Masks, tint, health response, scrolling and scale remain editable; two copies
+of each installed bitmap cover its complete moving period. No extracted pixels
+are added to the repository. Radio/voice graphs use a separately approved
+cached vector preset after measurement showed costly live audio updates.
+
+### Inventory validation
 
 `tools/tests/ui_legacy_inventory.py` exercises real temporary ZIP/directory
 mounts, package priority, loose overrides, case collisions, ignored game

@@ -1966,11 +1966,45 @@ static ID_INLINE void openQ4_SetGuiDrawVert( idDrawVert &vert, float x, float y,
 	vert.color2[0] = vert.color2[1] = vert.color2[2] = vert.color2[3] = 255;
 }
 
+void idDeviceContext::CaptureLegacyText(const char* text, const char* family, float scale, float width, float height,
+	int align, bool clip, std::vector<openq4::ui::HudPrimitive>& output) {
+	// Resolve first: font registration can reallocate the shared font array.
+	EnsureFontsCurrent();
+	const int font = FindFont(family);
+	const auto savedUseFont=useFont;
+	const auto savedActiveFont=activeFont;
+	const auto savedClips = clipRects;
+	const auto savedCapture = hudCapture;
+	const bool savedDiscard = hudDiscard;
+	const auto savedColour = hudColour, savedTextColour = drawTextColor;
+	const float savedAdjust = drawTextColorAdjust;
+	const float savedXScale=xScale, savedYScale=yScale, savedXOffset=xOffset, savedYOffset=yOffset;
+	const auto savedMat=mat; const auto savedOrigin=origin;
+	const bool savedClipping=enableClipping;
+	const float savedWidth=vidWidth, savedHeight=vidHeight;
+	SetFont(font);
+	const float savedMaxWidth=activeFont->maxWidth, savedMaxHeight=activeFont->maxHeight;
+	vidWidth=640; vidHeight=480;
+	xScale=yScale=1; xOffset=yOffset=0; mat.Identity(); origin.Zero();
+	enableClipping=true; clipRects.Clear();
+	// ClippedCoords skips entry zero, as for the legacy desktop root.
+	if (clip) { PushClipRect(0,0,width,height); PushClipRect(0,0,width,height); }
+	output.clear(); hudCapture=&output; hudDiscard=false;
+	DrawText(text,scale,align,colorWhite,idRectangle(2,2,width-2,height-2),true);
+	hudCapture=savedCapture; hudDiscard=savedDiscard; clipRects=savedClips; enableClipping=savedClipping;
+	xScale=savedXScale; yScale=savedYScale; xOffset=savedXOffset; yOffset=savedYOffset;
+	mat=savedMat; origin=savedOrigin; drawTextColor=savedTextColour; drawTextColorAdjust=savedAdjust;
+	activeFont->maxWidth=savedMaxWidth; activeFont->maxHeight=savedMaxHeight;
+	activeFont=savedActiveFont; useFont=savedUseFont; vidWidth=savedWidth; vidHeight=savedHeight;
+	SetDrawColor(savedColour);
+}
+
 void idDeviceContext::SetDrawColor(const idVec4& colour) {
 	hudColour = colour;
 	renderSystem->SetColor(colour);
 }
 bool idDeviceContext::CaptureHud(const idDrawVert* vertices, const idMaterial* material) {
+	if (hudDiscard) return true;
 	if (!hudCapture) return false;
 	if (!material || hudColour.w <= 0) return true;
 	openq4::ui::HudPrimitive item;

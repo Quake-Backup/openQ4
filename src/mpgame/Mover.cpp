@@ -262,7 +262,7 @@ void idMover::Restore( idRestoreGame *savefile ) {
 	savefile->ReadStaticObject( physicsObj );
 	RestorePhysics( &physicsObj );
 
-	if ( savefile->GetOpenQ4SaveGameCompatibilityVersion() == OPENQ4_SAVEGAME_COMPATIBILITY_VERSION ) {
+	if ( savefile->GetOpenQ4SaveGameCompatibilityVersion() >= OPENQ4_SAVEGAME_TYPED_COMPATIBILITY_VERSION ) {
 		savefile->ReadInt( savedStage );
 		if ( savedStage < ACCELERATION_STAGE || savedStage > FINISHED_STAGE ) {
 			savefile->Error( "idMover::Restore: invalid movement stage %d", savedStage );

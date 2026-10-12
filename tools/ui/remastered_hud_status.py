@@ -19,7 +19,6 @@ BACK = "M1 10.4Q1 9.2 2.2 9.2H122.8Q124 9.2 124 10.4V54.7Q124 56.2 122.5 56.2H91
 FILL = "M5.4 14.8Q5.4 13.8 6.4 13.8H118.6Q119.6 13.8 119.6 14.8V34.6H105.4A16.6 16.6 0 0 0 93.6 44.7H6.4Q5.4 44.7 5.4 43.7Z"
 DIVIDERS = (15.6, 27.3, 39.1, 50.8, 62.5, 74.2, 85.9, 97.7, 108.9)
 NOTCH_CENTER = (109.0, 50.8)   # the notch arc's centre; radius 16.6
-EKG_BASE = 34.57               # 58% of the gauge height (texel rows 74-75)
 
 # The Strogg gauge, 129x67 u (hud_strogg.gui s_backbar/s_valbar).
 ST_BACK = "M1 22.5L26.8 7.3H69L72 11H128V53.4H1Z"
@@ -36,13 +35,6 @@ MP_AMMO = ["#00D9FF", "#FFFF00", "#FF8C00", "#0073FF", "#338F12", "#99CCCC", "#F
 MP_TEAM = {"marine": "#B2CF6D", "strogg": "#FF8000"}
 MP_ROSTER = ["item_gauntlet", "item_machinegun", "item_shotgun", "item_hyperblaster", "item_grenade", "item_nailgun",
              "item_rocket", "item_railgun", "item_lightning", "item_darkmatter", "item_fire"]
-# The weapon render's texel origin in its right-aligned 256x64 texture
-# (x = origin x 106/256 in the 106x26 u current_gun window; atlas GUN_X0).
-GUN_X0 = {"blaster": 141, "machinegun": 124, "shotgun": 29, "hyperblaster": 70, "grenadelauncher": 82, "nailgun": 128,
-          "rocketlauncher": 92, "railgun": 93, "lightninggun": 82, "darkmatter": 95, "napalmgun": 125, "gauntlet": 113}
-GUN_RENDERS = ["gun_blaster", "gun_machinegun", "gun_shotgun", "gun_hyperblaster", "gun_grenadelauncher", "gun_nailgun",
-               "gun_rocketlauncher", "gun_railgun", "gun_lightninggun", "gun_darkmatter", "gun_napalmgun", "gun_gauntlet",
-               "gun_corecannon", "gun_freezegun"]
 # Weapon glyphs by their inv_icon base name (the peer forwards an icon
 # material as its base name, without "_colored").
 WEAPON_GLYPHS = ["item_blaster", "item_machinegun", "item_shotgun", "item_hyperblaster", "item_grenade", "item_nailgun",
@@ -145,6 +137,69 @@ def svg_polygon(data: str) -> list:
     return [seg[1] for seg in hud_svg.parse_path(data) if seg[0] in ("M", "L")]
 
 
+def gauge_paint(kind: str, strogg: bool, colour, alpha: float) -> list:
+    """Stock texture luminance multiplied by the GUI tint (Appendix B.5).
+
+    Disjoint contour bands keep the material alpha constant through the soft
+    bevel. Their shared edges must not antialias independently (that darkens
+    every seam); the node's exact outline mask owns exterior coverage.
+    Armor's cell cuts reduce texture alpha, rather than painting black lines.
+    """
+    w, h = (129, 67) if strogg else (125, 59)
+    tint = rgb(colour)[:3] if isinstance(colour, str) else colour
+    armor = kind == "armor"
+    base = (175 if armor else 171 if strogg else 148) / 255
+    depth = 17 * h / 128
+
+    def contour(d):
+        if not strogg:
+            return fill_outline(d)
+        points = polygon_offset(svg_polygon(ST_FILL), d)
+        # The narrow leading tip disappears before the bevel reaches its
+        # interior. Intersect the two surviving edges after its upright edge
+        # collapses, rather than folding the inset back over itself.
+        if points[6][1] > points[5][1]:
+            a, b = points[6:8]
+            y = points[5][1]
+            x = a[0] + (y-a[1]) * (b[0]-a[0]) / (b[1]-a[1])
+            points[5:7] = [(x, y)]
+        return points
+
+    def polygon(points):
+        return "M" + "L".join(f"{x:.5f} {y:.5f}" for x, y in points) + "Z" if len(points) >= 3 else ""
+
+    # Preserve the measured 24-texel pitch and 3-texel translucent cuts.
+    cells, cuts, start = [], [], 0
+    if armor:
+        for i in range(9):
+            left, right = (31 + 24*i)*w/256, (34 + 24*i)*w/256
+            cells.append((start, left)); cuts.append((left, right)); start = right
+    cells.append((start, w))
+    paths = []
+    steps = 12
+    for i in range(steps + 1):
+        outer = contour(depth*i/steps) if i else [(0, 0), (w, 0), (w, h), (0, h)]
+        inner = contour(depth*(i+1)/steps) if i < steps else []
+        rise = (1-(i+.5)/steps)**2 if i < steps else 0
+        for label, spans, floor, opacity in (("face", cells, base, 1), ("cut", cuts, 194/255, 155/255)):
+            data = []
+            for left, right in spans:
+                slab = [(left, 0), (right, 0), (right, h), (left, h)]
+                data += [polygon(clip_polygon(outer, slab)), polygon(clip_polygon(inner, slab)) if inner else ""]
+            if any(data):
+                luminance = floor + (1-floor)*rise
+                path = svg_path(f"{label}{i}", " ".join(data), rule="evenodd",
+                                fill=ui.solid([*(c*luminance for c in tint), alpha*opacity]))
+                path["antialias"] = False
+                paths.append(path)
+    return paths
+
+
+def gauge_surface(ident, kind, strogg, colour, alpha):
+    return vec(ident, gauge_paint(kind, strogg, colour, alpha), {"display": ui.keyword("none")},
+               mask={"paths": [svg_path("outline", ST_FILL if strogg else FILL, fill=ui.solid([1, 1, 1, 1]))]})
+
+
 # ------------------------------------------------------------------ readouts
 
 def digit_readout(doc: HudDocument, ident: str, value, *, face: str, size: float, right: float, baseline: float,
@@ -166,6 +221,47 @@ def digit_readout(doc: HudDocument, ident: str, value, *, face: str, size: float
         if k:
             doc.bind(f"{ident}-d{k}.show", node["id"], "display", sel(op(">=", value, 10 ** k), "block", "none"))
     return ui.group(ident, {**ui.FULL, "display": ui.keyword("block")}, nodes)
+
+
+def legacy_readout(doc, ident, value, *, face, rect, scale, colour, shear=0):
+    """The original text window, including its own shear origin and 2 u inset.
+    The engine lays out the complete number using the legacy TTF metrics.
+    """
+    x, y, w, h = rect
+    label = ui.label(ident+"-text", "#str_230007", {**ui.FULL, "text-align": ui.keyword("right")})
+    label["legacyText"] = "simple" if ident.startswith("ammo-") else "window"
+    doc.bind(ident+".text", label["id"], "text", op("numberText", op("max", 0, op("floor", value))))
+    props = ui.typeface(face, 72*scale, 72*scale, colour)
+    if shear:
+        node = shear_group(ident,u(x),u(y),u(w),u(h),shear,[label],**props)
+        for child in (node["children"][0], node["children"][0]["children"][0]):
+            child["properties"].update(width=ui.length(100,"%"),height=ui.length(100,"%"))
+        return node
+    return box(ident,u(x),u(y),u(w),u(h),[label],**props)
+
+
+
+def status_gain(doc, node, flash, rect, colour, scale, enlarged=None):
+    """Animate the original window and textscale, not a whole-gauge bitmap."""
+    x, y, w, h = rect
+    gx, gy, gw, gh = enlarged or (x-w*.2, y-h*.2, w*1.2, h*1.2)
+    tracks = [tr(node, key, [(0, ui.length(start)), (250, ui.length(end))])
+              for key, start, end in (("left", u(gx), u(x)), ("top", u(gy), u(y)),
+                                      ("width", u(gw), u(w)), ("height", u(gh), u(h)),
+                                      ("font-size", 72*scale*1.2, 72*scale))]
+    tracks += [tr(node, "color", [(0, ui.colour([1,1,1,1])), (250, ui.colour(colour))]),
+               tr(flash, "opacity", [(0, num(1)), (250, num(0))])]
+    return doc.timeline(node+"-gain" if node.startswith("ammo") else node.split("-")[0]+"-gain", 250, tracks)
+
+
+def weapon_backdrop(doc, rect, tint):
+    doc.string("oq4.weaponImage")
+    x, y, w, h = rect
+    node = ui.picture("ammo-weapon-bitmap", "", {**ui.absolute(left=u(x), top=u(y), width=u(w), height=u(h)),
+                       "image-color": ui.colour(tint), "display": ui.keyword("block")}, fit="fill")
+    doc.bind("ammo-weapon-image", node["id"], "image", S("oq4.weaponImage"))
+    doc.show(node["id"], NOT(S("mp")))
+    return full("ammo-renders", [node])
 
 
 def gain_timeline(doc: HudDocument, ident: str, numerals: str, flash: str, pivot: tuple, size: tuple, ink: list) -> str:
@@ -212,14 +308,15 @@ def full(ident: str, children=(), mask: dict | None = None, **props) -> dict:
 def colour_variants(kind: str, strogg: bool, mp_variants: bool) -> list:
     """(name, colour, condition, track alpha, fill alpha) for each paint the
     gauge can take; paint is static, so each is its own node."""
-    pal = STROGG if strogg else MARINE
     mp, low, team = S("mp"), S("oq4.low"), S("oq4.teamStrogg")
-    base = pal["armor"] if kind == "armor" else pal["fill"]
+    # Keep the source GUI's floats, including the slightly darker health
+    # colour installed by updateHealth and armor's 0.349 fill alpha.
+    base = [1, .564, 0] if strogg else ([.701, .815, .431] if kind == "ammo" else [.698, .811, .427])
     out = []
     if kind == "health":
-        out += [("sp", base, AND(NOT(mp), NOT(low)), 0.2, 0.35), ("low", pal["low"], AND(NOT(mp), low), 0.35, 0.5)]
+        out += [("sp", base, AND(NOT(mp), NOT(low)), 0.2, 0.35), ("low", [1, .3, 0], AND(NOT(mp), low), 0.35, 0.5)]
     else:
-        out.append(("sp", base, NOT(mp), 0.2, 0.35))
+        out.append(("sp", base, NOT(mp), 0.2, .349 if kind == "armor" and not strogg else .35))
     if mp_variants:
         if kind == "ammo":
             out.append(("mpgrey", "#808080", AND(mp, OR(op("<", S("player_weapon"), 0), op(">", S("player_weapon"), 10))), 0.2, 0.5))
@@ -251,31 +348,33 @@ def fill_window(doc: HudDocument, prefix: str, width: float, height: float, pct_
     return window
 
 
-def ekg_layer(doc: HudDocument, prefix: str, mask_svg: str, waves: list, low_colour: str, colour: str) -> dict:
-    """The EKG (section 14.3): traces added through the fill's outline beneath
-    the fill. `waves` lists (points per period, period u, duration ms). An
-    instrument, so reduced motion keeps it (essential timelines)."""
+def ekg_layer(doc: HudDocument, prefix: str, mask_svg: str, bitmaps: list, low_colour: str, colour: str,
+              *, width: float, height: float) -> dict:
+    """Installed EKG bitmaps, added beneath the fill through its vector mask.
+    Each (image, widths/second) scrolls repeating UVs over a stationary quad.
+    The sheet covers the mask throughout the loop. Keep the whole
+    texture period: the stock beats are not exactly identical. The EKG is an
+    instrument, so reduced motion keeps its essential timelines running.
+    User-approved bitmap exception: ui-visual-design.md section 14.3.
+    """
     low = S("oq4.low")
     layers = []
     for variant, tint, shown in (("normal", colour, NOT(low)), ("low", low_colour, low)):
-        for wave_index, (beat, period, duration) in enumerate(waves):
-            paths = []
-            for repeat in range(-1, 3):
-                line = scaled([(x + repeat * period, y) for x, y in beat])
-                for width, alpha in ((4.4, 0.1), (2.6, 0.3), (0.95, 1.0)):
-                    paths.append(pts_path(f"r{repeat + 1}w{int(width * 100)}", line, closed=False,
-                                          stroke=stroke(rgb(tint, alpha), u(width), join="round", cap="round"),
-                                          blend="additive"))
+        for wave_index, (image, speed) in enumerate(bitmaps):
             ident = f"{prefix}-ekg-{variant}-{wave_index}"
-            mover = vec(ident, paths, {"transform": ui.transform()})
+            mover = ui.picture(ident, image,
+                               {**ui.absolute(left=0, top=0, width=u(width), height=u(height)),
+                                "image-blend": ui.keyword("additive"), "image-color": ui.colour(rgb(tint)),
+                                "image-offset-x": num(0)}, fit="fill")
+            duration = 1000 / speed
             run = doc.timeline(ident + "-run", duration,
-                               [tr(ident, "transform", [(0, transform_value(u(-period))), (duration, transform_value(0))])],
+                               [tr(ident, "image-offset-x", [(0, num(0)), (duration, num(-1))])],
                                iterations=0, essential=True)
             doc.joins.append(play(run))
             layers.append(mover)
-        holder = full(f"{prefix}-ekg-{variant}", layers[-len(waves):])
+        holder = full(f"{prefix}-ekg-{variant}", layers[-len(bitmaps):])
         doc.show(holder["id"], shown)
-        layers = layers[:-len(waves)] + [holder]
+        layers = layers[:-len(bitmaps)] + [holder]
     return full(prefix + "-ekg", layers, mask={"paths": [svg_path("mask", mask_svg, fill=ui.solid([1, 1, 1, 1]))]})
 
 
@@ -318,30 +417,17 @@ def marine_gauge(doc: HudDocument, kind: str, gx: float, gy: float, *, mp_varian
     plate += backing_nodes(doc, kind, BACK)
 
     tracks, fills = [], []
-    bevel = fill_outline(3.0)
-    outline = fill_outline(0.0)
     for name, colour, shown, track_alpha, fill_alpha in colour_variants(kind, False, mp_variants):
-        t = vec(f"{kind}-track-{name}", [svg_path("track", FILL, fill=ui.solid(rgb(colour, track_alpha)))],
-                {"display": ui.keyword("none")})
+        t = gauge_surface(f"{kind}-track-{name}", kind, False, colour, track_alpha)
         doc.show(t["id"], shown)
         tracks.append(t)
-        paths = [svg_path("fill", FILL, fill=ui.solid(rgb(colour, fill_alpha))),
-                 ring_path("bevel", FILL, bevel, rgb(colour, 0.45))]
-        if kind == "armor":
-            for i, x in enumerate(DIVIDERS):
-                piece = clip_polygon(outline, [(x - 0.75, 13.8), (x + 0.75, 13.8), (x + 0.75, 44.7), (x - 0.75, 44.7)])
-                if len(piece) >= 3:
-                    paths.append(pts_path(f"cell{i}", scaled(piece), fill=ui.solid([0, 0, 0, 0.28])))
-        f = vec(f"{kind}-fill-{name}", paths, {"display": ui.keyword("none")})
+        f = gauge_surface(f"{kind}-fill-{name}", kind, False, colour, fill_alpha)
         doc.show(f["id"], shown)
         fills.append(f)
     plate += tracks
     if kind == "health":
-        b = EKG_BASE
-        beat = [(0, b), (11.2, b), (14.9, b - 3.46), (18.6, b), (22.7, b), (23.7, b + 2.5), (25.8, b - 17.5), (27.7, b + 6.2),
-                (29.2, b), (37.4, b), (43.5, b - 6.22), (44.7, b - 6.22), (49.6, b), (51.8, b), (55.2, b - 3), (58.6, b),
-                (62.5, b)]
-        plate.append(ekg_layer(doc, "health", FILL, [(beat, 62.5, 2500)], MARINE["ekg_low"], MARINE["ekg"]))
+        plate.append(ekg_layer(doc, "health", FILL, [("gfx/guis/hud/ekg.tga", .2)],
+                               MARINE["ekg_low"], MARINE["ekg"], width=w, height=h))
     pct = {"ammo": "player_ammopct", "health": "player_healthpct", "armor": "player_armorpct"}[kind]
     plate.append(fill_window(doc, kind + "-fill", w, h, pct, fills, 5.4, 115, 120))
     if kind == "health":
@@ -351,35 +437,22 @@ def marine_gauge(doc: HudDocument, kind: str, gx: float, gy: float, *, mp_varian
     if kind == "ammo":
         clipped = AND(op(">=", S("player_clip_size"), 2), op(">=", S("player_ammo"), 0), NOT(mp))
         infinite = op("<", S("player_totalammo"), 0)
-        clip = digit_readout(doc, "ammo-clip", S("player_ammo"), face="chain", size=36, right=u(80), baseline=u(32.7), colour=ink)
-        reserve = digit_readout(doc, "ammo-reserve", S("player_totalammo"), face="chain", size=23, right=u(118), baseline=u(31),
-                                colour=ink)
-        total = digit_readout(doc, "ammo-total", S("player_totalammo"), face="chain", size=36, right=u(118), baseline=u(32.7),
-                              colour=ink)
+        clip = legacy_readout(doc, "ammo-clip", S("player_ammo"), face="chain", rect=(31,9,49,26), scale=.5, colour=ink, shear=k)
+        reserve = legacy_readout(doc, "ammo-reserve", S("player_totalammo"), face="chain", rect=(78,12,40,18), scale=.32, colour=ink, shear=k)
+        total = legacy_readout(doc, "ammo-total", S("player_totalammo"), face="chain", rect=(69,9,49,26), scale=.5, colour=ink, shear=k)
         doc.show(clip["id"], AND(clipped, NOT(infinite)))
         doc.show(reserve["id"], AND(clipped, NOT(infinite)))
         doc.show(total["id"], AND(NOT(clipped), NOT(infinite)))
         readouts = [clip, reserve, total]
     else:
         key = "player_health" if kind == "health" else "player_armor"
-        readouts = [digit_readout(doc, f"{kind}-num", S(key), face="chain", size=36, right=u(118), baseline=u(32.7), colour=ink)]
+        readouts = [legacy_readout(doc, f"{kind}-num", S(key), face="chain", rect=(66,9,52,26), scale=.5, colour=ink, shear=k)]
     numerals = full(kind + "-numerals", readouts, transform=ui.transform(), color=ui.colour(ink))
 
     children = [shear_group(kind + "-plate", 0, 0, u(w), u(h), k, plate)]
     if kind == "ammo":
-        # The weapon's render behind the clip count, upright, single player.
-        renders = []
-        for name in GUN_RENDERS:
-            key = name.replace("gun_", "")
-            gw = hud_svg.symbol_width(name, 26)
-            x0 = GUN_X0.get(key)
-            left = (-2 + x0 * 106 / 256) if x0 is not None else 105 - gw
-            holder = full(f"gun-{key}-on", hud_svg.icon_nodes(name, f"gun-{key}", u(left), u(15), u(26), tint=MARINE["gun"]),
-                          display=ui.keyword("none"))
-            doc.show(holder["id"], AND(NOT(mp), op("==", S("weapicon"), name)))
-            renders.append(holder)
-        children.append(full("ammo-renders", renders))
-    children.append(shear_group(kind + "-digits", 0, 0, u(w), u(h), k, [numerals]))
+        children.append(weapon_backdrop(doc, (-2,15,106,26), [0.780,0.741,0.470,0.4]))
+    children.append(numerals)
 
     # The notch icon, upright, with a white copy for the gain flash.
     if kind == "ammo":
@@ -397,16 +470,20 @@ def marine_gauge(doc: HudDocument, kind: str, gx: float, gy: float, *, mp_varian
         children += [sp_icons, full("ammo-icon-mp", mp_icons), flash]
     else:
         glyph = "health" if kind == "health" else "armor"
-        icon = full(kind + "-icon", hud_svg.icon_nodes(glyph, kind + "-icon-g", u(100), u(38), u(16), tint=MARINE["icon"]))
+        icon = full(kind + "-icon", hud_svg.icon_nodes(glyph, kind + "-icon-g", u(98), u(38), u(16), tint=MARINE["icon"]))
         doc.show(icon["id"], NOT(mp))
         # Multiplayer: health yellow and armor red at 0.80 (hud.gui:1001, 1087).
         mp_tint = rgb("#F7C004", 0.8) if kind == "health" else rgb("#FA2B05", 0.8)
-        icon_mp = full(kind + "-icon-mp", hud_svg.icon_nodes(glyph, kind + "-icon-mpg", u(100), u(38), u(16), tint=mp_tint))
+        icon_mp = full(kind + "-icon-mp", hud_svg.icon_nodes(glyph, kind + "-icon-mpg", u(98), u(38), u(16), tint=mp_tint))
         doc.show(icon_mp["id"], mp)
-        flash = full(kind + "-flash", hud_svg.icon_nodes(glyph, kind + "-flash-g", u(100), u(38), u(16), tint=[1, 1, 1, 1]),
+        flash = full(kind + "-flash", hud_svg.icon_nodes(glyph, kind + "-flash-g", u(98), u(38), u(16), tint=[1, 1, 1, 1]),
                      opacity=num(0))
         children += [icon, icon_mp, flash]
-    gain_timeline(doc, kind + "-gain", numerals["id"], flash["id"], (u(118), u(9 + 26 * 0.7)), (u(w), u(h)), ink)
+    if kind == "ammo":
+        for node, rect, scale in ((clip,(31,9,49,26),.5),(reserve,(78,12,40,18),.32),(total,(69,9,49,26),.5)):
+            status_gain(doc,node["id"],flash["id"],rect,ink,scale)
+    else:
+        status_gain(doc,readouts[0]["id"],flash["id"],(66,9,52,26),ink,.5,(64,7,58,31))
     return box(kind + "-gauge", u(gx), u(gy), u(w), u(h), children)
 
 
@@ -417,49 +494,35 @@ def strogg_gauge(doc: HudDocument, kind: str, gx: float, gy: float) -> dict:
     w, h, k = 129, 67, 0.22
     plate = []
     plate += backing_nodes(doc, kind, ST_BACK)
-    outline = svg_polygon(ST_FILL)
-    # The Strogg fill reads as a flat plate with a thin rim (s_valbar).
-    bevel = polygon_offset(outline, 1.6)
     tracks, fills = [], []
     for name, colour, shown, track_alpha, fill_alpha in colour_variants(kind, True, False):
-        t = vec(f"{kind}-track-{name}", [svg_path("track", ST_FILL, fill=ui.solid(rgb(colour, track_alpha)))],
-                {"display": ui.keyword("none")})
+        t = gauge_surface(f"{kind}-track-{name}", kind, True, colour, track_alpha)
         doc.show(t["id"], shown)
         tracks.append(t)
-        paths = [svg_path("fill", ST_FILL, fill=ui.solid(rgb(colour, fill_alpha))),
-                 ring_path("bevel", ST_FILL, bevel, rgb(colour, 0.45))]
-        if kind == "armor":
-            # The same texel columns as the Marine cells: a 12.1 u pitch.
-            for i, x in enumerate(d * 129 / 125 for d in DIVIDERS):
-                piece = clip_polygon(list(reversed(outline)) if False else outline,
-                                     [(x - 0.75, 15.7), (x + 0.75, 15.7), (x + 0.75, 48.7), (x - 0.75, 48.7)])
-                if len(piece) >= 3:
-                    paths.append(pts_path(f"cell{i}", scaled(piece), fill=ui.solid([0, 0, 0, 0.28])))
-        f = vec(f"{kind}-fill-{name}", paths, {"display": ui.keyword("none")})
+        f = gauge_surface(f"{kind}-fill-{name}", kind, True, colour, fill_alpha)
         doc.show(f["id"], shown)
         fills.append(f)
     plate += tracks
     if kind == "health":
-        # s_ekg: a sine-like wave (64-texel period, 0.2 widths/s) and a slow
-        # wave (128-texel period, 0.38 widths/s), #1D1403.
-        def wave(period, amplitude, base, samples=32):
-            return [(period * i / samples, base - amplitude * math.sin(2 * math.pi * i / samples)) for i in range(samples + 1)]
-        p1, p2 = 64 * w / 256, 128 * w / 256
         plate.append(ekg_layer(doc, "health", ST_FILL,
-                               [(wave(p1, 5.5, 33.0), p1, int(p1 / (0.2 * w) * 1000)),
-                                (wave(p2, 3.5, 33.0), p2, int(p2 / (0.38 * w) * 1000))], STROGG["ekg_low"], STROGG["ekg"]))
+                               [("gfx/guis/hud/s_ekg.tga", .2), ("gfx/guis/hud/s_ekg2.tga", .38)],
+                               STROGG["ekg_low"], STROGG["ekg"], width=w, height=h))
     pct = {"ammo": "player_ammopct", "health": "player_healthpct", "armor": "player_armorpct"}[kind]
     plate.append(fill_window(doc, kind + "-fill", w, h, pct, fills, 5.1, 119, 124))
-    # s_hudstatic: masked additive grain scrolling over each gauge.
-    grain = []
-    for i in range(70):
-        gxp = 4 + (i * 37) % 120
-        gyp = 12 + (i * 19) % 38
-        grain.append(pts_path(f"g{i}", scaled([(gxp, gyp), (gxp + 0.7, gyp), (gxp + 0.7, gyp + 0.7), (gxp, gyp + 0.7)]),
-                              fill=ui.solid(rgb("#5A5A5A", 0.5)), blend="additive"))
-    grain_node = vec(kind + "-static", grain, {"transform": ui.transform()})
+    # This complex stock noise is a bitmap exception (design section 6),
+    # loaded from the installation like the existing Strogg pause-page grain.
+    # Repeat it across the entire swept area: the previous sparse dot sheet
+    # moved out of the mask and left the gauge bare for most of each loop.
+    # The two-second loop ends exactly four rows down and one column left,
+    # so its restart has the same texels under every point of the mask.
+    grain = [ui.picture(f"{kind}-static-r{row + 4}-c{column}", "gfx/guis/hud/s_static",
+                        {**ui.absolute(left=u(column*w), top=u(row*h), width=u(w), height=u(h)),
+                         "image-blend": ui.keyword("additive"),
+                         "image-color": ui.colour(rgb(STROGG["static"]))}, fit="fill")
+             for row in range(-4, 1) for column in range(2)]
+    grain_node = full(kind + "-static", grain, transform=ui.transform())
     run = doc.timeline(kind + "-static-run", 2000, [tr(grain_node["id"], "transform",
-                                                       [(0, transform_value(0, 0)), (2000, transform_value(u(-w), u(2 * h)))])],
+                                                       [(0, transform_value(0, 0)), (2000, transform_value(u(-w), u(4 * h)))])],
                        iterations=0)
     doc.joins.append(play(run))
     plate.append(full(kind + "-static-mask", [grain_node],
@@ -472,35 +535,20 @@ def strogg_gauge(doc: HudDocument, kind: str, gx: float, gy: float) -> dict:
     if kind == "ammo":
         clipped = AND(op(">=", S("player_clip_size"), 2), op(">=", S("player_ammo"), 0), NOT(mp))
         infinite = op("<", S("player_totalammo"), 0)
-        clip = digit_readout(doc, "ammo-clip", S("player_ammo"), face="r_strogg", size=36, right=u(119), baseline=u(34.3),
-                             colour=ink)
-        reserve = digit_readout(doc, "ammo-reserve", S("player_totalammo"), face="r_strogg", size=19, right=u(121),
-                                baseline=u(51), colour=rgb(STROGG["ink"], 0.8))
-        total = digit_readout(doc, "ammo-total", S("player_totalammo"), face="r_strogg", size=36, right=u(119),
-                              baseline=u(33), colour=ink)
+        clip = legacy_readout(doc, "ammo-clip", S("player_ammo"), face="r_strogg", rect=(59,11,60,26), scale=.5, colour=ink)
+        reserve = legacy_readout(doc, "ammo-reserve", S("player_totalammo"), face="r_strogg", rect=(81,38,40,18), scale=.26, colour=rgb(STROGG["ink"],.8))
+        total = legacy_readout(doc, "ammo-total", S("player_totalammo"), face="r_strogg", rect=(59,11,60,26), scale=.5, colour=ink)
         doc.show(clip["id"], AND(clipped, NOT(infinite)))
         doc.show(reserve["id"], AND(clipped, NOT(infinite)))
         doc.show(total["id"], AND(NOT(clipped), NOT(infinite)))
         readouts = [clip, reserve, total]
     else:
         key = "player_health" if kind == "health" else "player_armor"
-        readouts = [digit_readout(doc, f"{kind}-num", S(key), face="r_strogg", size=36, right=u(119), baseline=u(34.3), colour=ink)]
+        readouts = [legacy_readout(doc, f"{kind}-num", S(key), face="r_strogg", rect=(59 if kind == "health" else 57,10,60,26), scale=.5, colour=ink)]
     numerals = full(kind + "-numerals", readouts, transform=ui.transform(), color=ui.colour(ink))
     children = [shear_group(kind + "-plate", 0, 0, u(w), u(h), k, plate)]
     if kind == "ammo":
-        # The weapon's render behind the numerals: the stock 104x23 u
-        # p_current_gun window at local (25, 16), #C6BC77 at 0.40, upright.
-        renders = []
-        for name in GUN_RENDERS:
-            key = name.replace("gun_", "")
-            gw = hud_svg.symbol_width(name, 23)
-            x0 = GUN_X0.get(key)
-            left = (25 + x0 * 104 / 256) if x0 is not None else 129 - gw
-            holder = full(f"gun-{key}-on", hud_svg.icon_nodes(name, f"gun-{key}", u(left), u(16), u(23), tint=STROGG["gun"]),
-                          display=ui.keyword("none"))
-            doc.show(holder["id"], AND(NOT(mp), op("==", S("weapicon"), name)))
-            renders.append(holder)
-        children.append(full("ammo-renders", renders))
+        children.append(weapon_backdrop(doc, (25,16,104,23), [0.776,0.737,0.466,0.4]))
     children.append(numerals)
     if kind == "ammo":
         icons = full("ammo-icon-sp", glyph_choice(doc, "ammo-icon", "ammoIcon", WEAPON_GLYPHS, u(12), u(14), u(16),
@@ -514,7 +562,13 @@ def strogg_gauge(doc: HudDocument, kind: str, gx: float, gy: float) -> dict:
         flash = full(kind + "-flash", hud_svg.icon_nodes(glyph, kind + "-flash-g", u(12), u(14), u(16), tint=[1, 1, 1, 1]),
                      opacity=num(0))
         children.append(flash)
-    gain_timeline(doc, kind + "-gain", numerals["id"], flash["id"], (u(119), u(11 + 26 * 0.7)), (u(w), u(h)), ink)
+    if kind == "ammo":
+        for node, rect, scale, colour in ((clip,(59,11,60,26),.5,ink), (reserve,(81,38,40,18),.26,rgb(STROGG["ink"],.8)),
+                                          (total,(59,11,60,26),.5,ink)):
+            status_gain(doc,node["id"],flash["id"],rect,colour,scale)
+    else:
+        status_gain(doc,readouts[0]["id"],flash["id"],(59 if kind == "health" else 57,10,60,26),ink,.5,
+                    (49,8,74,32) if kind == "health" else (54,8,69,32))
     return box(kind + "-gauge", u(gx), u(gy), u(w), u(h), children)
 
 
@@ -551,7 +605,12 @@ def status_bar(doc: HudDocument, *, strogg: bool = False, mp_variants: bool = Fa
            {"op": "setState", "values": {"oq4.low": op("<", S("player_healthpct"), threshold)}},
            {"op": "if", "condition": op("<", S("player_healthDelta"), 0), "then": [play("health-gain")]})
     doc.on("updateArmor", {"op": "if", "condition": op("<", S("player_armorDelta"), 0), "then": [play("armor-gain")]})
-    doc.on("ammoPulse", play("ammo-gain"))
+    # The engine compares complete readouts after the game's state batch.
+    # Inventory pulses can describe another weapon and never drive this pop.
+    doc.on("ammoPulse")
+    doc.on("ammoClipGain", play("ammo-clip-gain"))
+    doc.on("ammoReserveGain", play("ammo-reserve-gain"))
+    doc.on("ammoTotalGain", play("ammo-total-gain"))
     doc.on("setTeam_marine", {"op": "setState", "values": {"oq4.teamStrogg": False}})
     doc.on("setTeam_strogg", {"op": "setState", "values": {"oq4.teamStrogg": True}})
     doc.joins.append({"op": "setState", "values": {"oq4.low": op("<", S("player_healthpct"), threshold)}})

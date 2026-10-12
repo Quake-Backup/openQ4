@@ -3255,6 +3255,9 @@ without having to line up a real shot.  An amount picks the tier; the named
 arguments ask for the other lanes.
 ==================
 */
+// Sample a posed model from all six sides through the same material resolver
+// used by hitscan. This avoids replacing flesh/armour distinctions with an
+// actor-wide guess and gives stock-asset regressions a reproducible probe.
 static void Cmd_TestWeaponScope_f( const idCmdArgs &args ) {
 	idPlayer *player = gameLocal.GetLocalPlayer();
 	if ( !gameLocal.CheatsOk() || !player || !player->weapon ) return;
@@ -3267,6 +3270,40 @@ static void Cmd_TestWeaponScope_f( const idCmdArgs &args ) {
 		}
 		const idEventDef *event = idEventDef::FindEvent( atoi( args.Argv( 1 ) ) ? "<zoomin>" : "<zoomout>" );
 		if ( event ) player->ProcessEvent( event );
+	}
+}
+
+static void Cmd_TestHitMaterials_f( const idCmdArgs &args ) {
+	if ( !gameLocal.CheatsOk() || args.Argc() < 2 ) return;
+	idEntity *entity = gameLocal.FindEntity( args.Argv( 1 ) );
+	const idDict *hitscan = gameLocal.FindEntityDefDict( args.Argc() > 2 ? args.Argv( 2 ) : "hitscan_bullet", false );
+	if ( !entity || !hitscan || entity->GetModelDefHandle() < 0 ) {
+		gameLocal.Printf( "HIT_MATERIALS unavailable entity=%s\n", args.Argv( 1 ) );
+		return;
+	}
+	const renderEntity_t *render = entity->GetRenderEntity();
+	const idBounds bounds = render->bounds;
+	idDict counts;
+	for ( int axis = 0; axis < 3; ++axis ) {
+		const int u = ( axis + 1 ) % 3, v = ( axis + 2 ) % 3;
+		for ( int side = 0; side < 2; ++side ) for ( int y = 0; y < 18; ++y ) for ( int x = 0; x < 18; ++x ) {
+			idVec3 start = bounds.GetCenter(), end;
+			start[u] = bounds[0][u] + ( bounds[1][u] - bounds[0][u] ) * ( x + .5f ) / 18;
+			start[v] = bounds[0][v] + ( bounds[1][v] - bounds[0][v] ) * ( y + .5f ) / 18;
+			start[axis] = bounds[side][axis] + ( side ? 8 : -8 );
+			end = start; end[axis] = bounds[1-side][axis] + ( side ? -8 : 8 );
+			modelTrace_t trace;
+			if ( !gameRenderWorld->ModelTrace( trace, entity->GetModelDefHandle(), start * render->axis + render->origin,
+				end * render->axis + render->origin, 0 ) ) continue;
+			const idDecl *effect = gameLocal.GetEffect( *hitscan, "fx_impact", trace.materialType );
+			idStr key = va( "material=%s type=%s effect=%s", trace.material ? trace.material->GetName() : "none",
+				trace.materialType ? trace.materialType->GetName() : "none", effect ? effect->GetName() : "none" );
+			counts.SetInt( key, counts.GetInt( key ) + 1 );
+		}
+	}
+	for ( int i = 0; i < counts.GetNumKeyVals(); ++i ) {
+		const idKeyValue *value = counts.GetKeyVal( i );
+		gameLocal.Printf( "HIT_MATERIALS entity=%s samples=%s %s\n", entity->name.c_str(), value->GetValue().c_str(), value->GetKey().c_str() );
 	}
 }
 
@@ -4363,6 +4400,7 @@ void idGameLocal::InitConsoleCommands( void ) {
 	cmdSystem->AddCommand( "testClassicLight",	Cmd_TestClassicLight_f,		CMD_FL_GAME|CMD_FL_CHEAT,	"raises the classic dynamic lights in front of the player" );
 	cmdSystem->AddCommand( "testDeath",				Cmd_TestDeath_f,			CMD_FL_GAME|CMD_FL_CHEAT,	"tests death" );
 	cmdSystem->AddCommand( "testHitMarker",		Cmd_TestHitMarker_f,		CMD_FL_GAME|CMD_FL_CHEAT,	"tests the crosshair hit marker" );
+	cmdSystem->AddCommand( "testHitMaterials", Cmd_TestHitMaterials_f, CMD_FL_GAME|CMD_FL_CHEAT, "sample a posed entity's material types and hitscan effects", idGameLocal::ArgCompletion_EntityName );
 	cmdSystem->AddCommand( "testWeaponScope", Cmd_TestWeaponScope_f, CMD_FL_GAME|CMD_FL_CHEAT, "report the current scope and optionally set its zoom state", idCmdSystem::ArgCompletion_Boolean );
 	cmdSystem->AddCommand( "testSave",				Cmd_TestSave_f,				CMD_FL_GAME|CMD_FL_CHEAT,	"writes out a test savegame" );
 	cmdSystem->AddCommand( "testModel",				idTestModel::TestModel_f,			CMD_FL_GAME|CMD_FL_CHEAT,	"tests a model", idTestModel::ArgCompletion_TestModel );

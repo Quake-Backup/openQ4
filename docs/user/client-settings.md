@@ -40,9 +40,11 @@ Most player-facing options are available directly in the in-game menus:
 
 ## Modern and Classic Screens
 
-The title screen, single-player pause menu, loading screens and gameplay HUD use openQ4's modern interface. HUD coverage includes crosshairs, objectives, radio, powerups, boss and vehicle displays, multiplayer scores/chat/summary panels and Awakening overlays. See [Gameplay Status Bar](gameplay-settings.md#gameplay-status-bar) for the centered ammo/health/armor bar's independent size and safe-inset settings. The other menus, including `Settings -> System`, keep the classic Quake 4 look for now.
+The classic Quake 4 interface is the default (`ui_retained 0`). The experimental modern UI is disabled by default because its gameplay overhead is not yet negligible compared with legacy. Existing saved preferences are preserved: if an earlier version saved the modern UI as enabled, enter `seta ui_retained 0` in the console to switch back.
 
-- To use the classic screens throughout, open the console and enter `ui_retained 0`. The choice is saved; `ui_retained 1` brings the modern screens back.
+Opting into the modern UI replaces the title screen, single-player pause menu, loading screens and gameplay HUD. HUD coverage includes crosshairs, objectives, radio, powerups, boss and vehicle displays, multiplayer scores/chat/summary panels and Awakening overlays. See [Gameplay Status Bar](gameplay-settings.md#gameplay-status-bar) for the centered ammo/health/armor bar's independent size and safe-inset settings. The other menus, including `Settings -> System`, keep the classic Quake 4 look for now.
+
+- To try the experimental modern UI, enter `seta ui_retained 1`; enter `seta ui_retained 0` to return to classic. The choice is saved. An explicit launch option overrides the saved choice; the VS Code retained-UI configurations intentionally opt in for development testing.
 - If a modern screen can't be shown, openQ4 shows the classic one instead, with nothing to fix on your side. This happens when a mod brings its own main menu, or when a modern screen's files are missing or damaged.
 
 If you want deeper technical details or console-level configuration, see [TECHNICAL.md](../../TECHNICAL.md).

@@ -1,5 +1,6 @@
 // Copyright (C) 2026 DarkMatter Productions. GPL-3.0-or-later.
 #include "src/ui/retained/Runtime.h"
+#include "src/ui/retained/CoverageRaster.h"
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -9,12 +10,61 @@
 #include <iterator>
 #include "src/ui/retained/Input.h"
 #include "src/ui/retained/State.h"
+#include "src/framework/InitializationPresentation.h"
 
 using namespace openq4::ui;
 static void Check(bool condition, const char* message) {
 	if (!condition) { std::fprintf(stderr,"FAIL: %s\n",message); std::exit(1); }
 }
 static bool Near(float a, float b) { return std::abs(a-b) < .1f; }
+static void CheckCoverageRaster() {
+	std::vector<Vertex> vertices;
+	std::vector<int> indices;
+	const auto rectangle=[&](float x,float y,float w,float h,float red,float green,float alpha) {
+		const int base=int(vertices.size());
+		for (const auto& p:std::array<std::array<float,2>,4>{{{x,y},{x+w,y},{x+w,y+h},{x,y+h}}})
+			vertices.push_back({p[0],p[1],0,0,red,green,0,alpha});
+		indices.insert(indices.end(),{base,base+1,base+2,base,base+2,base+3});
+	};
+	rectangle(10,20,1,2,1,0,1);
+	rectangle(11,20,2,1,0,.5f,.5f);
+	rectangle(11,21,1,1,0,.25f,0); // Pure additive light retains zero coverage.
+	CoverageBitmap bitmap;
+	Check(RasterizeCoverage(vertices,indices,bitmap),"coverage cells rasterize");
+	Check(bitmap.x==10 && bitmap.y==20 && bitmap.width==3 && bitmap.height==2,"coverage extent excludes empty margins");
+	Check(bitmap.pixels[0]==255 && bitmap.pixels[4]==0 && bitmap.pixels[5]==128 && bitmap.pixels[7]==128,
+		"coverage raster preserves premultiplied colour and alpha");
+	Check(bitmap.pixels[16]==0 && bitmap.pixels[17]==64 && bitmap.pixels[19]==0,"coverage raster preserves additive light");
+	const auto saved=bitmap.pixels;
+	rectangle(11,20,1,1,.25f,0,.5f);
+	Check(!RasterizeCoverage(vertices,indices,bitmap) && bitmap.pixels==saved,"overlapping cells preserve GPU blend order and destination rounding");
+	vertices.resize(vertices.size()-4); indices.resize(indices.size()-6);
+	vertices[0].x+=.25f;
+	Check(!RasterizeCoverage(vertices,indices,bitmap) && bitmap.pixels==saved,"subpixel geometry retains original triangles without partial publication");
+	vertices[0].x-=.25f; vertices[1].r=.5f;
+	Check(!RasterizeCoverage(vertices,indices,bitmap),"gradient cells retain their original samples");
+	vertices[1].r=1;
+	Check(!RasterizeCoverage(vertices,indices,bitmap,2),"coverage allocation obeys extent budget");
+	indices[0]=1;
+	Check(!RasterizeCoverage(vertices,indices,bitmap),"arbitrary topology retains its original triangles");
+	vertices.clear(); indices.clear();
+	for (int i=0;i<20;++i) rectangle(0,0,500,500,.5f,0,.5f);
+	Check(!RasterizeCoverage(vertices,indices,bitmap),"overlapping coverage obeys its work budget");
+}
+static void CheckInitializationPacing() {
+	openq4::InitializationPresentation pacing;
+	Check(!pacing.Due(1000,60),"startup cannot redraw before its first frame");
+	pacing.Presented(0,100); // Cold compilation is paid once.
+	Check(!pacing.Due(130,60) && pacing.Due(134,60),"startup caps high/uncapped presentation at 30 Hz");
+	Check(!pacing.Due(134,15) && pacing.Due(167,15),"startup respects a lower presentation cap");
+	pacing.Presented(134,135);
+	Check(!pacing.Due(167,0) && pacing.Due(168,0),"warm inexpensive frames retain a 30 Hz start-to-start cadence");
+	pacing.Presented(168,188); // A blocked present must give loading most of the time.
+	Check(!pacing.Due(367,60) && pacing.Due(368,60),"slow startup redraws reserve 90 percent of subsequent time for loading");
+	Check(!pacing.Due(180,60),"a backwards clock cannot cause a redraw burst");
+	pacing.Presented(1000,1001);
+	Check(!pacing.Due(1001,60),"a late checkpoint never produces catch-up frames");
+}
 static void CheckTypedActionDescriptors() {
 	const std::string source = R"json({
 	 "format":"openq4-ui","version":1,"id":"application-actions",
@@ -111,6 +161,8 @@ static void CheckTypedActionDescriptors() {
 struct TestHost final : Host {
 	int drawCalls = 0, errors = 0;
 	std::vector<Vertex> drawn;
+	std::vector<Vertex> imageVertices;
+	std::vector<std::string> imageSources;
 	struct Layer { std::vector<Vertex> vertices; std::vector<Vertex> pixels; int width=0,height=0; std::uint64_t frame=0; };
 	std::uint64_t renderFrame = 1;
 	std::uint64_t RenderFrame() const override { return renderFrame; }
@@ -118,7 +170,16 @@ struct TestHost final : Host {
 	std::uint32_t activeLayer = 0;
 	std::vector<Bounds> samplePoints;
 	bool failLayer = false;
+	bool cacheLayers = false;
+	bool replayFrames = true;
+	bool collectTimings = true;
+	bool CollectTimings() const override { return collectTimings; }
+	bool CanCacheLayers() const override { return cacheLayers; }
+	bool CanReplayFrames() const override { return replayFrames; }
 	int allocationsUntilFailure = -1;
+	std::uint32_t maxLayerId = 48;
+	std::uint64_t layerBudget=0;
+	unsigned trimmedLayers=0;
 	static void Over(Vertex& destination, const Vertex& source, float opacity = 1) {
 		const float remain = 1-source.a*opacity;
 		destination.r = source.r*opacity+destination.r*remain;
@@ -128,7 +189,7 @@ struct TestHost final : Host {
 	}
 	void ClearSamples(bool newFrame = true) {
 		if (newFrame) ++renderFrame;
-		layers[0].pixels.assign(samplePoints.size(),Vertex{0,0,0,0,0,0,0,0}); drawn.clear();
+		layers[0].pixels.assign(samplePoints.size(),Vertex{0,0,0,0,0,0,0,0}); drawn.clear(); imageVertices.clear();
 	}
 	bool ReadFile(const std::string&, std::string&) override { return false; }
 	StateValues cvars;
@@ -136,11 +197,14 @@ struct TestHost final : Host {
 		const auto found = cvars.find(name); if (found == cvars.end()) return false;
 		value = found->second; return true;
 	}
-	std::string Translate(const std::string& s) override { return s == "#str_test" ? "Localised" : s; }
+	std::string Translate(const std::string& s) override { return s == "#str_test" ? "Localised" : s == "#str_live_binding" ? "^k_attack" : s; }
 	void Log(bool error, const std::string& s) override { if (error) { ++errors; std::fprintf(stderr,"RmlUi: %s\n",s.c_str()); } }
-	std::uintptr_t LoadMaterial(const std::string&, int& w, int& h) override { w=h=256; return 1; }
-	void Draw(const std::vector<Vertex>& vertices, const std::vector<int>& indices, std::uintptr_t) override {
+	std::uintptr_t LoadMaterial(const std::string& source, int& w, int& h) override {
+		imageSources.push_back(source); w=h=256; return source.starts_with("q4-add/") ? 2 : 1;
+	}
+	void Draw(const std::vector<Vertex>& vertices, const std::vector<int>& indices, std::uintptr_t texture) override {
 		++drawCalls;
+		if (texture) imageVertices.insert(imageVertices.end(),vertices.begin(),vertices.end());
 		Check(indices.size()%3==0,"triangle topology");
 		for (int index : indices) Check(index>=0 && static_cast<size_t>(index)<vertices.size(),"valid indices");
 		for (const auto& v : vertices) Check(std::isfinite(v.x)&&std::isfinite(v.y),"finite output");
@@ -159,12 +223,16 @@ struct TestHost final : Host {
 			const double w = 1-u-v;
 			if (u > 0 && v > 0 && w > 0) {
 				Vertex source{0,0,0,0,float(u*a.r+v*b.r+w*c.r),float(u*a.g+v*b.g+w*c.g),float(u*a.b+v*b.b+w*c.b),float(u*a.a+v*b.a+w*c.a)};
+				if (texture==2) source.a=0; // A white additive image, as at the engine boundary.
 				Over(layers[activeLayer].pixels[p],source);
 			}
 		}
 	}
 	bool BeginLayer(std::uint32_t id, int width, int height) override {
-		if (failLayer || allocationsUntilFailure == 0) return false;
+		if (failLayer || allocationsUntilFailure == 0 || id > maxLayerId) return false;
+		std::uint64_t bytes=std::uint64_t(width)*height*4;
+		for (size_t i=1; i<layers.size(); ++i) if (i!=id) bytes+=std::uint64_t(layers[i].width)*layers[i].height*4;
+		if (layerBudget && bytes>layerBudget) return false;
 		if (allocationsUntilFailure > 0) --allocationsUntilFailure;
 		if (layers.size() <= id) layers.resize(id+1);
 		const auto& previous = layers[id];
@@ -173,8 +241,14 @@ struct TestHost final : Host {
 		layers[id] = {}; layers[id].width=width; layers[id].height=height; layers[id].frame=renderFrame;
 		layers[id].pixels.assign(samplePoints.size(),Vertex{0,0,0,0,0,0,0,0}); activeLayer = id; return true;
 	}
+	bool TrimLayer(std::uint32_t id) override {
+		if (!layerBudget || id>=layers.size() || !layers[id].width || id==activeLayer) return false;
+		Check(layers[id].frame!=renderFrame,"memory pressure never retires a target referenced by this submission frame");
+		layers[id]={}; ++trimmedLayers; return true;
+	}
 	void CompositeLayer(std::uint32_t source, std::uint32_t destination, float opacity, const Bounds& clip) override {
 		Check(source != destination,"composition never samples its destination");
+		layers[source].frame=renderFrame;
 		activeLayer = destination;
 		auto& output = destination ? layers[destination].vertices : drawn;
 		for (auto v : layers[source].vertices) { v.r *= opacity; v.g *= opacity; v.b *= opacity; v.a *= opacity; output.push_back(v); }
@@ -422,7 +496,179 @@ static void CheckRetainedMeshes(TestHost& host) {
 		Check(std::find(host.releasedMeshes.begin(),host.releasedMeshes.end(),mesh) != host.releasedMeshes.end(),
 			"every mesh identity is released with its geometry");
 }
+static void CheckFrameReplay(TestHost& host) {
+	const char* source=R"json({"format":"openq4-ui","version":1,"id":"frame-replay",
+	 "state":{"left":{"type":"number","initial":10}},
+	 "bindings":[{"id":"move","node":"panel","property":"left","value":{"state":"left"}}],
+	 "root":{"id":"root","type":"group","children":[{"id":"panel","type":"group","properties":{
+	  "position":{"type":"keyword","value":"absolute"},"left":{"type":"length","unit":"dp","value":10},
+	  "top":{"type":"length","unit":"dp","value":10},"width":{"type":"length","unit":"dp","value":50},
+	  "height":{"type":"length","unit":"dp","value":50},"background-color":{"type":"color","value":[1,0,0,1]}}}]}})json";
+	Runtime runtime(host); std::vector<Diagnostic> diagnostics; std::string error;
+	Check(runtime.LoadDocument(source,"frame-replay.q4ui",diagnostics),"load static presentation replay fixture");
+	Viewport viewport;
+	for (int frame=0;frame<3;++frame) { host.ClearSamples(); Check(runtime.Frame(viewport,frame),"render static presentation"); }
+	Check(runtime.Statistics().frameReplays==1 && !host.drawn.empty(),"unchanged presentation replays its submitted draws");
+	const auto previous=host.drawn;
+	host.collectTimings=false;
+	host.ClearSamples(); runtime.Frame(viewport,3);
+	Check(!runtime.Statistics().timingsEnabled && runtime.Statistics().frameMilliseconds==0 &&
+		runtime.Statistics().hostDrawMilliseconds==0 && runtime.Statistics().drawCalls>0,
+		"disabled profiling skips time measurements while retaining draw counts");
+	host.collectTimings=true;
+	Check(host.drawn.size()==previous.size() && std::equal(host.drawn.begin(),host.drawn.end(),previous.begin(),
+		[](const auto& a,const auto& b){return a.x==b.x && a.y==b.y && a.r==b.r && a.g==b.g && a.b==b.b && a.a==b.a;}),
+		"replay preserves geometry, colour and order");
+	Check(runtime.SetState({{"left",80.0}},error,4),"change a cached document's bound geometry");
+	host.ClearSamples(); runtime.Frame(viewport,4);
+	Check(runtime.Statistics().frameReplays==0 && !host.drawn.empty() && host.drawn.front().x>=80,
+		"bound property updates cannot replay obsolete geometry");
+	runtime.Frame(viewport,5); runtime.Frame(viewport,6);
+	Check(runtime.Statistics().frameReplays==1,"changed presentation becomes reusable after settling");
+	viewport.width=640; viewport.height=480; runtime.Frame(viewport,7);
+	Check(runtime.Statistics().frameReplays==0,"viewport changes invalidate the submitted frame");
+	Document liveText;
+	Check(liveText.Load(source,diagnostics) && liveText.ReplaceValue("/bindings","[]",diagnostics) && liveText.ReplaceValue("/root/children",R"json([
+	 {"id":"binding","type":"text","legacyText":"window","properties":{
+	  "width":{"type":"length","unit":"dp","value":100},"height":{"type":"length","unit":"dp","value":50},
+	  "text":{"type":"text","value":"#str_live_binding"}}}])json",diagnostics) &&
+	 runtime.LoadDocument(liveText.Source(),"live-binding.q4ui",diagnostics),"replace cached presentation with live binding text");
+	for (int frame=8;frame<12;++frame) runtime.Frame(viewport,frame);
+	Check(runtime.Statistics().frameReplays==0 && runtime.Statistics().liveTextRuns==1,
+		"live binding text always reaches the host even without a document property change");
+	const char* movingImage=R"json({"format":"openq4-ui","version":1,"id":"sampling-replay",
+	 "root":{"id":"image","type":"image","properties":{
+	  "width":{"type":"length","unit":"dp","value":100},"height":{"type":"length","unit":"dp","value":50},
+	  "image":{"type":"image","value":"gfx/test/trace.tga"},"image-blend":{"type":"keyword","value":"additive"},
+	  "image-offset-x":{"type":"number","value":0},"image-scale-x":{"type":"number","value":0.2},"opacity":{"type":"number","value":0.5}}},
+	 "timelines":[{"id":"scroll","durationMs":1000,"tracks":[
+	 {"node":"image","property":"image-offset-x","keys":[{"atMs":0,"value":{"type":"number","value":0}},{"atMs":1000,"value":{"type":"number","value":1}}]},
+	 {"node":"image","property":"image-scale-x","keys":[{"atMs":0,"value":{"type":"number","value":0.2}},{"atMs":1000,"value":{"type":"number","value":2}}]}]}]})json";
+	Check(runtime.LoadDocument(movingImage,"sampling-replay.q4ui",diagnostics) && runtime.PlayTimeline("scroll",12),
+		"load an image whose sampling offset and scale animate");
+	for (const double seconds:{12.0,12.1,12.2}) { host.ClearSamples(); runtime.Frame(viewport,seconds); }
+	Check(runtime.Statistics().frameReplays==1 && !host.imageVertices.empty(),"UV-only animation replays stationary geometry");
+	Check(runtime.Statistics().layerPushes==0,"a disjoint image fades without an intermediate target");
+	for (const auto& v:host.imageVertices) Check(std::abs(v.u-(.42f+v.x/100*.56f))<.00001f && std::abs(v.r-.5f)<.00001f,
+		"replay samples the current offset and scale with the isolated fade");
+	runtime.Frame(viewport,12.3); host.ClearSamples(); runtime.Frame(viewport,13);
+	for (const auto& v:host.imageVertices) Check(std::abs(v.u-(.5f+v.x/100*2))<.00001f,"replay reaches the final image sampling phase");
+	const auto replayed=host.imageVertices;
+	host.replayFrames=false; host.ClearSamples(); runtime.Frame(viewport,13);
+	Check(runtime.Statistics().frameReplays==0 && host.imageVertices.size()==replayed.size(),"replay diagnostic switch restores normal rendering");
+	for (size_t i=0;i<replayed.size();++i) Check(std::abs(replayed[i].u-host.imageVertices[i].u)<.00001f && std::abs(replayed[i].v-host.imageVertices[i].v)<.00001f,
+		"live sampling replay matches normal rendering at the same time");
+	host.replayFrames=true;
+	std::string fading=movingImage;
+	fading.insert(fading.find("\"root\""),R"json("state":{"alpha":{"type":"number","initial":0.5}},
+	 "bindings":[{"id":"fade","node":"image","property":"opacity","value":{"state":"alpha"}}],)json");
+	Check(runtime.LoadDocument(fading,"paint-opacity.q4ui",diagnostics),"load isolated opacity presentation");
+	Check(runtime.PlayTimeline("scroll",20),"animate UV sampling while opacity changes");
+	runtime.Frame(viewport,20); runtime.Frame(viewport,20.1);
+	double previousOpacity=.5;
+	double fadeTime=20.15;
+	// Revisit the last installed CSS value after live-only updates, then cross
+	// the zero/full-opacity boundaries that change the layer topology.
+	for (const double opacity:{.25,.75,.5,.25,.125,.875,0.0,.5,1.0,.5,.3}) {
+		fadeTime+=.05;
+		Check(runtime.SetState({{"alpha",opacity}},error,fadeTime),"change isolated opacity");
+		host.ClearSamples(); runtime.Frame(viewport,fadeTime);
+		const bool reusable=previousOpacity>0 && previousOpacity<1 && opacity>0 && opacity<1;
+		Check(runtime.Statistics().layoutUpdates==0 && runtime.Statistics().frameReplays==(reusable ? 1 : 0),
+			"leaf opacity replays only while its visible layer topology stays unchanged");
+		Check((opacity==0)==host.imageVertices.empty(),"zero opacity suppresses and nonzero opacity restores image paint");
+		for (const auto& v:host.imageVertices) Check(std::abs(v.r-opacity)<.00001,
+			"paint-only opacity preserves the current premultiplied tint");
+		const auto replay=host.imageVertices;
+		host.replayFrames=false; host.ClearSamples(); runtime.Frame(viewport,fadeTime);
+		Check(replay.size()==host.imageVertices.size(),"full paint and live opacity replay have the same geometry");
+		for (size_t i=0;i<replay.size();++i) {
+			const auto& a=replay[i]; const auto& b=host.imageVertices[i];
+			Check(a.x==b.x && a.y==b.y && std::abs(a.u-b.u)<.000001f && std::abs(a.v-b.v)<.000001f &&
+				a.r==b.r && a.g==b.g && a.b==b.b && a.a==b.a,
+				"replayed opacity matches full paint without cumulative colour drift");
+		}
+		host.replayFrames=true; runtime.Frame(viewport,fadeTime);
+		previousOpacity=opacity;
+	}
+	Document textFade;
+	const bool textLoaded=textFade.Load(R"json({"format":"openq4-ui","version":1,"id":"text-fade",
+	 "state":{"alpha":{"type":"number","initial":0.5}},
+	 "bindings":[{"id":"fade","node":"image","property":"opacity","value":{"state":"alpha"}}],
+	 "root":{"id":"image","type":"text","properties":{
+		 "width":{"type":"length","unit":"dp","value":200},"height":{"type":"length","unit":"dp","value":50},
+		 "font-family":{"type":"font","value":"test"},"font-size":{"type":"length","unit":"dp","value":20},
+		 "text":{"type":"text","value":"#str_test"},"opacity":{"type":"number","value":0.5},
+		 "letter-spacing":{"type":"length","unit":"dp","value":0}}}})json",diagnostics);
+	if (!textLoaded) for (const auto& diagnostic:diagnostics) std::fprintf(stderr,"%s\n",diagnostic.message.c_str());
+	Check(textLoaded,"build leaf text fade fixture");
+	for (const int mode:{0,1,2}) {
+		const bool overlap=mode!=0;
+		host.cacheLayers=mode==2;
+		host.samplePoints={{9.5f,8.5f,0,0}};
+		if (overlap) Check(textFade.ReplaceValue("/root/properties/letter-spacing/value","-5",diagnostics),"overlap glyphs");
+		Check(runtime.LoadDocument(textFade.Source(),"text-opacity.q4ui",diagnostics),"load leaf text fade fixture");
+		if (mode==2) {
+			host.ClearSamples(); runtime.Frame(viewport,22);
+			host.ClearSamples(false); runtime.Frame(viewport,22);
+			Check(runtime.Statistics().layerCacheHits==0 && runtime.Statistics().frameReplays==0,
+				"a cold text submission cannot be cached again in the same host frame before its upload");
+		}
+		for (const double time:{22.,22.05,22.1,22.15}) { host.ClearSamples(); runtime.Frame(viewport,time); }
+		Check(runtime.SetState({{"alpha",.3}},error,22.2),"fade leaf text");
+		host.ClearSamples(); runtime.Frame(viewport,22.2);
+		Check(runtime.Statistics().frameReplays==(mode==1 ? 0 : 1) && !host.drawn.empty(),
+			"text replays live opacity only with disjoint quads or a retained isolated composition");
+		const auto replay=host.drawn;
+		const auto pixels=host.layers[0].pixels;
+		host.replayFrames=false; host.cacheLayers=false; host.ClearSamples(); runtime.Frame(viewport,22.2);
+		Check(replay.size()==host.drawn.size(),"faded text has unchanged draw topology");
+		for (size_t i=0;i<replay.size();++i) Check(replay[i].r==host.drawn[i].r && replay[i].a==host.drawn[i].a,
+			"text replay and full paint preserve premultiplied colour");
+		for (size_t i=0;i<pixels.size();++i) Check(pixels[i].r==host.layers[0].pixels[i].r && pixels[i].a==host.layers[0].pixels[i].a,
+			"retained text preserves overlapping glyph composition");
+		host.replayFrames=true;
+	}
+	host.cacheLayers=false; host.samplePoints.clear();
+}
+static void CheckHiddenPresentation(TestHost& host) {
+	const char* source=R"json({"format":"openq4-ui","version":1,"id":"hidden-layout",
+	 "state":{"shown":{"type":"boolean","initial":false}},
+	 "bindings":[{"id":"show","node":"branch","property":"display","value":{"op":"select","args":[{"state":"shown"},"block","none"]}}],
+	 "root":{"id":"root","type":"group","children":[{"id":"branch","type":"group",
+	  "properties":{"display":{"type":"keyword","value":"none"}},"children":[{"id":"growing","type":"group",
+	  "properties":{"width":{"type":"length","unit":"dp","value":10},"height":{"type":"length","unit":"dp","value":20}}}]}]},
+	 "timelines":[{"id":"grow","durationMs":1000,"tracks":[{"node":"growing","property":"width","keys":[
+	  {"atMs":0,"value":{"type":"length","unit":"dp","value":10}},
+	  {"atMs":1000,"value":{"type":"length","unit":"dp","value":110}}]}]}]})json";
+	Runtime runtime(host); std::vector<Diagnostic> diagnostics; std::string error; Bounds bounds;
+	Check(runtime.LoadDocument(source,"hidden-layout.q4ui",diagnostics),"load hidden presentation fixture");
+	runtime.Frame({},0);
+	Check(runtime.PlayTimeline("grow",0),"start hidden size animation");
+	runtime.Frame({},.5);
+	Check(runtime.Statistics().layoutUpdates==0 && Near(float(runtime.PresentedValue("growing","width")->data[0]),60),
+		"hidden animation advances without updating visible layout");
+	Check(runtime.SetState({{"shown",true}},error,.5),"reveal animated branch");
+	runtime.Frame({},.5);
+	Check(runtime.Statistics().layoutUpdates==1 && runtime.GetBounds("growing",bounds) && Near(bounds.width,60),
+		"reveal resolves every deferred property at the current phase");
+	runtime.Frame({},.75);
+	Check(runtime.Statistics().layoutUpdates==1 && runtime.GetBounds("growing",bounds) && Near(bounds.width,85),
+		"visible size changes still update layout");
+	Check(runtime.SetState({{"shown",false}},error,.75),"hide animated branch again");
+	runtime.Frame({},.75); runtime.Frame({},1);
+	Check(runtime.Statistics().layoutUpdates==0,"hidden completion does not relayout visible siblings");
+	Check(runtime.SetState({{"shown",true}},error,1.1),"reveal completed hidden animation");
+	runtime.Frame({},1.1);
+	Check(runtime.GetBounds("growing",bounds) && Near(bounds.width,110),"completed hidden animation keeps its final layout");
+	Check(runtime.LoadDocument(source,"replacement.q4ui",diagnostics) && runtime.SetState({{"shown",true}},error,2),
+		"replace a document after caching its layout readbacks");
+	Check(runtime.Frame({},2) && runtime.GetBounds("growing",bounds) && Near(bounds.width,10),
+		"layout readbacks belong to the replacement document, not retired elements");
+	Check(host.errors==0,"hidden presentation updates produce no diagnostics");
+}
 int main(int argc, char** argv) {
+	CheckInitializationPacing();
 	CheckTypedActionDescriptors();
 	Viewport viewport;
 	viewport.displayScale = 1.5f;
@@ -603,6 +849,35 @@ int main(int argc, char** argv) {
 		const auto& a = host.drawn[i]; const auto& b = cachedDraw[i];
 		Check(std::abs(a.x-b.x)<.0001f && std::abs(a.y-b.y)<.0001f && std::abs(a.r-b.r)<.0001f && std::abs(a.a-b.a)<.0001f,"fresh compilation matches animated cached pixels and premultiplied paint");
 	}
+	{
+		std::string rigidSource = vectorDocument;
+		rigidSource.insert(rigidSource.find("\"id\":\"rectangle\""),"\"antialias\":false,");
+		Document rigid;
+		Check(rigid.Load(rigidSource,diagnostics),"load local triangle cache fixture");
+		Check(rigid.ReplaceValue("/root/children/0/properties/transform/value","[10,0,1,1,0]",diagnostics),"pose the rotation's starting position");
+		Check(rigid.ReplaceValue("/timelines/2/tracks/0/keys/1/value/value","[10.5,0,1,1,70]",diagnostics),"rotate and translate cached artwork");
+		Check(runtime.LoadDocument(rigid.Source(),"rigid.q4ui",diagnostics),"load rigid vector runtime");
+		runtime.Frame(viewport,14);
+		Check(runtime.PlayTimeline("fractional",14),"start rigid motion");
+		for (int frame = 1; frame <= 30; ++frame) {
+			host.drawn.clear(); runtime.Frame(viewport,14+frame/60.0);
+			Check(runtime.Statistics().vectorPathsCompiled == 0 && runtime.Statistics().vectorUploads == 0,"rotation reuses soft geometry without recompilation or upload");
+			for (const auto& v : host.drawn) Check(v.x >= 199.999f && v.x <= 400.001f && v.y >= 199.999f && v.y <= 400.001f,"cached rotations retain the live parent clip");
+		}
+		const auto rotated = host.drawn;
+		Check(!rotated.empty(),"rotated artwork remains visible");
+		Check(rigid.ReplaceValue("/root/children/0/properties/transform/value","[10.25,0,1,1,35]",diagnostics),"pose independent rotation reference");
+		Check(runtime.LoadDocument(rigid.Source(),"rigid-reference.q4ui",diagnostics),"load fresh rotation reference");
+		host.drawn.clear(); runtime.Frame(viewport,14.5);
+		Check(host.drawn.size() == rotated.size(),"fresh and cached rotated topology matches");
+		for (size_t i = 0; i < rotated.size(); ++i) {
+			Check(Near(host.drawn[i].x,rotated[i].x) && Near(host.drawn[i].y,rotated[i].y) &&
+				std::abs(host.drawn[i].a-rotated[i].a)<.0001f,"cached transform matches independent geometry and opacity");
+		}
+		viewport.displayScale = 3; runtime.Frame(viewport,14.75);
+		Check(runtime.Statistics().vectorPathsCompiled > 0,"density changes recompile local artwork at the new curve precision");
+		viewport.displayScale = 2;
+	}
 	const char* compositionDocument = R"json({"format":"openq4-ui","version":1,"id":"composition",
 	 "root":{"id":"root","type":"group","properties":{
 	  "width":{"type":"length","value":100,"unit":"%"},"height":{"type":"length","value":100,"unit":"%"},
@@ -620,7 +895,7 @@ int main(int argc, char** argv) {
 	 {"atMs":0,"value":{"type":"number","value":0.5}},{"atMs":1000,"value":{"type":"number","value":0}}]}]}]})json";
 	Check(runtime.LoadDocument(compositionDocument,"composition.q4ui",diagnostics),"load nested isolated opacity fixture");
 	host.samplePoints = {{20.37f,20.63f},{50.37f,20.63f},{200.37f,20.63f}};
-	auto sampleFrame = [&](double time) { host.ClearSamples(); runtime.Frame(viewport,time); };
+	auto sampleFrame = [&](double time) { host.ClearSamples(); return runtime.Frame(viewport,time); };
 	auto pixel = [&](size_t index, float r, float g, float b) {
 		const auto& v = host.layers[0].pixels[index];
 		Check(std::abs(v.r-r)<.002f && std::abs(v.g-g)<.002f && std::abs(v.b-b)<.002f && std::abs(v.a-1)<.002f,"isolated source-over matches independent overlap color");
@@ -628,10 +903,11 @@ int main(int argc, char** argv) {
 	sampleFrame(15); pixel(0,.5f,.5f,0); pixel(1,.25f,.5f,.25f); pixel(2,0,1,0);
 	Check(runtime.PlayTimeline("fade",15),"animate isolated parent opacity");
 	sampleFrame(15.5); pixel(0,.25f,.75f,0); pixel(1,.125f,.75f,.125f); pixel(2,0,1,0);
-	host.failLayer = true; sampleFrame(15.6);
+	host.failLayer = true;
+	Check(!sampleFrame(15.6),"compositor failure is returned to the caller for same-frame fallback");
 	Check(host.errors == 1 && host.activeLayer == 0,"allocation failure diagnosed and output target restored");
 	--host.errors; host.failLayer = false;
-	sampleFrame(15.5); // Monotonic clock keeps the already advanced .6 sample.
+	Check(sampleFrame(15.5),"composition recovers after target allocation becomes available"); // Monotonic clock keeps the already advanced .6 sample.
 	pixel(0,.2f,.8f,0); pixel(1,.1f,.8f,.1f);
 	sampleFrame(16); pixel(0,0,1,0); pixel(1,0,1,0);
 	// The same overlapping groups, now masked at both levels. Red and black
@@ -666,7 +942,7 @@ int main(int argc, char** argv) {
 	sampleFrame(17.6); pixel(0,.25f*maskAlpha,1-.25f*maskAlpha,0); pixel(2,0,1,0);
 	Check(runtime.Statistics().vectorPathsCompiled == 0,"fades do not rebuild mask coverage");
 	Check(runtime.LoadDocument(maskedDocument,"mask-failure.q4ui",diagnostics),"restore authored mask opacity");
-	for (int allocation = 0; allocation < 8; ++allocation) {
+	for (int allocation = 0; allocation < 6; ++allocation) {
 		host.allocationsUntilFailure = allocation;
 		sampleFrame(17.7+allocation*.02);
 		Check(host.errors == 1 && host.activeLayer == 0,"every mask allocation failure is diagnosed and restores base");
@@ -704,6 +980,123 @@ int main(int argc, char** argv) {
 		pixel(2,0,1,0); pixel(3,0,1,0);
 	}
 	host.samplePoints.clear();
+	// A completed leaf mask can reuse its target without freezing paint,
+	// changing subtree alpha, or allowing a resized view to reuse old pixels.
+	Document cachedMask;
+	Check(cachedMask.Load(maskedDocument,diagnostics) &&
+		cachedMask.ReplaceValue("/root/children/0/children","[]",diagnostics),"build leaf-mask cache fixture");
+	Check(runtime.LoadDocument(cachedMask.Source(),"cached-mask.q4ui",diagnostics),"load leaf-mask cache fixture");
+	viewport={}; host.cacheLayers=true;
+	host.samplePoints={{20.37f,20.63f},{70.37f,50.63f},{12.37f,12.63f},{19.37f,20.63f}};
+	sampleFrame(19); pixel(0,.5f*maskAlpha,1-.5f*maskAlpha,0); pixel(1,0,1,0); pixel(2,0,1,0);
+	Check(runtime.Statistics().layerCacheHits==0,"first masked frame populates cache");
+	sampleFrame(19.1); pixel(0,.5f*maskAlpha,1-.5f*maskAlpha,0); pixel(3,32.f/255,1-32.f/255,0);
+	Check(runtime.Statistics().layerCacheHits==1 && runtime.Statistics().layerPushes==0,"unchanged leaf mask avoids target clears and mask rendering");
+	Check(runtime.PlayTimeline("fade",19.1),"cached subtree can still fade");
+	sampleFrame(19.6); pixel(0,.25f*maskAlpha,1-.25f*maskAlpha,0); pixel(1,0,1,0);
+	Check(runtime.Statistics().layerCacheHits==1,"opacity changes reuse masked pixels but composite with current alpha");
+	viewport.width=640; viewport.height=480;
+	sampleFrame(19.6); pixel(0,.25f*maskAlpha,1-.25f*maskAlpha,0);
+	Check(runtime.Statistics().layerCacheHits==0,"resize invalidates completed targets");
+	Check(cachedMask.ReplaceValue("/root/children/0/properties/background-color/value","[0,0,1,1]",diagnostics) &&
+		runtime.LoadDocument(cachedMask.Source(),"cached-mask.q4ui",diagnostics),"replace cached paint");
+	sampleFrame(19.7); pixel(0,0,1-.5f*maskAlpha,.5f*maskAlpha);
+	Check(runtime.Statistics().layerCacheHits==0,"changed geometry cannot replay old paint");
+	// Multiple contexts share a bounded host. A resting view's completed
+	// panel must yield its cache lease when another view needs scratch space.
+	Check(runtime.LoadDocument(cachedMask.Source(),"cache-pressure-a.q4ui",diagnostics),"reload cache pressure fixture");
+	{
+		Runtime other(host);
+		Check(other.LoadDocument(cachedMask.Source(),"cache-pressure-b.q4ui",diagnostics),"load second cache pressure view");
+		host.maxLayerId=4;
+		const int errorsBefore=host.errors;
+		for (int frame=0;frame<3;++frame) { host.ClearSamples(); runtime.Frame(viewport,19.7); }
+		Check(runtime.Statistics().frameReplays==1,"masked presentation records a valid target lease before cross-view eviction");
+		for (int frame=0; frame<3; ++frame) {
+			host.ClearSamples(); runtime.Frame(viewport,19.7);
+			pixel(0,0,1-.5f*maskAlpha,.5f*maskAlpha);
+			host.ClearSamples(false); other.Frame(viewport,19.7);
+			pixel(0,0,1-.5f*maskAlpha,.5f*maskAlpha);
+		}
+		Check(host.errors==errorsBefore,"shared cache pressure evicts idle pixels without losing composition");
+		host.maxLayerId=48;
+	}
+	Check(runtime.LoadDocument(cachedMask.Source(),"cache-budget-a.q4ui",diagnostics),"reload shared cache budget fixture");
+	{
+		Runtime second(host), third(host);
+		Check(second.LoadDocument(cachedMask.Source(),"cache-budget-b.q4ui",diagnostics) &&
+			third.LoadDocument(cachedMask.Source(),"cache-budget-c.q4ui",diagnostics),"load shared 4K cache budget views");
+		Viewport large; large.width=3840; large.height=2160;
+		const int errorsBefore=host.errors;
+		for (int frame=0; frame<2; ++frame) {
+			host.ClearSamples(); runtime.Frame(large,19.7);
+			host.ClearSamples(false); second.Frame(large,19.7);
+			host.ClearSamples(false); third.Frame(large,19.7);
+		}
+		Check(runtime.Statistics().layerCacheHits==1 && second.Statistics().layerCacheHits==1 &&
+			third.Statistics().layerCacheHits==0,"4K contexts share two cached targets and reserve transient space");
+		Check(host.errors==errorsBefore,"shared 4K cache budget renders all views");
+	}
+	host.cacheLayers=false; host.samplePoints.clear(); viewport={};
+	{
+		// Repeated small view sizes leave unleased host allocations resident.
+		// A larger view can require retiring several of them before one new
+		// target fits; resizing a single slot is insufficient.
+		const auto errorsBefore=host.errors;
+		host.layerBudget=32*1024*1024;
+		for (const auto size : {1000,1100,2048}) {
+			viewport.width=size; viewport.height=size==2048 ? 1024 : 1000;
+			Check(sampleFrame(19.75),"resizing retires obsolete free allocations under the host memory budget");
+		}
+		Check(host.trimmedLayers>0 && host.errors==errorsBefore,"target budget recovers without a failed HUD frame");
+		host.layerBudget=0; viewport={};
+	}
+	// Repeating images keep UV motion out of layout. An additive trace can
+	// texture a fill-only mask directly, including its hole and fractional edge.
+	Document imageMask;
+	Check(imageMask.Load(cachedMask.Source(),diagnostics) &&
+		imageMask.ReplaceValue("/root/children/0/properties/background-color/value","[0,0,0,0]",diagnostics) &&
+		imageMask.ReplaceValue("/root/children/0/children",R"json([{"id":"trace","type":"image","properties":{
+		 "width":{"type":"length","value":120,"unit":"px"},"height":{"type":"length","value":80,"unit":"px"},
+		 "image":{"type":"image","value":"gfx/test/trace.tga"},"image-blend":{"type":"keyword","value":"additive"},
+		 "image-color":{"type":"color","value":[1,0,0,1]},"image-offset-x":{"type":"number","value":0.125},
+		 "image-offset-y":{"type":"number","value":-0.2},"image-scale-x":{"type":"number","value":2},
+		 "image-scale-y":{"type":"number","value":0.5}}}])json",diagnostics),"author repeating masked image");
+	Check(runtime.LoadDocument(imageMask.Source(),"image-mask.q4ui",diagnostics),"load repeating image");
+	host.samplePoints={{20.37f,20.63f},{70.37f,50.63f},{12.37f,12.63f},{19.37f,20.63f}};
+	sampleFrame(19.8);
+	pixel(0,.5f*maskAlpha,1,0); pixel(1,0,1,0); pixel(2,0,1,0); pixel(3,32.f/255,1,0);
+	Check(runtime.Statistics().directMaskDraws==1 && runtime.Statistics().layerPushes==0,"trace mask needs no composition target");
+	Check(!host.imageVertices.empty() && host.imageSources.back()=="q4-add/_repeat/gfx/test/trace.tga","repeating additive image resolves through installed VFS source");
+	for (const auto& v:host.imageVertices) Check(std::abs(v.u-(-.375f+(v.x-10)/120*2))<.00001f &&
+		std::abs(v.v-(.05f+(v.y-10)/80*.5f))<.00001f,"masked image UVs preserve offset and centred scaling across each coverage cell");
+	{
+		Document scrolling; Runtime animated(host);
+		Check(scrolling.Load(imageMask.Source(),diagnostics) && scrolling.ReplaceValue("/timelines",R"json([
+		 {"id":"scroll","durationMs":1000,"tracks":[{"node":"trace","property":"image-offset-x","keys":[
+		 {"atMs":0,"value":{"type":"number","value":0.125}},{"atMs":1000,"value":{"type":"number","value":1.125}}]}]}])json",diagnostics) &&
+		 animated.LoadDocument(scrolling.Source(),"masked-sampling-replay.q4ui",diagnostics) && animated.PlayTimeline("scroll",19.8),
+		 "load animated sampling through a stationary mask");
+		for (const double seconds:{19.8,19.9,20.0}) { host.ClearSamples(); animated.Frame(viewport,seconds); }
+		Check(animated.Statistics().frameReplays==1 && !host.imageVertices.empty(),"masked image sampling advances through replay");
+		const auto replayed=host.imageVertices;
+		for (const auto& v:replayed) Check(std::abs(v.u-(-.175f+(v.x-10)/120*2))<.00001f,
+			"every mask coverage cell retains the current bitmap phase");
+		host.replayFrames=false; host.ClearSamples(); animated.Frame(viewport,20);
+		Check(host.imageVertices.size()==replayed.size(),"masked replay preserves normal geometry topology");
+		for (size_t i=0;i<replayed.size();++i) Check(std::abs(replayed[i].u-host.imageVertices[i].u)<.00001f &&
+			std::abs(replayed[i].v-host.imageVertices[i].v)<.00001f && std::abs(replayed[i].a-host.imageVertices[i].a)<.00001f,
+			"masked replay matches the full compositor at the same animation time");
+		host.replayFrames=true;
+	}
+	Check(runtime.PlayTimeline("fade",19.8),"masked image fades independently of UVs");
+	sampleFrame(19.9); pixel(0,.45f*maskAlpha,1,0);
+	Check(!imageMask.ReplaceValue("/root/children/0/children/0/properties/image-scale-y/value","0",diagnostics),"zero image scale is rejected transactionally");
+	Check(imageMask.ReplaceValue("/root/children/0/children/0/properties/width/value","50",diagnostics) &&
+		runtime.LoadDocument(imageMask.Source(),"image-intersection.q4ui",diagnostics),"image covers only part of its mask");
+	sampleFrame(19.9); pixel(0,.5f*maskAlpha,1,0); pixel(1,0,1,0);
+	Check(runtime.Statistics().directMaskDraws==0 && runtime.Statistics().layerPushes>0,"partial intersection uses general masking without drawing outside the image");
+	host.samplePoints.clear(); viewport={};
 	std::ifstream interactionFile(argc > 1 ? argv[1] : "tools/ui/fixtures/interaction-smoke.q4ui",std::ios::binary);
 	Check(interactionFile.good(),"open canonical interaction qualification fixture");
 	const std::string interactionSource((std::istreambuf_iterator<char>(interactionFile)),std::istreambuf_iterator<char>());
@@ -1219,5 +1612,8 @@ int main(int argc, char** argv) {
 	CheckSoftFocus(host);
 	CheckSpeedStreak(host);
 	CheckRetainedMeshes(host);
+	CheckFrameReplay(host);
+	CheckCoverageRaster();
+	CheckHiddenPresentation(host);
 	std::puts("Retained UI: density, layout, input, clipping, motion, bindings, independent contexts, bounded backend reuse, transactional instance snapshots, restart, completion programs, soft focus and retained meshes passed");
 }

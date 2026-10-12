@@ -12,3 +12,17 @@ traversal passes it through recursive calls, so rejecting masked candidates also
 exposes eligible elements behind them. Callers without a predicate retain the
 original behavior. The predicate must not mutate the tree; openQ4 uses it to
 evaluate ancestor mask geometry and semantic input eligibility in document space.
+
+`hidden-presentation-update.patch` adds a first-party optional presentation
+update mode, under the same MIT license. It updates a hidden parent's own style
+but defers its `display:none` descendants until that parent is shown. openQ4
+opts in only for canonical presentation documents with externally advanced
+timelines and no controls, scrollbars, modals or pointer interaction. Ordinary
+RmlUi contexts, CSS animations and widgets retain full updates. No authored
+animation time is paused, and reveal resolves pending child styles before layout.
+
+`suppressed-presentation-render.patch` adds a first-party, MIT-licensed optional
+element paint predicate. openQ4 skips canonical local stacking contexts whose
+isolated opacity is exactly zero, before traversing or compiling their artwork.
+Layout, input and updates remain active, and ordinary RmlUi elements render as
+before. A revealed subtree renders its current properties and animation phase.

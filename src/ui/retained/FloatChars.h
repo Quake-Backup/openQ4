@@ -14,6 +14,9 @@ namespace openq4::ui {
 // arithmetic keeps every result independent of the process locale, the
 // rounding mode and FTZ/DAZ. chars_format::hex fails with invalid_argument.
 // As the standard specifies, from_chars leaves value untouched on any error.
+// MSVC's integer-based formatter supplies the same output contract without the
+// portable codec's big-integer work on every animated CSS value. Other standard
+// libraries retain the portable path, including the macOS 11 deployment floor.
 inline std::to_chars_result FloatToChars(char* first, char* last, double value) noexcept;
 inline std::to_chars_result FloatToChars(char* first, char* last, double value, std::chars_format format) noexcept;
 inline std::to_chars_result FloatToChars(char* first, char* last, double value, std::chars_format format, int precision) noexcept;
@@ -408,15 +411,27 @@ inline std::from_chars_result Parse(const char* first, const char* last, double&
 } // namespace float_chars_detail
 
 inline std::to_chars_result FloatToChars(char* first, char* last, double value) noexcept {
+#if defined(_MSC_VER)
+	return std::to_chars(first,last,value);
+#else
 	return float_chars_detail::Shortest(first,last,value,float_chars_detail::Style::Plain);
+#endif
 }
 inline std::to_chars_result FloatToChars(char* first, char* last, double value, std::chars_format format) noexcept {
 	if (!float_chars_detail::ValidFormat(format)) return {first,std::errc::invalid_argument};
+#if defined(_MSC_VER)
+	return std::to_chars(first,last,value,format);
+#else
 	return float_chars_detail::Shortest(first,last,value,float_chars_detail::FormatStyle(format));
+#endif
 }
 inline std::to_chars_result FloatToChars(char* first, char* last, double value, std::chars_format format, int precision) noexcept {
 	if (!float_chars_detail::ValidFormat(format)) return {first,std::errc::invalid_argument};
+#if defined(_MSC_VER)
+	return std::to_chars(first,last,value,format,precision);
+#else
 	return float_chars_detail::Precise(first,last,value,float_chars_detail::FormatStyle(format),precision);
+#endif
 }
 inline std::from_chars_result FloatFromChars(const char* first, const char* last, double& value, std::chars_format format) noexcept {
 	return float_chars_detail::Parse(first,last,value,format);

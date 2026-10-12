@@ -3,6 +3,9 @@
 
 #include "../Projectile.h"
 
+// Authored offsets are world-space additions to the target's bounds center.
+idVec3 AwakeningProjectileTargetPoint( const idEntity *ent );
+
 /*
 ===============================================================================
 

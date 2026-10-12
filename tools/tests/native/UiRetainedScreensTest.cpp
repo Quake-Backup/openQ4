@@ -29,6 +29,8 @@ struct ScreenHost final : Host {
 	std::set<std::string> missingMaterials;
 	std::uintptr_t multiply = 7;
 	bool reducedMotion = false;
+	bool cacheLayers = false;
+	bool CanCacheLayers() const override { return cacheLayers; }
 	int errors = 0;
 	std::uint32_t activeLayer = 0;
 	std::uint64_t frame = 1;
@@ -49,7 +51,8 @@ struct ScreenHost final : Host {
 		{"cl_player_visibility_enemy_color",std::string("1 0.12 0.05")},{"cl_player_visibility_team_color",std::string("1 0.12 0.05")},
 		{"cl_player_brightskin_enemy_color",std::string("1 0.05 0.02")},{"cl_player_brightskin_team_color",std::string("1 0.05 0.02")},
 		// The HUD settings (section 13.9) at their defaults.
-		{"ui_hudOpacity",1.0},{"ui_hudDamageDirection",true},{"ui_hudPickups",true},{"ui_hudWeaponStrip",true}};
+		{"ui_hudOpacity",1.0},{"ui_hudDamageDirection",true},{"ui_hudPickups",true},{"ui_hudWeaponStrip",true},
+		{"ui_reducedFlashing",false}};
 	bool ReadCVar(const std::string& name, size_t type, StateValue& value) override {
 		if (type == 2 && name == "sys_lang") { value = language; return true; }
 		if (const auto found = cvars.find(name); found != cvars.end()) {
@@ -95,7 +98,19 @@ struct ScreenHost final : Host {
 	}
 	void MaskLayer(std::uint32_t, std::uint32_t destination, const Bounds&) override { activeLayer = destination; }
 	void EndLayer(std::uint32_t restore) override { activeLayer = restore; }
-	FontMetrics GetFontMetrics(const std::string&, int size) override { return {size*.8f,size*.2f,size*1.2f,size*.5f}; }
+	struct LegacyRequest { std::string text,family; float scale,width,height; int align; bool clip; };
+    std::vector<LegacyRequest> legacyRequests;
+    bool LayoutLegacyText(const std::string& text,const std::string& family,float scale,float width,float height,int align,bool clip,
+        std::vector<HudPrimitive>& output) override {
+        legacyRequests.push_back({text,family,scale,width,height,align,clip});
+        for (size_t i=0;i<text.size();++i) {
+            HudPrimitive item; item.material="test-font"; item.glyph=true;
+            const float x=width-float(text.size()-i)*10;
+            item.quad={x,2,x+10,2,x+10,22,x,22}; output.push_back(item);
+        }
+        return true;
+    }
+    FontMetrics GetFontMetrics(const std::string&, int size) override { return {size*.8f,size*.2f,size*1.2f,size*.5f}; }
 	std::set<std::uint32_t> glyphs;   // every code point the runtime asked to draw or measure
 	Glyph GetGlyph(const std::string&, int size, std::uint32_t codepoint) override {
 		glyphs.insert(codepoint);
@@ -1372,38 +1387,86 @@ static void CheckScopes(ScreenHost& host, char** paths) {
 	host.softFocus = false;
 }
 
-static void CheckViewEffects(ScreenHost& host, const char* path) {
-	Runtime runtime(host); std::vector<Diagnostic> diagnostics; std::string error; Runtime::EventEffects effects;
-	const bool loaded = runtime.Initialize() && runtime.LoadDocument(Read(path),"guis/continuity.q4ui",diagnostics);
-	for (const auto& d : diagnostics) std::fprintf(stderr,"%s %s\n",d.pointer.c_str(),d.message.c_str());
-	Check(loaded,"game effects load in the native runtime");
-	Viewport viewport; viewport.canvasHeight = 720; viewport.canvasMinWidth = 960;
-	host.softFocus = true; Check(runtime.SetState({{"death_amount",1.0}},error,0),"death input accepts full amount");
-	for (const auto size : {std::pair{1280,720},std::pair{2560,1080},std::pair{720,1280}}) {
-		viewport.width = size.first; viewport.height = size.second; host.softened.clear(); host.draws.clear(); runtime.Frame(viewport,1);
-		Bounds bounds; Check(runtime.GetBounds("screen",bounds) && Near(bounds.width,float(size.first)) && Near(bounds.height,float(size.second)),"game effects fill wide and tall views");
-		Check(!host.softened.empty() && Near(host.softened.back().saturation,.06f,.001f),"death grades the scene below the HUD");
+static void CheckContinuity(ScreenHost& host, char** paths, const char* campaignPath, bool effectsOnly = false) {
+	for (int kind = effectsOnly ? 2 : 0; kind < 3; ++kind) {
+		Runtime runtime(host); std::vector<Diagnostic> diagnostics; std::string error; Runtime::EventEffects effects;
+		const bool loaded = runtime.Initialize() && runtime.LoadDocument(Read(paths[kind]),"guis/continuity.q4ui",diagnostics);
+		for (const auto& d : diagnostics) std::fprintf(stderr,"%s %s\n",d.pointer.c_str(),d.message.c_str());
+		Check(loaded,"initialization, fourth-level and game effects load in the native runtime");
+		Viewport viewport; viewport.canvasHeight = 720; viewport.canvasMinWidth = 960;
+		if (kind == 0) Check(runtime.RunEvent("onInit",0,effects,error),"initialization starts its presentation timelines");
+		if (kind == 1) Check(runtime.RunEvent("onActivate",0,effects,error),"fourth-level arrival starts");
+		if (kind == 2) { host.softFocus = true; Check(runtime.SetState({{"death_amount",1.0}},error,0),"death input accepts full amount"); }
+		for (const auto size : {std::pair{1280,720},std::pair{2560,1080},std::pair{720,1280}}) {
+			viewport.width = size.first; viewport.height = size.second; host.softened.clear(); host.draws.clear(); runtime.Frame(viewport,1);
+			Bounds bounds; Check(runtime.GetBounds("screen",bounds) && Near(bounds.width,float(size.first)) && Near(bounds.height,float(size.second)),"all continuity screens fill wide and tall views");
+			if (kind == 0) {
+				Check(runtime.GetBounds("canvas",bounds) && Near(bounds.width,960*viewport.DpRatio()) && Near(bounds.x+bounds.width/2,size.first/2.f),"initialization keeps its isotropic center");
+			} else if (kind == 1) {
+				Check(runtime.GetBounds("back",bounds) && bounds.y >= 0 && bounds.y+bounds.height <= size.second,"the skill screen's last action remains in view");
+				Check(Near(float(runtime.PresentedValue("band-top","transform")->data[0]),775.5f,.01f),"fourth level uses the next 97 u band step");
+			} else Check(!host.softened.empty() && Near(host.softened.back().saturation,.06f,.001f),"death grades the scene below the HUD");
+		}
+		if (kind == 0) {
+			viewport.width = 3840; viewport.height = 2160; host.draws.clear(); runtime.Frame(viewport,1.5);
+			size_t vertices = 0; for (const auto& draw : host.draws) vertices += draw.vertices.size();
+			std::fprintf(stderr,"Initialization at 4K: %zu vertices\n",vertices);
+			Check(vertices * 64 < 30 * 1024 * 1024,"initialization leaves room for the terminal fade inside Vulkan's geometry ring at 4K");
+			runtime.SetReducedMotion(true,2); host.reducedMotion = true;
+			Check(runtime.RunEvent("onInit",2,effects,error),"reduced-motion initialization starts"); runtime.Frame(viewport,2.2);
+			Check(Near(float(runtime.PresentedValue("sweep","transform")->data[4]),-38,.01f) && runtime.PresentedValue("ember-0","display")->text == "none", "reduced motion holds a fixed key light and omits sparks");
+			host.reducedMotion = false;
+		} else if (kind == 1) {
+			Check(runtime.RunEvent("detailLeave",2,effects,error),"fourth level returns to its parent"); runtime.Frame(viewport,2.3);
+			Check(Near(float(runtime.PresentedValue("band-top","transform")->data[0]),630,.01f) && Near(float(runtime.PresentedValue("crumb1","transform")->data[2]),1,.001f),"return restores the parent title and band");
+			Check(runtime.RunEvent("onDeactivate",3,effects,error) && runtime.RunEvent("onActivate",3.1,effects,error),"cached detail document can reopen"); runtime.Frame(viewport,3.3);
+			Check(Near(float(runtime.PresentedValue("band-top","transform")->data[0]),775.5f,.01f) && runtime.PresentedValue("title","opacity")->data[0] == 1,"reopening has no stale departure pose");
+		} else {
+			Check(runtime.SetState({{"death_amount",.2},{"death_focus",1.0},{"death_tunnel",.5}},error,1.1),"death focus swell accepts its own envelope");
+			host.softened.clear(); runtime.Frame(viewport,1.1);
+			Check(host.softened.size() == 1 && Near(host.softened[0].sigma,5.18f*viewport.DpRatio(),.01f),"death swell shares one scene filter with desaturation");
+			Check(runtime.SetState({{"death_amount",0.0},{"death_focus",0.0},{"death_tunnel",0.0},{"crash_focus",.6},{"crash_lids",.8}},error,1.2),"crash focus and eyelids follow independent fade envelopes");
+			host.softened.clear(); runtime.Frame(viewport,1.2);
+			Check(host.softened.size() == 1 && Near(host.softened[0].sigma,9.6f*viewport.DpRatio(),.01f) &&
+				Near(host.softened[0].saturation,.772f,.001f),"crash uses warmer, less desaturated scene focus than death");
+			Bounds eyelids; Check(runtime.GetBounds("crash-eyelids",eyelids) && Near(eyelids.width,float(viewport.width)) &&
+				Near(eyelids.height,float(viewport.height)),"soft eyelids fill the viewport without a letterbox crop");
+			Check(runtime.SetState({{"crash_focus",0.0},{"crash_lids",0.0}},error,1.3),"crash fades retire before recovery or gameplay");
+			Check(runtime.SetState({{"death_amount",0.0},{"recovery_amount",1.0}},error,2),"recovery is independent of death"); host.softened.clear(); runtime.Frame(viewport,2);
+			Check(!host.softened.empty() && Near(host.softened.back().sigma,20*viewport.DpRatio(),.01f),"recovery starts with soft acuity");
+			Check(runtime.SetState({{"recovery_amount",0.0}},error,3),"recovery completes"); host.softened.clear(); runtime.Frame(viewport,3);
+			Check(host.softened.empty(),"no inactive game-effect backdrop passes");
+			for (const auto size : {std::pair{1280,720},std::pair{2560,720},std::pair{540,960}}) {
+				viewport.width = size.first; viewport.height = size.second;
+				Check(runtime.SetState({{"wheel_amount",.5}},error,4),"wheel focus fades independently of death and recovery");
+				host.softened.clear(); runtime.Frame(viewport,4);
+				Check(host.softened.size() == 1 && Near(host.softened[0].sigma,4*viewport.DpRatio(),.01f) &&
+					Near(host.softened[0].saturation,.97f,.001f),"one gentle Gaussian scene pass at partial wheel blend");
+				Bounds bounds; Check(runtime.GetBounds("wheel-focus",bounds) && Near(bounds.width,float(size.first)) &&
+					Near(bounds.height,float(size.second)),"wheel focus covers the entire wide or tall viewport");
+				Check(runtime.SetState({{"wheel_amount",1.0}},error,5),"wheel reaches full focus");
+				host.softened.clear(); runtime.Frame(viewport,5);
+				Check(host.softened.size() == 1 && Near(host.softened[0].sigma,8*viewport.DpRatio(),.01f),"full wheel uses an eight dp Gaussian sigma");
+				Check(runtime.SetState({{"wheel_amount",0.0}},error,6),"wheel release clears focus");
+				host.softened.clear(); runtime.Frame(viewport,6);
+				Check(host.softened.empty(),"closed wheel costs no scene filter pass");
+			}
+			host.softFocus = false;
+		}
 	}
-	Check(runtime.SetState({{"death_amount",0.0},{"recovery_amount",1.0}},error,2),"recovery is independent of death"); host.softened.clear(); runtime.Frame(viewport,2);
-	Check(!host.softened.empty() && Near(host.softened.back().sigma,20*viewport.DpRatio(),.01f),"recovery starts with soft acuity");
-	Check(runtime.SetState({{"recovery_amount",0.0}},error,3),"recovery completes"); host.softened.clear(); runtime.Frame(viewport,3);
-	Check(host.softened.empty(),"no inactive game-effect backdrop passes");
-	for (const auto size : {std::pair{1280,720},std::pair{2560,720},std::pair{540,960}}) {
-		viewport.width = size.first; viewport.height = size.second;
-		Check(runtime.SetState({{"wheel_amount",.5}},error,4),"wheel focus fades independently of death and recovery");
-		host.softened.clear(); runtime.Frame(viewport,4);
-		Check(host.softened.size() == 1 && Near(host.softened[0].sigma,4*viewport.DpRatio(),.01f) &&
-			Near(host.softened[0].saturation,.97f,.001f),"one gentle Gaussian scene pass at partial wheel blend");
-		Bounds bounds; Check(runtime.GetBounds("wheel-focus",bounds) && Near(bounds.width,float(size.first)) &&
-			Near(bounds.height,float(size.second)),"wheel focus covers the entire wide or tall viewport");
-		Check(runtime.SetState({{"wheel_amount",1.0}},error,5),"wheel reaches full focus");
-		host.softened.clear(); runtime.Frame(viewport,5);
-		Check(host.softened.size() == 1 && Near(host.softened[0].sigma,8*viewport.DpRatio(),.01f),"full wheel uses an eight dp Gaussian sigma");
-		Check(runtime.SetState({{"wheel_amount",0.0}},error,6),"wheel release clears focus");
-		host.softened.clear(); runtime.Frame(viewport,6);
-		Check(host.softened.empty(),"closed wheel costs no scene filter pass");
+	if (effectsOnly) return;
+	Runtime parent(host); std::vector<Diagnostic> diagnostics; std::string error; Runtime::EventEffects effects; Viewport viewport;
+	Check(parent.Initialize() && parent.LoadDocument(Read(campaignPath),"guis/menu/campaigns.q4ui",diagnostics),"campaign parent loads for detail continuity");
+	Check(parent.RunEvent("onActivate",0,effects,error),"campaign parent activates"); parent.Frame(viewport,.2);
+	double at = 1;
+	for (const char* event : {"detailEnterQuake4","detailEnterAwakening"}) {
+		Check(parent.RunEvent(event,at,effects,error),"both campaigns descend through the same detail transition"); parent.Frame(viewport,at+.15);
+		const float partial = float(parent.PresentedValue("band-top","transform")->data[0]);
+		Check(partial > 630 && partial < 775.5f,"detail band moves between its parent and child levels");
+		Check(parent.RunEvent("detailReverse150",at+.15,effects,error),"Back reverses an in-flight fourth level"); parent.Frame(viewport,at+.31);
+		Check(Near(float(parent.PresentedValue("band-top","transform")->data[0]),630,.01f) && parent.PresentedValue("detail-carry","opacity")->data[0] == 0,"reversal restores the parent without a carried title");
+		at += 2;
 	}
-	host.softFocus = false;
 }
 
 static void CheckWeaponWheels(ScreenHost& host, char** paths) {
@@ -1413,6 +1476,7 @@ static void CheckWeaponWheels(ScreenHost& host, char** paths) {
 		for (const auto& d:diagnostics) std::fprintf(stderr,"wheel %s: %s\n",d.pointer.c_str(),d.message.c_str());
 		Check(loaded,"native wheel document loads");
 		const int slots = variant % 2 ? 13 : 11;
+		const bool strogg = variant >= 2;
 		StateValues state = {{"blend",1.0},{"selected",2.0},{"weaponName",std::string("Shotgun")},{"ammo",std::string("8 / 24")}};
 		for (int i=0;i<slots;++i) {
 			const std::string slot="slot"+std::to_string(i);
@@ -1433,18 +1497,76 @@ static void CheckWeaponWheels(ScreenHost& host, char** paths) {
 				Check(placement && Near(float(placement->data[0]),float(offset),.01f) && Near(float(placement->data[2]),float(fit),.01f),"wheel preserves placement and isotropic safety fit");
 				Check(wheel.PresentedValue("slot4-contents","opacity")->data[0]==0,"unowned weapon content stays hidden");
 				Check(wheel.PresentedValue("slot3-empty","opacity")->data[0]==1,"empty ammo prohibition is shown");
-				Check(wheel.PresentedValue("slot2-cell3","opacity")->data[0]==1 && wheel.PresentedValue("slot2-cell4","opacity")->data[0]==0,"half reserve fills exactly four cells");
+				if (strogg) {
+					Check(wheel.PresentedValue("slot2-cell3","opacity")->data[0]==1 && wheel.PresentedValue("slot2-cell4","opacity")->data[0]==0,"half reserve fills exactly four Strogg cells");
+					Check(!wheel.PresentedValue("bezel","opacity") && wheel.PresentedValue("slot2-circuit","display")->text=="block","Strogg has circuit paths and no Marine tick bezel");
+				} else {
+					const auto fill = wheel.PresentedValue("slot2-band-fill","transform");
+					Check(fill && fill->data[4]<0 && fill->data[4]>-180.0/slots,"half reserve crops the curved fill by length instead of fading an entire cell");
+					Check(Near(float(wheel.PresentedValue("slot2-plate-selected","opacity")->data[0]),.7f,.001f) &&
+						wheel.PresentedValue("slot2-plate-rest","display")->text=="none","the selected black plate has one 70-percent surface");
+				}
+				const auto band = wheel.PresentedValue("slot2-band","transform");
+				Check(band && Near(float(std::hypot(band->data[0],band->data[1])),8,.001f),"selection moves the ammunition band outward with its plate");
 				Check(wheel.PresentedValue("hub-ammo","text")->text=="8 / 24","live clip and reserve reach hub");
 				size_t vertices=0; for(const auto& draw:host.draws) vertices+=draw.vertices.size();
 				Check(vertices*64<48*1024*1024,"wheel leaves half of the Vulkan GUI ring for gameplay");
 			}
 		}
-		Check(wheel.RunEvent("open",2,effects,error),"wheel open transition runs"); wheel.Frame(viewport,2.4);
+		// The direct weapon/chat GUIs receive the same independent HUD scale as
+		// bridged HUDs. Enlarged Couch artwork and inset portrait fitting stay
+		// isotropic; the game-source fixture tests the actual preference clamp.
+		for (const auto size : {std::pair{1280,720},std::pair{405,720}}) {
+			viewport.width=size.first; viewport.height=size.second;
+			const double width=720.0*size.first/size.second, inset=.1;
+			const double fit=std::min(1.25,std::min((width-2*std::max(16.0,width*inset))/560.0,(720-2*720*inset)/560.0));
+			Check(wheel.SetState({{"offset",0.0},{"fit",fit}},error,1.5),"HUD scale and safe inset update the wheel");
+			host.draws.clear();wheel.Frame(viewport,1.5);
+			const auto placement=wheel.PresentedValue("wheel-center","transform");
+			Check(placement && Near(float(placement->data[2]),float(fit),.001f) && Near(float(placement->data[3]),float(fit),.001f),"HUD scaling keeps the wheel round in wide and portrait views");
+		}
+		Check(wheel.RunEvent("open",2,effects,error),"wheel open transition runs"); wheel.Frame(viewport,2.02);
+		if (strogg) {
+			Check(wheel.PresentedValue("slot5-entry","opacity")->data[0]==1 && wheel.PresentedValue("slot1-entry","opacity")->data[0]==0,"Strogg plates boot in scrambled order");
+			Check(wheel.PresentedValue("hub-name-rune","color")->data[3]>.7 && wheel.PresentedValue("hub-name","color")->data[3]==0,"Strogg opens in runes before translating");
+		} else {
+			const auto hub=wheel.PresentedValue("hub","transform");
+			Check(hub && hub->data[2]>.55 && hub->data[2]<1 && hub->data[3]>.06 && hub->data[3]<.4,"Marine hub opens from its measured slit");
+			Check(wheel.PresentedValue("slot0-entry","transform")->data[2]<1 && wheel.PresentedValue("slot0-entry","opacity")->data[0]<1,"Marine plates actually grow and fade from their authored start");
+			wheel.Frame(viewport,2.15);
+			Check(Near(float(wheel.PresentedValue("hub-torn","opacity")->data[0]),.4f,.001f),"Marine static reaches the written 0.40 peak at 150ms");
+		}
+		wheel.Frame(viewport,2.8);
 		Check(wheel.PresentedValue("slot0-entry","opacity")->data[0]==1,"opening finishes fully visible");
+		Check(wheel.SetState({{"selected",3.0},{"weaponName",std::string("HYPERBLASTER")}},error,2.9),"another weapon is selected");
+		Check(wheel.RunEvent("selection",2.9,effects,error),"selection transition runs"); wheel.Frame(viewport,2.92);
+		if (strogg) {
+			Check(wheel.PresentedValue("hub-name-rune","color")->data[3]>.7 && wheel.PresentedValue("hub-name","color")->data[3]==0,"a changed Strogg name restarts its translation");
+		} else {
+			Check(wheel.PresentedValue("hub-name","opacity")->data[0]<.25 && wheel.PresentedValue("hub-name-clip","height")->data[0]<10,"Marine selection visibly retunes through a line rather than retargeting 1 to 1");
+			Check(wheel.PresentedValue("selection-flash","opacity")->data[0]>.7,"Marine selection flashes the selected ring");
+		}
 		Check(wheel.RunEvent("close",3,effects,error),"wheel close transition runs"); wheel.Frame(viewport,3.2);
 		Check(wheel.PresentedValue("slot0-entry","opacity")->data[0]==0,"closing removes the plates");
 		wheel.SetReducedMotion(true,4); Check(wheel.RunEvent("open",4,effects,error),"reduced-motion open runs");wheel.Frame(viewport,4.09);
 		Check(wheel.PresentedValue("slot0-entry","opacity")->data[0]==1,"reduced motion finishes within 80ms");
+		Check(wheel.RunEvent("selection",4.1,effects,error),"reduced-motion selection runs"); wheel.Frame(viewport,4.19);
+		if (strogg) {
+			Check(wheel.PresentedValue("hub-name-rune","color")->data[3]==0 && wheel.PresentedValue("hub-name","color")->data[3]==1 &&
+				wheel.PresentedValue("hub-scan","opacity")->data[0]==0,"reduced motion leaves the translated name without a scan bar");
+		} else {
+			Check(wheel.PresentedValue("hub-name","opacity")->data[0]==1 && wheel.PresentedValue("selection-flash","opacity")->data[0]==0,"reduced motion settles the name with no flash");
+			Check(wheel.SetState({{"mp",true},{"team",1.0}},error,4.2),"team identity updates");wheel.Frame(viewport,4.2);
+			Check(wheel.PresentedValue("bezel-team1","display")->text=="block" && wheel.PresentedValue("hub-rings-team1","display")->text=="block" &&
+				wheel.PresentedValue("pointer-team1","display")->text=="block" && wheel.PresentedValue("bezel-olive","display")->text=="none","team colour reaches the bezel, hub and pointer together");
+		}
+		Check(wheel.SetState({{"ammo",std::string("\xE2\x88\x9E")},{"slot0.count",-1.0}},error,4.3),"infinite ammunition updates");wheel.Frame(viewport,4.3);
+		Check(wheel.PresentedValue("slot0-band","display")->text=="none" && wheel.PresentedValue("hub-infinity","display")->text=="block","unlimited weapons have no false reserve gauge and an explicit infinity readout");
+		wheel.SetReducedMotion(false,4.4);
+		host.cvars["ui_reducedFlashing"]=true;
+		Check(wheel.RunEvent("open",4.4,effects,error),"reduced flashing applies independently of reduced motion");wheel.Frame(viewport,4.55);
+		Check(wheel.PresentedValue(strogg ? "slot0-boot-flash-safe" : "hub-ring-flash","display")->text=="none","reduced flashing suppresses the family's bright boot flash");
+		host.cvars["ui_reducedFlashing"]=false;
 		host.draws.clear();
 	}
 }
@@ -1480,10 +1602,10 @@ static void CheckQuickChat(ScreenHost& host, const char* path) {
 		right.x > top.x,"the first phrase sits at the top and the third on the right");
 	Check(chat.GetBounds("phrase3-text",label) && label.height <= 48*fit+.5f && label.width <= 112*fit+.5f,"a phrase fits its segment");
 	// Deathmatch: the stock olive selection and pointer, ALL, no channel switch.
-	Check(Near(opacity("phrase2-selected-olive"),1) && Near(opacity("phrase2-selected-team0"),0) && Near(opacity("phrase0-selected-olive"),0),
+	Check(shown("slot2-selected") && shown("slot2-selected-olive") && !shown("slot2-selected-team0") && !shown("slot0-selected"),
 		"the selection lights its segment in the stock olive");
-	Check(Near(opacity("pointer-olive"),1) && Near(opacity("pointer-team0"),0),"the olive pointer faces the selection");
-	const auto pointer = chat.PresentedValue("pointer-olive","transform");
+	Check(shown("pointer") && shown("pointer-olive") && !shown("pointer-team0"),"the olive pointer faces the selection");
+	const auto pointer = chat.PresentedValue("pointer","transform");
 	Check(pointer && Near(float(pointer->data[4]),90),"the pointer turns 45 degrees a phrase");
 	Check(shown("hub-all") && !shown("hub-team0") && !shown("hub-team1") && !shown("hub-hint"),"deathmatch names ALL without a switch");
 	// A team game: TEAM in your team's text color and the zoom key's switch.
@@ -1492,30 +1614,30 @@ static void CheckQuickChat(ScreenHost& host, const char* path) {
 	const auto key = chat.PresentedValue("hub-key","text");
 	Check(!shown("hub-all") && shown("hub-team0") && !shown("hub-team1") && shown("hub-hint") && key && key->text == "MOUSE2",
 		"a Marine names TEAM in the Marine color with the switch on the zoom key");
-	Check(Near(opacity("phrase2-selected-team0"),1) && Near(opacity("phrase2-selected-olive"),0) && Near(opacity("pointer-team0"),1),
+	Check(shown("slot2-selected-team0") && !shown("slot2-selected-olive") && shown("pointer-team0"),
 		"the selection takes the Marine text color");
 	Check(chat.SetState({{"team",1.0}},error,.3),error.c_str());
 	chat.Frame(viewport,.35);
-	Check(shown("hub-team1") && !shown("hub-team0") && Near(opacity("phrase2-selected-team1"),1),"a Strogg names TEAM in the Strogg color");
+	Check(shown("hub-team1") && !shown("hub-team0") && shown("slot2-selected-team1"),"a Strogg names TEAM in the Strogg color");
 	Check(chat.SetState({{"channel",0.0}},error,.4),error.c_str());
 	chat.Frame(viewport,.45);
 	Check(shown("hub-all") && !shown("hub-team1") && shown("hub-hint"),"the team game can switch to ALL");
 	// No selection: no lit segment and no pointer.
 	Check(chat.SetState({{"selected",-1.0}},error,.5),error.c_str());
 	chat.Frame(viewport,.55);
-	Check(Near(opacity("phrase2-selected-team1"),0) && Near(opacity("pointer-team1"),0) && Near(opacity("phrase2-text"),.6f),
+	Check(!shown("slot2-selected") && !shown("pointer") && Near(opacity("phrase2-text"),.6f),
 		"an unselected wheel lights nothing");
 	size_t vertices=0; for (const auto& draw:host.draws) vertices+=draw.vertices.size();
 	Check(vertices*64<48*1024*1024,"the wheel leaves half of the Vulkan GUI ring for gameplay");
 	// Transitions as the weapon wheel's; a new channel re-tunes the word.
 	Check(chat.RunEvent("open",1,effects,error),"the open transition runs"); chat.Frame(viewport,1.4);
-	Check(Near(opacity("phrase7-entry"),1),"opening finishes fully visible");
+	Check(Near(opacity("slot7-entry"),1),"opening finishes fully visible");
 	Check(chat.RunEvent("channel",1.5,effects,error),"the channel transition runs"); chat.Frame(viewport,1.55);
-	Check(opacity("hub-all") < 1,"the channel word re-tunes");
+	Check(opacity("hub-name") < 1,"the channel word re-tunes");
 	Check(chat.RunEvent("close",2,effects,error),"the close transition runs"); chat.Frame(viewport,2.2);
-	Check(Near(opacity("phrase0-entry"),0),"closing removes the plates");
+	Check(Near(opacity("slot0-entry"),0),"closing removes the plates");
 	chat.SetReducedMotion(true,3); Check(chat.RunEvent("open",3,effects,error),"the reduced-motion open runs"); chat.Frame(viewport,3.09);
-	Check(Near(opacity("phrase7-entry"),1),"reduced motion finishes within 80 ms");
+	Check(Near(opacity("slot7-entry"),1),"reduced motion finishes within 80 ms");
 	Check(host.errors == 0,"no runtime diagnostics across the quick-chat exercise");
 }
 
@@ -1525,6 +1647,17 @@ static void CheckQuickChat(ScreenHost& host, const char* path) {
 #include "UiRemasteredHudChecks.inl"
 #include "UiRetainedSummaryChecks.inl"
 int main(int argc, char** argv) {
+ if (argc == 3 && std::string(argv[1]) == "--view-effects") {
+     ScreenHost host; char* paths[] = {nullptr,nullptr,argv[2]};
+     CheckContinuity(host,paths,nullptr,true);
+     Check(host.errors == 0,"no retained view-effect diagnostics");
+     std::printf("retained view effects: %d checks passed\n",checks); return 0;
+ }
+ if (argc == 6 && std::string(argv[1]) == "--weapon-wheels") {
+     ScreenHost host; CheckWeaponWheels(host,argv+2);
+     Check(host.errors == 0,"no retained wheel diagnostics");
+     std::printf("weapon wheels: %d checks passed\n",checks); return 0;
+ }
  if (argc == 3 && std::string(argv[1]) == "--summary") {
      ScreenHost host; CheckSummary(host,argv[2]);
      std::printf("retained summary: %d checks passed\n",checks); return 0;
@@ -1535,6 +1668,10 @@ int main(int argc, char** argv) {
  }
  if (argc >= 3 && std::string(argv[1]) == "--hud-bench") {
      for (int i = 2; i < argc; ++i) BenchRemasteredHud(argv[i]);
+     return 0;
+ }
+ if (argc >= 3 && std::string(argv[1]) == "--hud-audio-bench") {
+     for (int i = 2; i < argc; ++i) BenchHudAudio(argv[i]);
      return 0;
  }
  if (argc >= 3 && std::string(argv[1]) == "--remastered") {
@@ -1562,7 +1699,7 @@ int main(int argc, char** argv) {
      Check(host.errors == 0,"no retained status diagnostics");
      std::printf("retained status bar: %d checks passed\n",checks); return 0;
  }
- Check(argc == 17,"usage: title pause loading pause_strogg singleplayer campaigns mp_escape mp_welcome machinegun railgun nailgun effects wheel_marine wheel_marine_awakening wheel_strogg wheel_strogg_awakening");
+ Check(argc == 19,"usage: title pause loading pause_strogg singleplayer campaigns mp_escape mp_welcome machinegun railgun nailgun initialization skill effects wheel_marine wheel_marine_awakening wheel_strogg wheel_strogg_awakening");
 	CheckSchema();
 	ScreenHost host;
 	CheckTransformedClip(host);
@@ -1635,9 +1772,11 @@ int main(int argc, char** argv) {
 		Check(runtime.SetState({{"pointer_x",1.0},{"pointer_y",-0.5}},error,11.5),"publish the pointer");
 		runtime.Frame(viewport,11.6);
 		const auto backdrop = runtime.PresentedValue("depth-backdrop","transform");
-		const auto frameLean = runtime.PresentedValue("depth-frame","transform");
 		Check(backdrop && Near(static_cast<float>(backdrop->data[0]),-6,.01f) && Near(static_cast<float>(backdrop->data[1]),3,.01f) &&
-			frameLean && Near(static_cast<float>(frameLean->data[0]),-1.98f,.01f),"the layers lean away from the pointer, deeper further");
+			!runtime.PresentedValue("depth-frame","transform"),"the scene leans while vector furniture stays anchored");
+		Check(runtime.SetState({{"pointer_x",.913},{"pointer_y",-.417}},error,11.61),"move scene by a fractional pixel");
+		runtime.Frame(viewport,11.62);
+		Check(runtime.Statistics().vectorPathsCompiled == 1,"pointer motion does not retessellate vector furniture");
 		host.reducedMotion = true;
 		runtime.Frame(viewport,11.7);
 		const auto still = runtime.PresentedValue("depth-backdrop","transform");
@@ -2254,12 +2393,24 @@ int main(int argc, char** argv) {
 		Runtime runtime(host);
 		Check(runtime.Initialize() && runtime.LoadDocument(source,"guis/loading/loading.q4ui",diagnostics),"loading loads into a runtime");
 		Viewport viewport; viewport.canvasHeight = 720;
+		viewport.canvasMinWidth = 960;
+		for (const auto size : {std::pair{1280,360},std::pair{360,640}}) {
+			viewport.width = size.first; viewport.height = size.second; runtime.Frame(viewport,.5);
+			Bounds objectives, identity, progress;
+			const float scale = viewport.DpRatio();
+			Check(runtime.GetBounds("objectives",objectives) && Near(objectives.x,27*scale),"loading objectives stay on the leading virtual screen");
+			Check(runtime.GetBounds("identity",identity) && Near(identity.x+identity.width,static_cast<float>(viewport.width)),"loading identity stays on the trailing virtual screen");
+			Check(runtime.GetBounds("progress",progress) && Near(progress.x+progress.width,static_cast<float>(viewport.width)) &&
+				Near(progress.y+progress.height,static_cast<float>(viewport.height)),"loading progress follows the bottom trailing corner in wide and tall views");
+			host.draws.clear();
+		}
+		viewport.width = 1280; viewport.height = 720;
 		std::string error;
 		Check(runtime.SetState({{"map_loading",0.5},{"loading_levelshot",std::string("gfx/guis/loadscreens/airdefense1")}},error,1),"publish progress");
 		runtime.Frame(viewport,1);
 		Bounds fill, labelSp, labelMp;
-		// Remastered: a 240 u bar (360 dp) from 392 u, 160 px into a 16:9 view.
-		Check(runtime.GetBounds("progress-fill-clip",fill) && Near(fill.width,360*.5f,1.5f) && Near(fill.x,160+588,1.5f),
+		// Remastered: a 240 u bar (360 dp), 8 u from the right virtual edge.
+		Check(runtime.GetBounds("progress-fill-clip",fill) && Near(fill.width,360*.5f,1.5f) && Near(fill.x,1280-960+588,1.5f),
 			"the bar fills with map_loading");
 		const auto percent = runtime.PresentedValue("progress-percent-value","text");
 		Check(percent && percent->text == "50","the percentage follows map_loading");
@@ -2311,7 +2462,7 @@ int main(int argc, char** argv) {
 		Check(card && card->text == "block" && mode && mode->text == "Deathmatch","multiplayer shows the server card");
 		const auto joining = runtime.PresentedValue("progress-prompt-text","text");
 		Check(joining && joining->text == "#str_230037","a finished multiplayer load reads JOINING");
-		Check(runtime.GetBounds("server-card",cardBox) && Near(cardBox.x,160+27) && cardBox.y+cardBox.height <= 582,
+		Check(runtime.GetBounds("server-card",cardBox) && Near(cardBox.x,27) && cardBox.y+cardBox.height <= 582,
 			"the card stands on the leading side above the bracket and the band");
 		Check(runtime.GetBounds("progress-prompt-text",labelMp) && Near(labelSp.y,labelMp.y),"the band and the bar stay low");
 		// The card stands on 384 u (576 dp) and grows upward with what the
@@ -2337,7 +2488,7 @@ int main(int argc, char** argv) {
 			"the card grows upward by the heads, three rows and the spectators line");
 		Check(runtime.GetBounds("server-team-a-head",headA) && runtime.GetBounds("server-team-b-head",headB) &&
 			runtime.GetBounds("server-team-a",teamA) && runtime.GetBounds("server-roster-extra",extraLine) &&
-			Near(headA.y,cardBox.y+108+4) && Near(headA.x,160+27+15) && Near(headB.x,160+27+15+(375-42)/2.f+12) && Near(headB.y,headA.y) &&
+			Near(headA.y,cardBox.y+108+4) && Near(headA.x,27+15) && Near(headB.x,27+15+(375-42)/2.f+12) && Near(headB.y,headA.y) &&
 			Near(teamA.y,cardBox.y+108+22) && Near(extraLine.y,cardBox.y+108+22+3*16),
 			"the lists stand side by side under their heads, the spectators line beneath them");
 		const auto marineHead = runtime.PresentedValue("server-team-a-head","color");
@@ -2390,7 +2541,7 @@ int main(int argc, char** argv) {
 		const auto full = runtime.PresentedValue("arsenal-11","opacity");
 		Bounds first, eleventh;
 		Check(full && Near(static_cast<float>(full->data[0]),1,.001f) && runtime.GetBounds("arsenal-1",first) &&
-			runtime.GetBounds("arsenal-11",eleventh) && Near(first.x,160+216*1.5f,1) && Near(eleventh.x,first.x,1) &&
+			runtime.GetBounds("arsenal-11",eleventh) && Near(first.x,216*1.5f,1) && Near(eleventh.x,first.x,1) &&
 			Near(eleventh.y-first.y,18*1.5f,1) && Near(first.width,24,1) && first.y >= 426*1.5f,
 			"the second row starts under the first, inside the thick band");
 		Check(std::find(host.materials.begin(),host.materials.end(),"gfx/guis/hud/icons/item_railgun") != host.materials.end(),
@@ -2411,7 +2562,7 @@ int main(int argc, char** argv) {
 		Bounds tipBox, tagBox;
 		Check(tipsShown && tipsShown->text == "block" && halfTip && Near(static_cast<float>(halfTip->data[3]),.35f,.02f) && tipText &&
 			tipText->text == "#str_230052","the first tip fades in over 250 ms");
-		Check(runtime.GetBounds("tip-a",tipBox) && runtime.GetBounds("tip-tag",tagBox) && Near(tipBox.x,160+216*1.5f,1) &&
+		Check(runtime.GetBounds("tip-a",tipBox) && runtime.GetBounds("tip-tag",tagBox) && Near(tipBox.x,216*1.5f,1) &&
 			Near(tipBox.width,168*1.5f,1) && tagBox.y < tipBox.y && tipBox.y+tipBox.height <= 480*1.5f && tipBox.y >= 426*1.5f,
 			"the tip sits under its tag in the thick band, from the riser to the bar");
 		Check(runtime.SetState({{"loading_tip_b",std::string("#str_230053")}},error,10.4) && runtime.PlayTimeline("tipB",10.4),"the next tip");
@@ -2649,8 +2800,8 @@ int main(int argc, char** argv) {
 	CheckSettings(host,argv[7],argv[8]);
 	CheckWelcome(host,argv[8]);
 	CheckScopes(host,argv+9);
-	CheckViewEffects(host,argv[12]);
-	CheckWeaponWheels(host,argv+13);
+	CheckContinuity(host,argv+12,argv[6]);
+	CheckWeaponWheels(host,argv+15);
 	Check(host.errors == 0,"no retained diagnostics");
 	std::printf("retained screens: %d checks passed\n",checks);
 	return 0;

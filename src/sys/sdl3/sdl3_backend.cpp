@@ -1641,6 +1641,14 @@ static float SDL3_NormalizeSignedAxisFloat(Sint16 value) {
 	return normalized;
 }
 
+// A radial selector uses physical direction and its own 35% threshold. Keep
+// this sample before the configurable aiming dead zone, response curve and
+// inversion; applying those first would move the wheel's threshold.
+static void SDL3_PublishRadialStick(Sint16 rawX, Sint16 rawY) {
+	cvarSystem->SetCVarFloat("ui_radialStickX", SDL3_NormalizeSignedAxisFloat(rawX));
+	cvarSystem->SetCVarFloat("ui_radialStickY", SDL3_NormalizeSignedAxisFloat(rawY));
+}
+
 static int SDL3_AxisFloatToJoystickValue(float value) {
 	if (!std::isfinite(value)) {
 		return 0;
@@ -1859,6 +1867,7 @@ static bool SDL3_ShouldSkipRumbleUpdate(Uint16 low, Uint16 high, int now, int un
 
 static void SDL3_ClearJoystickAxisStateUnlocked(void) {
 	memset(s_joystickAxisState, 0, sizeof(s_joystickAxisState));
+	SDL3_PublishRadialStick(0, 0);
 }
 
 static void SDL3_ClearJoystickState(void) {
@@ -1930,6 +1939,9 @@ static void SDL3_UpdateGamepadAxes(int eventTime) {
 	const SDL_GamepadAxis moveAxisY = southpaw ? SDL_GAMEPAD_AXIS_RIGHTY : SDL_GAMEPAD_AXIS_LEFTY;
 	const SDL_GamepadAxis lookAxisX = southpaw ? SDL_GAMEPAD_AXIS_LEFTX : SDL_GAMEPAD_AXIS_RIGHTX;
 	const SDL_GamepadAxis lookAxisY = southpaw ? SDL_GAMEPAD_AXIS_LEFTY : SDL_GAMEPAD_AXIS_RIGHTY;
+	const Sint16 rawLookX = SDL_GetGamepadAxis(s_sdlGamepad, lookAxisX);
+	const Sint16 rawLookY = SDL_GetGamepadAxis(s_sdlGamepad, lookAxisY);
+	SDL3_PublishRadialStick(rawLookX, rawLookY);
 	int moveX = 0;
 	int moveY = 0;
 	int lookX = 0;
@@ -1944,8 +1956,8 @@ static void SDL3_UpdateGamepadAxes(int eventTime) {
 		moveX,
 		moveY);
 	SDL3_NormalizeStickAxes(
-		SDL_GetGamepadAxis(s_sdlGamepad, lookAxisX),
-		SDL_GetGamepadAxis(s_sdlGamepad, lookAxisY),
+		rawLookX,
+		rawLookY,
 		deadZone,
 		in_joystickLookCurve.GetFloat(),
 		1.0f,
@@ -2006,6 +2018,9 @@ static void SDL3_UpdateJoystickAxes(void) {
 	int lookX = 0;
 	int lookY = 0;
 	int up = 0;
+	SDL3_PublishRadialStick(
+		SDL3_GetJoystickAxisOrZero(hasDedicatedLookAxis ? lookAxisX : moveAxisX),
+		SDL3_GetJoystickAxisOrZero(hasDedicatedLookAxis ? lookAxisY : moveAxisY));
 
 	SDL3_NormalizeJoystickAxisPair(
 		moveAxisX,

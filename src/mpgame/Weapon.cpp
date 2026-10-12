@@ -2033,7 +2033,7 @@ void rvWeapon::Restore ( idRestoreGame *savefile ) {
 	const idDeclEntityDef*	def;
 
 	// General
-	if ( savefile->GetOpenQ4SaveGameCompatibilityVersion() == OPENQ4_SAVEGAME_COMPATIBILITY_VERSION ) {
+	if ( savefile->GetOpenQ4SaveGameCompatibilityVersion() >= OPENQ4_SAVEGAME_TYPED_COMPATIBILITY_VERSION ) {
 		savefile->ReadInt( packedStateFlags );
 		wsfl.attack = ( packedStateFlags & BIT( 0 ) ) != 0;
 		wsfl.reload = ( packedStateFlags & BIT( 1 ) ) != 0;

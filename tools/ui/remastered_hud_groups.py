@@ -103,8 +103,8 @@ def weapon_strip(doc: HudDocument, *, strogg: bool = False, awakening: bool = Fa
             colour = list(MP_ITEM_COLOURS[mp_glyph])
             mp_dim = vec_icon(f"{sid}-mpdim", mp_glyph, [*colour, 0.6])
             mp_full = vec_icon(f"{sid}-mpsel", mp_glyph, [*colour, 1.0])
-            doc.show(mp_dim["id"], AND(mp, NOT(selected)))
-            doc.show(mp_full["id"], AND(mp, selected))
+            doc.show(mp_dim["id"], AND(mp, OR(NOT(selected), empty)))
+            doc.show(mp_full["id"], AND(mp, selected, NOT(empty)))
             icons += [mp_dim, mp_full]
         sign = vec(sid + "-noammo", [
             pts_path("ring", [(13 * U + 7.4 * U * math.cos(t * math.pi / 24), 13 * U + 7.4 * U * math.sin(t * math.pi / 24))
@@ -234,17 +234,13 @@ ST_WAVE_RECT = (515.0, 7.0, 41.0, 25.0)
 ST_WAVE_MASK = "M522 8.56H544.5L548.3 30.44H525.9Z"
 
 
-def transmission(doc: HudDocument, *, strogg: bool = False, emblem: str = "radio_rhino", columns: int = 40) -> dict:
+def transmission(doc: HudDocument, *, strogg: bool = False, emblem: str = "radio_rhino") -> dict:
     """The transmission display (14.8): INCOMING / TRANSMISSION on a sheared
-    rounded bar beside the masked additive waveform, here the actual decoded
-    peaks of the playing radio channel (40 columns, oldest leading, a square
-    response reaching 32% of the rectangle above and below a thin core).
+    rounded bar beside the installed legacy waveform with its canned UV motion.
     When the line addresses the player, the squad stencil and its plate
     shrink into place over 500 ms. Remastered anchors it top-trailing."""
     doc.boolean("rhinochatter")
     doc.boolean("oq4.radio")
-    for i in range(columns):
-        doc.number(f"radio.peak.{i}")
     k = 0.22 if strogg else -0.22
     bar_x = 522.8 if strogg else 521.8
     bar = vec("radio-bar", [pts_path("bar", [(x * U, y * U) for x, y in rounded_rect(bar_x, 6.8, 109.4, 24.4, 1.5, k, 19)],
@@ -252,20 +248,10 @@ def transmission(doc: HudDocument, *, strogg: bool = False, emblem: str = "radio
     rx, ry, rw, rh = ST_WAVE_RECT if strogg else WAVE_RECT
     mask_svg = ST_WAVE_MASK if strogg else WAVE_MASK
     colour = rgb("#FFCC00") if strogg else rgb("#FF8000")
-    left, right = (522.0, 548.3) if strogg else (522.61, 545.67)
-    step = (right - left) / columns
-    bars = []
-    for i in range(columns):
-        x0 = left + i * step
-        node = vec(f"radio-col{i}", [pts_path("col", [(x0 * U, ry * U), ((x0 + step) * U, ry * U), ((x0 + step) * U, (ry + rh) * U),
-                                                      (x0 * U, (ry + rh) * U)], fill=ui.solid(colour), blend="additive")],
-                   {"transform": ui.transform()})
-        # halfHeight = 0.012 + 0.32 peak^2 of the rectangle, about its centre line.
-        peak = op("clamp", S(f"radio.peak.{i}"), 0, 1)
-        scale_y = op("*", 2, op("+", 0.012, op("*", 0.32, op("*", peak, peak))))
-        doc.bind(node["id"] + ".level", node["id"], "transform", [0, 0, 1, scale_y, 0])
-        bars.append(node)
-    wave = full("radio-wave", bars, mask={"paths": [svg_path("mask", mask_svg, fill=ui.solid([1, 1, 1, 1]))]})
+    from hud_waveform import waveform
+    graph = waveform(doc, "radio-graph", rw, rh, colour)
+    graph["properties"].update(left=ui.length(u(rx)), top=ui.length(u(ry)))
+    wave = full("radio-wave", [graph], mask={"paths": [svg_path("mask", mask_svg, fill=ui.solid([1, 1, 1, 1]))]})
     if strogg:
         labels = [text_box("radio-l1", "#str_200272", face="r_strogg", size=11.5, colour=[1, 1, 1, 1], baseline=u(19), x=u(551)),
                   text_box("radio-l2", "#str_200273", face="r_strogg", size=11.5, colour=[1, 1, 1, 1], baseline=u(26), x=u(552))]
@@ -328,6 +314,15 @@ def transmission(doc: HudDocument, *, strogg: bool = False, emblem: str = "radio
 
 # ============================================================ hit indicator
 
+def flash_cap(doc: HudDocument, leaves, peak: float, cap: float = 0.4) -> None:
+    """Reduced flashing (ui_reducedFlashing, 13.10) scales a flash whose
+    timeline peaks at `peak` so it never exceeds `cap`; each leaf needs a
+    base opacity of 1."""
+    doc.cvar("hud.reducedFlash", "ui_reducedFlashing")
+    for leaf in leaves:
+        doc.bind(leaf + ".flashCap", leaf, "opacity", sel(S("hud.reducedFlash"), round(cap / peak, 5), 1))
+
+
 def hit_indicator(doc: HudDocument) -> dict:
     """The damage direction (14.7): a soft #FF1A1A dome of light about 227 dp
     from the centre, rotated toward the source, from 0.70 to nothing over
@@ -344,10 +339,13 @@ def hit_indicator(doc: HudDocument) -> dict:
                            {"at": 0.55, "color": ui.colour(rgb("#FF1A1A", 0.45))},
                            {"at": 1, "color": ui.colour(rgb("#FF1A1A", 0))}]},
         "blend": "additive"}], {**ui.absolute(left=u(320 - r), top=u(89 - r), width=u(2 * r), height=u(2 * r)),
-                                "transform": transform_value(0, 0, 1, 52 / 150)})
+                                "transform": transform_value(0, 0, 1, 52 / 150), "opacity": num(1)})
     chevron = vec("hit-chevron", [pts_path("chevron", [(u(311), u(52)), (u(320), u(44)), (u(329), u(52))], closed=False,
                                            stroke=stroke(rgb("#FF1A1A", 0.9), u(3.2), join="miter", cap="butt"),
-                                           blend="additive")])
+                                           blend="additive")], {"opacity": num(1)})
+    # Reduced flashing (13.10, 14.10) caps the peak at 0.40 on the leaves,
+    # where opacity is a vertex tint.
+    flash_cap(doc, ("hit-dome-disc", "hit-chevron"), 0.7)
     fading = full("hit-fade", [disc, chevron], opacity=num(0))
     turning = full("hit", [fading], transform=ui.transform())
     # The damage direction setting (13.9) hides it.
@@ -516,7 +514,7 @@ def notices(doc: HudDocument) -> list:
     doc.timeline("exit-rise", 1000, [tr("exit-chevron", "transform", [(0, transform_value(0, 0), accel), (999, transform_value(0, u(-11))),
                                                                       (1000, transform_value(0, 0))]),
                                      tr("exit-chevron", "opacity", [(0, num(0.5)), (999, num(0)), (1000, num(0.5))])], iterations=0)
-    exit_group = full("exit", [chevron, exit_text], display=ui.keyword("none"), opacity=num(1))
+    exit_group = full("exit", [chevron, exit_text], display=ui.keyword("none"), opacity=num(1), transform=ui.transform())
     doc.show("exit", S("oq4.exit"))
     doc.timeline("exit-hold", 5000, [tr("exit", "opacity", [(0, num(1)), (5000, num(1))])], complete="exitDone", essential=True)
     doc.on("showExit", {"op": "setState", "values": {"oq4.exit": True}}, play("exit-rise"), play("exit-hold"))
@@ -524,7 +522,7 @@ def notices(doc: HudDocument) -> list:
     doc.on("exitDone", {"op": "setState", "values": {"oq4.exit": False}}, cancel("exit-rise"))
 
     saved = full("saved", shadowed("saved-text", "#str_200908", face="lowpixel", size=18, colour=[1, 1, 1, 1], baseline=u(80),
-                                   center=u(320), width=u(600)), display=ui.keyword("none"), opacity=num(1))
+                                   center=u(320), width=u(600)), display=ui.keyword("none"), opacity=num(1), transform=ui.transform())
     doc.show("saved", S("oq4.saved"))
     doc.timeline("saved-hold", 3000, [tr("saved", "opacity", [(0, num(1)), (2000, num(1)), (3000, num(0))])], complete="savedDone",
                  essential=True)
@@ -534,11 +532,21 @@ def notices(doc: HudDocument) -> list:
     red = rgb("#FF1A1A", 0.7)
     missile_text = text_box("missile-text", "#str_200891", face="marine", size=28.8, colour=red, baseline=u(88), center=u(320),
                             width=u(640), extra={"letter-spacing": ui.length(u(-2))})
-    missile = full("missile", [missile_text], display=ui.keyword("none"), opacity=num(1))
+    missile = full("missile", [missile_text], display=ui.keyword("none"), opacity=num(1), transform=ui.transform())
     doc.show("missile", S("oq4.missile"))
     doc.timeline("missile-pulse", 400, [tr("missile", "opacity", [(0, num(1)), (200, num(0.43)), (400, num(1))])], iterations=0)
     doc.on("missileThreatUp", {"op": "setState", "values": {"oq4.missile": True}}, play("missile-pulse"))
     doc.on("missileThreatDown", {"op": "setState", "values": {"oq4.missile": False}}, cancel("missile-pulse"))
+    # Keep the authored single-notice placement, reserving rows below a boss
+    # plate or earlier notice whenever several top-center groups coexist.
+    # The boss ends at 89.2 u; an exit notice occupies 58 u plus its gutter.
+    doc.boolean("oq4.boss")
+    boss_offset = sel(S("oq4.boss"), u(92), 0)
+    exit_offset = sel(S("oq4.exit"), u(64), 0)
+    doc.bind("exit.stack", "exit", "transform", [0, boss_offset, 1, 1, 0])
+    doc.bind("saved.stack", "saved", "transform", [0, op("+", sel(S("oq4.boss"), u(32), 0), exit_offset), 1, 1, 0])
+    doc.bind("missile.stack", "missile", "transform",
+             [0, op("+", op("+", sel(S("oq4.boss"), u(36), 0), exit_offset), sel(S("oq4.saved"), u(28), 0)), 1, 1, 0])
     return [exit_group, saved, missile]
 
 

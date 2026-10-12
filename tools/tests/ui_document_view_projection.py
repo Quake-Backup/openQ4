@@ -10,6 +10,7 @@ def project_view(source):
     structs = source[source.index('struct retainedUIPreparedEditData;'):source.index('\nnamespace {')]
     globals = '''EngineHost host;std::vector<retainedUIView_t*> views;
 bool resourcesRefreshing=false,rootSubmissionPending=false;std::uint64_t rootSubmissionFrame=0;
+retainedUIView_t* initializationView=nullptr;
 int restartGeneration=-1,languageGeneration=-1;std::uint64_t languageRevision=0,loadedLanguageRevision=0;
 '''
     helpers = source[source.index('const std::thread::id editThread='):source.index('\nvoid RecordProfile(')]
@@ -20,7 +21,7 @@ int restartGeneration=-1,languageGeneration=-1;std::uint64_t languageRevision=0,
         'bool RetainedUI_PrepareView(', 'bool RetainedUI_QueryEditIdentity(',
         'retainedUIPreparedEdit_t* PrepareViewEdit(', 'retainedUIPreparedEdit_t* RetainedUI_PrepareEdit(',
         'retainedUIPreparedEdit_t* RetainedUI_PrepareHistory(', 'bool RetainedUI_PublishEdit(',
-        'void RetainedUI_DestroyPreparedEdit(', 'void RetainedUI_Shutdown()',
+        'void RetainedUI_DestroyPreparedEdit(', 'void RetainedUI_EndInitialization()', 'void RetainedUI_Shutdown()',
     ]
     return structs + globals + helpers + '\n'.join(function_body(source, name) for name in signatures)
 

@@ -602,6 +602,11 @@ public:
 	void					AddFreeze						( float amount );
 	void					FreezeSolid						( int location );
 	bool					IsFrozenSolid					( void ) const;
+	bool					ApplyRetchBuff( idAI *owner, float dealt, float taken, const idMaterial *overlay );
+	void					ClearRetchBuff( idAI *owner );
+	idAI *					GetRetchBuffOwner( void ) const { return retchBuffOwner.GetEntity(); }
+	virtual float			GetDamageDealtScale( void ) const { return idActor::GetDamageDealtScale() * retchDamageDealt; }
+	virtual float			GetDamageTakenScale( void ) const { return idActor::GetDamageTakenScale() * retchDamageTaken; }
 							// "onlyTarget": the only entities this AI may take as an enemy
 	bool					IsAllowedTarget					( const idEntity *ent ) const;
 
@@ -879,11 +884,20 @@ public:
 	rvAIPain_t				pain;
 	rvAIFuncs_t				funcs;
 
-	// Freezing. None of it is saved: a restored AI has thawed.
+	// Persistent Awakening status. Freeze visuals take priority over a buff,
+	// while both compose with the actor's original appearance and damage scales.
 	float					freezeFactor;			// 0..1, slows animation
 	int						frozenSolidTime;		// when lethal freezing damage turned it to ice
 	int						frozenLocation;			// where that damage landed, for the shatter
-	bool					freezeOverlay;			// the overlay on the AI is the freeze's
+	const idMaterial *		freezeOverlay;
+	const idMaterial *		retchBuffOverlay;
+	const idMaterial *		statusBaseOverlay;
+	idEntityPtr<idAI>		retchBuffOwner;
+	float					retchDamageDealt;
+	float					retchDamageTaken;
+	void					UpdateStatusOverlay( void );
+	void					SaveAwakeningState( idSaveGame *savefile ) const;
+	void					RestoreAwakeningState( idRestoreGame *savefile );
 	void					SetFreezeFactor					( float factor );
 	void					SetFreezeOverlay				( const char *material );
 	void					UpdateFreeze					( void );

@@ -24,7 +24,7 @@
 	void					FreeQuickChatGui( void );
 	bool					CanUseQuickChat( void );
 	void					ApplyQuickChatInputMask( void );
-	void					ResetQuickChat( void );
+	void					ResetQuickChat( bool instantRestore = true );
 	void					UpdateQuickChat( void );
 	void					DrawQuickChat( void );
 	float					GetQuickChatBlend( void ) const;

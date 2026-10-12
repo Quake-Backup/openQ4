@@ -33,6 +33,7 @@ def main() -> None:
     bot = (ROOT / "src/mpgame/bots/Bot.cpp").read_text(encoding="utf-8")
     combat = (ROOT / "src/mpgame/bots/BotCombat.cpp").read_text(encoding="utf-8")
     network = (ROOT / "src/mpgame/Game_network.cpp").read_text(encoding="utf-8")
+    physics = (ROOT / "src/mpgame/physics/Physics_Player.cpp").read_text(encoding="utf-8")
     constants = "\n".join(re.findall(r"^static const (?:int|float)\s+BOT_\w+\s*=\s*[0-9][^\n]+", bot, re.M))
     constants += "\n" + "\n".join(re.findall(
         r"^static const (?:int|float)\s+BOTCOMBAT_\w+[^\n]+", combat, re.M))
@@ -40,6 +41,24 @@ def main() -> None:
         r"^static (?:const int|int)\s+(?:MAX_UNRELIABLE_BATCH_BYTES|UNRELIABLE_OVERFLOW_WARN_INTERVAL|unreliableOverflowWarnTime)[^\n]+",
         network, re.M))
     bodies = "\n".join(function(bot, signature) for signature in (
+        "static float BotGapToPad(",
+        "static bool BotPadCorridorBusy(",
+        "bool rvBot::HoldForPad(",
+        "void rvBot::ResetDodgeJump(",
+        "void rvBot::AdoptPadLaunch(",
+        "static float BotMaxSafeFallDelta(",
+        "bool rvBot::GuardLandingHealth(",
+        "bool rvBot::AlignJumpDropApproach(",
+        "bool rvBot::HandleJumpTakeoff(",
+        "bool rvBot::AtObjectiveHoldPosition(",
+        "bool rvBot::GuardLandingContinuation(",
+        "static bool BotPadFlightComplete(",
+        "void rvBot::ApplyMove(",
+        "void rvBot::PressJump(",
+        "void rvBot::TryDodgeJump(",
+        "bool rvBot::HoldDodgeJump(",
+        "static bool BotBrakeAtEdge( idPlayer *self, idVec3 &moveDir ) {",
+        "bool rvBot::RecoverToNavMesh(",
         "void rvBot::UpdateEnemy(",
         "int rvBot::EnemyLastKnownTime(",
         "void rvBot::UpdateHearing(",
@@ -51,6 +70,7 @@ def main() -> None:
         "void rvBot::UpdateGoal(",
     ))
     bodies += function(combat, "bool BotCombatFindIncomingProjectileThreat(")
+    bodies += function(physics, "float idPhysics_Player::CmdScale(")
     bodies += "\n".join(function(network, signature) for signature in (
         "void idGameLocal::QueueUnreliableMessage(",
         "void idGameLocal::SendUnreliableMessage(",

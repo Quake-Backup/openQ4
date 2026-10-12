@@ -23,6 +23,8 @@ struct idMath {
 };
 int clockMsec=1000, redraws=0, callbackStage=-1;
 bool throwFromCallback=false;
+bool initializing=false;
+bool openQ4_UpdateInitialization(){return initializing;}
 int Sys_Milliseconds(){return clockMsec;}
 void Sys_GenerateEvents(){}
 float Session_GetBlockingLoadFrameIntervalMsec(){return 16.0f;}
@@ -68,9 +70,11 @@ void NestedOffer(int stage) {
 void Reset() {
     session=idSessionLocal();session.guiLoading=&session.gui;
     idAsyncNetwork::client.calls=idAsyncNetwork::server.calls=redraws=0;
-    clockMsec=1000;callbackStage=-1;throwFromCallback=false;
+    clockMsec=1000;callbackStage=-1;throwFromCallback=false;initializing=false;
 }
 int main() {
+    Reset();initializing=true;session.PacifierUpdate();
+    assert(redraws==0 && idAsyncNetwork::client.calls==0 && idAsyncNetwork::server.calls==0);
     for(int stage=0;stage<3;++stage)for(int fail=0;fail<2;++fail) {
         Reset();callbackStage=stage;throwFromCallback=fail!=0;
         try {session.PacifierUpdate();} catch(const std::runtime_error&) {}

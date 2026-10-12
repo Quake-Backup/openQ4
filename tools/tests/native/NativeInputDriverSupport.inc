@@ -66,7 +66,7 @@ const char* idUserInterface::HandleEvent(const sysEvent_t* event,int) {
 static bool UI_DispatchApplicationActions(idUserInterface*,const char*,bool&){++applicationDispatches;return true;}
 static bool HandleMainMenuSettingsScrollInput(idUserInterface*,int){return false;}
 static void SyncMainMenuSettingsScrollPages(idUserInterface*){++scrollSyncs;}
-static constexpr int UB_MAX_BUTTONS=128;
+static constexpr int UB_WEAPONWHEEL=8,UB_QUICKCHAT=9,UB_MAX_BUTTONS=128;
 struct usercmd_t {int duplicateCount=0;};
 class idUsercmdGenLocal {
 public:

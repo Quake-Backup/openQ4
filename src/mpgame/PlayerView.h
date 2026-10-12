@@ -86,6 +86,8 @@ private:
 	idUserInterface *presentationFx = NULL;
 	int deathFxStart = -1, recoveryFxUntil = 0;
 	bool recoverySequence = false;
+	int crashFxStart = -1, crashFxDuration = 0;
+	bool crashFxClosing = false;
 // RAVEN BEGIN
 // AReis: Modified SingleView() signature to include renderFlags variable.
 	void				SingleView( idUserInterface *hud, const renderView_t *view, int renderFlags = RF_NORMAL );

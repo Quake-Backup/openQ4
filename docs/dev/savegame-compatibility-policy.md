@@ -8,22 +8,24 @@ load. Reliability mechanisms and implementation detail are documented in
 
 | Save payload | Current decision |
 | --- | --- |
+| Version 4, exact wire-ABI stamp, build at or above the verified floor, valid integrity/footer | Current writer and reader; persistent Awakening status |
 | Version 3, exact wire-ABI stamp, build at or above the verified floor, valid integrity/footer | Supported format path; build/source drift is diagnostic only |
 | Version 3, build below the verified floor | Rejected before map teardown |
 | Version 3, different wire-ABI stamp | Rejected before map teardown |
 | Version 2, any tuple | Rejected before map teardown |
 | Unstamped legacy payload | Accepted only when its marker equals the current build and the runtime stamp is Windows/MSVC x64 little-endian `raw1` |
 | Empty, negative-length, or over-512-MiB `.save` | Rejected before header or CRC preflight |
-| Payload version newer than 3 | Rejected; no forward-compatibility guessing |
+| Payload version newer than 4 | Rejected; no forward-compatibility guessing |
 | Multiplayer/dedicated save | Not a supported player-facing feature |
 
 The outer session-header reader accepts outer versions `1834`, `0`, and `1` so
 that the payload can be examined. Passing that outer check does not override the
 payload policy in this document.
 
-## Version 3
+## Version 4 and the Version 3 Decoder
 
-Version 3 is the only format written by current builds. The complete file must be
+Version 4 is the only format written by current builds. Version 3 retains its
+bounded decoder and verified build floor. The complete file must be
 no larger than 512 MiB, including its integrity trailer, and the payload wire-ABI
 stamp must exactly equal the running build's stamp:
 
@@ -33,6 +35,21 @@ stamp must exactly equal the running build's stamp:
 
 Examples include `windows-msvcabi-x64-le-raw1`,
 `linux-itaniumabi-x64-le-raw1`, and `macos-itaniumabi-arm64-le-raw1`.
+
+Version 4 adds two typed floats to both game libraries' animator records: the
+base playback multiplier and a separate temporary slowdown multiplier. The SP
+AI record additionally stores freeze amount, freeze start time (`-1` means not
+solid), hit location, freeze and underlying materials, Retch owner, damage
+multipliers and buff material. Native raw structures, the `raw1` stamp, footer
+version 1 and integrity version 1 are unchanged. Existing packed flags and typed
+fields use the v3 encoding in both v3 and v4 readers.
+
+The v3 decoder consumes none of those new fields. A living AI with the old solid
+ice overlay resumes a fresh four-second shatter timer: the original timer was
+never recorded. Partial chill thaws and its current animation rates are restored.
+Retch ownership and effects are rebuilt after every saved entity has restored.
+The v4 reader instead preserves the original timer, layered effects and animation
+rates. This is a bounded old-format recovery, not an exported v3 save option.
 
 Within v3, build number, generated source hash, and source-file count are recorded
 for diagnosis but do not reject a save. The policy assumes every wire-incompatible
@@ -135,15 +152,15 @@ whole-file CRC/footer retroactively.
 Backward compatibility means a newer runtime reading an older save. It is
 supported only through an explicit decoder or allowlist:
 
-- current v3 on the exact ABI path at or above the verified build floor;
+- current v4 and decoded v3 on the exact ABI path at or above the verified build floor;
 - fields added within v3, through their recorded per-field build thresholds
   and legacy empty-physics-frame recognition;
-- the six exact v2 snapshots above on Windows x64 `raw1`; and
 - the narrow same-build unstamped Windows x64 legacy path.
 
 Unsupported saves fail closed before map teardown when total size, header,
 version, ABI, allowlist, integrity, footer, or map preflight fails. The 512 MiB
-limit applies equally to v3, approved v2, and unstamped legacy input. No in-place
+limit applies equally to v4, v3, and unstamped legacy input. Version 2 remains
+rejected; it has no verified decoder. No in-place
 conversion or repair tool is currently provided. Players should retain a copy of
 important slots before upgrading, especially when moving from an unlisted
 development build.
@@ -157,10 +174,9 @@ Forward compatibility means an older runtime reading a save written by a newer
 format. It is not promised. Unknown payload, footer, integrity, or raw-layout
 versions are rejected instead of being parsed as the nearest known layout.
 
-When version 4 is introduced, its writer must not claim v3 compatibility unless
-the emitted v3 bytes and semantics genuinely remain valid for an existing v3
-reader. A new reader may retain a bounded v3 decoder, but the old reader is not
-required to understand v4.
+Version 4 saves cannot be loaded by older v3-only engines. Players who need to
+return to an older executable must keep their original v3 slots. The new reader
+retains a bounded v3 decoder; the writer always stamps its new layout as v4.
 
 ## Platform and Architecture Policy
 

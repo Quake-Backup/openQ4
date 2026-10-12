@@ -783,7 +783,7 @@ def timer_row(doc: HudDocument, prefix: str) -> dict:
     `prefix`, with its own last-ten-seconds pulse."""
     declare(doc, {"oq4_state": 0, "oq4_countdown": False, "oq4_timed": False, "oq4_clock_warn": 0, "oq4_clock": "",
                   "showready": False, "readytext": "", "overtime": False, "overtimetext": "", "showround": False,
-                  "roundtext": "", "roundtime": "", "showroundtime": False, "infinity": False})
+                  "roundtext": "", "roundtime": "", "showroundtime": False, "infinity": False, "oq4_mb_ready": ""})
     gametype = S("gametype")
     state = S("oq4_state")
     countdown = S("oq4_countdown")
@@ -815,8 +815,8 @@ def timer_row(doc: HudDocument, prefix: str) -> dict:
     urgent = bound_label(doc, f"{prefix}-urgent", S("oq4_clock"), 12.5, rgb(ERR), face="chain", line=13,
                          **{"opacity": num(1), "display": ui.keyword("none")})
     doc.show(f"{prefix}-urgent", last_ten)
-    ready = bound_label(doc, f"{prefix}-ready", S("readytext"), 9, WHITE, face="chain", line=10, **{"display": ui.keyword("none")})
-    doc.show(f"{prefix}-ready", AND(warmup, S("showready")))
+    ready = bound_label(doc, f"{prefix}-ready", S("oq4_mb_ready"), 9, WHITE, face="chain", line=10, **{"display": ui.keyword("none")})
+    doc.show(f"{prefix}-ready", AND(warmup, S("showready"), op("!=", S("oq4_mb_ready"), "")))
     content = flex_row(f"{prefix}-c", [plate_vec(f"{prefix}-plate", 16), watch, infinity, *labels, overtime, clock, urgent, ready],
                        **{"height": ui.length(u(16)), "padding-left": ui.length(u(4)), "padding-right": ui.length(u(8))})
     # The last ten seconds pulse once a second (opacity 1 -> 0.45 -> 1, ease-out).
@@ -839,7 +839,8 @@ def timer(doc: HudDocument) -> dict:
     the round clock. Tourney sets its own under the message bar (tourney)."""
     content = timer_row(doc, "timer")
     gametype = S("gametype")
-    # Round modes: ROUND n with the round clock in #FFBE23 over its last stretch.
+    # Round modes: the clock accompanies ROUND n for the entire timed round.
+    # The stock showroundtime flag intentionally only covers its last 30 s.
     round_plate = flex_row("round-c", [plate_vec("round-plate", 14),
                                        bound_label(doc, "round-text", S("roundtext"), 7.4, [1, 1, 1, 0.7], line=10,
                                                    **{"letter-spacing": ui.length(0.75)}),
@@ -847,7 +848,7 @@ def timer(doc: HudDocument) -> dict:
                                                    **{"margin-left": ui.length(u(8)), "display": ui.keyword("none")})],
                            **{"height": ui.length(u(14)), "padding-left": ui.length(u(6)), "padding-right": ui.length(u(8)),
                               "margin-top": ui.length(u(2)), "display": ui.keyword("none")})
-    doc.show("round-clock", S("showroundtime"))
+    doc.show("round-clock", op("!=", S("roundtime"), ""))
     doc.bind("round-c.display", "round-c", "display", sel(S("showround"), "flex", "none"))
     column = ui.group("timer", {**ui.absolute(left=u(6), top=u(82)), "display": ui.keyword("flex"),
                                 "flex-direction": ui.keyword("column"), "align-items": ui.keyword("flex-start")},
@@ -985,16 +986,8 @@ def vote(doc: HudDocument) -> dict:
                                   bound_label(doc, "vote-caller", S("oq4_vote_caller"), 7.4, rgb(VALUE), line=11, **ellipsis(90))])
 
     def side(ident, key_expr, word, colour, tally):
-        chip = ui.group(ident + "-chip", {"position": ui.keyword("relative"), "display": ui.keyword("block"), "height": ui.length(u(10)),
-                                          "padding-left": ui.length(u(4)), "padding-right": ui.length(u(3)),
-                                          "margin-right": ui.length(u(4))},
-                        [vec(ident + "-chipbg", [{"id": "k", "fill": ui.solid([1, 1, 1, 0.8]), "commands": [
-                            {"id": "a", "op": "move", "points": [[0, 0]]}, {"id": "b", "op": "line", "points": [[{"fraction": 1}, 0]]},
-                            {"id": "c", "op": "line", "points": [[{"fraction": 1}, {"fraction": 1}]]},
-                            {"id": "d", "op": "line", "points": [[u(3), {"fraction": 1}]]},
-                            {"id": "e", "op": "line", "points": [[0, {"fraction": 1, "dp": -u(3)}]]}, {"id": "f", "op": "close"}]}]),
-                         bound_label(doc, ident + "-key", key_expr, 6.6, rgb(DARK), face="profont", line=10)])
-        doc.show(ident + "-chip", NOT(S("oq4_vote_voted")))
+        chip = key_chip(doc, ident, key_expr, size=6.6, h=10)
+        doc.bind(ident + ".glyph-display", chip["id"], "display", sel(S("oq4_vote_voted"), "none", "flex"))
         cells = []
         for q in range(8):
             cell = ui.group(f"{ident}-cell{q}", {"position": ui.keyword("relative"), "display": ui.keyword("block"), "width": ui.length(u(4)),
@@ -1040,27 +1033,20 @@ def vote(doc: HudDocument) -> dict:
 def voice(doc: HudDocument) -> list:
     """Talker plates above the chat box (14.9): YOU on the header-band plate
     with a microphone while you transmit, the talker's name with the speaker
-    symbol, each with the transmission trace of their decoded audio."""
+    symbol, each with a scrolling preset trace."""
     declare(doc, {"oq4.voiceSelf": False, "oq4.voiceOther": False, "audio_name": "", "oq4_audio_team": -1, "oq4_my_team": 0,
                   "oq4_team_game": False})
     rows = []
     for ident, you in (("voice-self", True), ("voice-other", False)):
-        peaks_prefix = "voice.self.peak" if you else "voice.other.peak"
         # The trace in the talker's team text color, #FFFF8D outside team modes.
         team = S("oq4_my_team") if you else S("oq4_audio_team")
         trace_colour = colour_of([(AND(S("oq4_team_game"), op("==", team, 1)), rgb(STR_T, 0.9)),
                                   (AND(S("oq4_team_game"), op("==", team, 0)), rgb(MAR_T, 0.9))], rgb(NOTE, 0.9))
-        bars = []
-        for k in range(40):
-            key = f"{peaks_prefix}.{k}"
-            doc.number(key)
-            bar = ui.group(f"{ident}-b{k}", {"position": ui.keyword("relative"), "display": ui.keyword("block"), "width": ui.length(u(0.45)),
-                                             "height": ui.length(u(0.6)), "margin-right": ui.length(u(0.2)),
-                                             "background-color": ui.colour(rgb(NOTE, 0.9))})
-            doc.bind(f"{ident}-b{k}.h", f"{ident}-b{k}", "height", op("+", u(0.6), op("*", u(11), op("clamp", S(key), 0, 1))))
-            doc.bind(f"{ident}-b{k}.bg", f"{ident}-b{k}", "background-color", trace_colour)
-            bars.append(bar)
-        trace = flex_row(ident + "-trace", bars, **{"height": ui.length(u(12)), "width": ui.length(u(26)), "margin-right": ui.length(u(4))})
+        from hud_waveform import waveform
+        graph = waveform(doc, ident+"-graph", 26, 12, rgb(NOTE, .9))
+        doc.bind(ident+"-graph.tint", graph["id"], "image-color", trace_colour)
+        trace = flex_row(ident + "-trace", [graph], **{"height": ui.length(u(12)), "width": ui.length(u(26)),
+                                                       "margin-right": ui.length(u(4)),"overflow":ui.keyword("hidden")})
         if you:
             # Your own transmission: a microphone, its capsule in the cradle
             # on a stem and foot, in the speaker symbol's 10 u box.
@@ -1234,7 +1220,7 @@ def chat_lines(doc: HudDocument) -> list:
                                "flex-direction": ui.keyword("column-reverse"), "align-items": ui.keyword("flex-start"),
                                "width": ui.length(100, "%"), "max-height": ui.length(u(10000)), "overflow": ui.keyword("hidden")},
                    list(reversed(messages)) + [strut])
-    doc.bind("chatlog.max-height", "chatlog", "max-height", sel(S("oq4_chatting"), room, u(10000)))
+    doc.bind("chatlog.max-height", "chatlog", "max-height", op("min", room, u(8 * CHAT_PITCH)))
     return [log]
 
 
@@ -1411,16 +1397,19 @@ def chat_input(doc: HudDocument) -> dict:
 def match_context(doc: HudDocument) -> dict:
     """openQ4's managed-match card under the kill feed (14.9): the phase
     heading, then series, timeouts, readiness and proposals, on a plate with
-    an orange edge. The adapter supplies complete localized lines."""
+    an orange edge. Live play uses just the phase and one prioritized summary;
+    the scoreboard keeps the full record. The adapter supplies localized lines."""
     keys = ["match_context_phase", "match_context_role", "match_context_pause", "match_context_readiness", "match_context_timeouts",
             "match_context_proposal", "match_context_series", "match_context_items"]
-    declare(doc, {"match_context_visible": 0, **{k: "" for k in keys}})
+    declare(doc, {"match_context_visible": 0, "match_context_compact": False, "match_context_summary": "", **{k: "" for k in keys}})
     rows = [bound_label(doc, "ctx-phase", S("match_context_phase"), 8.4, rgb("#FFF0C2"), line=12, **{"letter-spacing": ui.length(0.6)})]
+    rows.append(bound_label(doc, "ctx-summary", S("match_context_summary"), 7.4, rgb("#C8D6B0"), line=10, **ellipsis(150)))
+    doc.show("ctx-summary", AND(S("match_context_compact"), op("!=", S("match_context_summary"), "")))
     colours = {"match_context_role": rgb("#F2B840"), "match_context_series": rgb("#F2B840")}
     for key in keys[1:]:
         ident = "ctx-" + key.split("_")[-1]
         rows.append(bound_label(doc, ident, S(key), 7.4, colours.get(key, rgb("#C8D6B0")), line=10, **ellipsis(150)))
-        doc.show(ident, op("!=", S(key), ""))
+        doc.show(ident, AND(NOT(S("match_context_compact")), op("!=", S(key), "")))
     edge = vec("ctx-plate", [{"id": "p", "fill": ui.solid([0, 0, 0, 0.72]),
                               "stroke": {"paint": ui.solid(rgb(MARKER, 0.55)), "widthDp": u(0.8), "minimumPixels": 1, "join": "miter",
                                          "cap": "butt"},
@@ -1568,25 +1557,23 @@ def name_tags(doc: HudDocument) -> dict:
 def respawn_prompt(doc: HudDocument) -> dict:
     """While you lie dead and the rules let you back in (14.9 Remastered
     additions): Respawn with the attack control, centered in the lower third
-    on a HUD plate at 0.50; while the server holds the respawn (overtime's
-    growing delay), RESPAWN IN and the seconds left in Chain instead. The game
+    on a HUD plate at 0.50; while the server holds the respawn, the seconds
+    left in Chain accompany the control and label. The game
     sends oq4_respawn as the prompt appears or goes; it fades in over 200 ms."""
     declare(doc, {"oq4_respawn": 0, "oq4_respawn_in": 0, "oq4_key_attack": ""})
     respawn = S("oq4_respawn")
     ready = flex_row("respawn-ready", [key_chip(doc, "respawn", S("oq4_key_attack"), size=7.6, h=13),
                                        label("respawn-word", "#str_231233", 11.5, WHITE, line=13)],
                      **{"display": ui.keyword("none")})
-    doc.bind("respawn-ready.display", "respawn-ready", "display", sel(op("==", respawn, 1), "flex", "none"))
+    doc.bind("respawn-ready.display", "respawn-ready", "display", sel(op(">", respawn, 0), "flex", "none"))
     held = flex_row("respawn-held", [
-        label("respawn-held-word", "#str_231234", 7.2, [1, 1, 1, 0.7], line=13,
-              **{"letter-spacing": ui.length(0.75), "margin-right": ui.length(u(5))}),
         bound_label(doc, "respawn-in", op("numberText", S("oq4_respawn_in")), 13, rgb(VALUE), face="chain", line=13)],
-        **{"display": ui.keyword("none")})
+        **{"display": ui.keyword("none"), "margin-left": ui.length(u(8))})
     doc.bind("respawn-held.display", "respawn-held", "display", sel(op("==", respawn, 2), "flex", "none"))
     content = flex_row("respawn-c", [plate_vec("respawn-plate", 21), ready, held],
                        **{"height": ui.length(u(21)), "padding-left": ui.length(u(8)), "padding-right": ui.length(u(9)),
                           "opacity": num(1)})
-    group = ui.group("respawn", {**ui.absolute(left=0, top=u(372), width=u(640)), "display": ui.keyword("none"),
+    group = ui.group("respawn", {**ui.absolute(left=0, top=u(318), width=u(640)), "display": ui.keyword("none"),
                                  "justify-content": ui.keyword("center")}, [content])
     doc.bind("respawn.display", "respawn", "display", sel(op(">", respawn, 0), "flex", "none"))
     doc.timeline("respawn-rise", 200, [tr("respawn-c", "opacity", [(0, num(0)), (200, num(1))])])
@@ -1682,8 +1669,8 @@ def tourney(doc: HudDocument) -> tuple:
     bar = ui.group("tourney-bar", {**ui.absolute(left=0, top=0, width=u(640), height=u(60)), "display": ui.keyword("none")}, [
         vec("tourney-bar-plate", [pts_path("p", [(0, u(35)), (u(434), u(35)), (u(416), u(54)), (0, u(54))],
                                            fill=ui.solid([0, 0, 0, 0.6]))]),
-        text_at(doc, "tourney-bar-text", S("spectatetext0"), 10.6, WHITE, x=8, baseline=48, extra=ellipsis(400))])
-    doc.show("tourney-bar", gametype)
+        text_at(doc, "tourney-bar-text", S("oq4_tourney_label"), 10.6, WHITE, x=8, baseline=48, extra=ellipsis(400))])
+    doc.show("tourney-bar", AND(gametype, op("!=", S("oq4_tourney_label"), "")))
     # Under the bar, within the center screen: the timer and the ROUND and
     # ARENA plate (the standing's timer gives way in Tourney).
     declare(doc, {"oq4_tourney_round": "", "oq4_mb_sub": ""})
@@ -1698,36 +1685,49 @@ def tourney(doc: HudDocument) -> tuple:
                                        "flex-direction": ui.keyword("row"), "align-items": ui.keyword("center")},
                      [timer_row(doc, "ttimer"), place])
     doc.bind("tourney-under.display", "tourney-under", "display", sel(gametype, "flex", "none"))
-    bar = full("tourney-top", [bar, under])
+    instructions = []
+    for i in (1, 2):
+        doc.string(f"spectatetext{i}")
+        node = bound_label(doc, f"tourney-help{i}", S(f"spectatetext{i}"), 9.6, [1, 1, 1, 0.7], line=13,
+                           **{"width": ui.length(u(624)), "white-space": ui.keyword("normal"),
+                              "word-break": ui.keyword("break-word")})
+        doc.show(node["id"], AND(gametype, op("!=", S(f"spectatetext{i}"), "")))
+        instructions.append(node)
+    # Instructions use the center screen's available width. Localized text
+    # wraps in normal flow, so a long first instruction moves the next down.
+    help_block = ui.group("tourney-help", {**ui.absolute(left=u(8), top=u(77), width=u(624)),
+                                         "display": ui.keyword("none")}, instructions)
+    doc.show("tourney-help", gametype)
+    bar = full("tourney-top", [bar, under, help_block])
     # Round banners: the black bar slides 34 u down over 500 ms, holds and leaves.
     banner_titles = []
     for r in range(1, 5):
-        title = text_at(doc, f"banner-t{r}", None, 19.2, WHITE, right=418, baseline=51, extra={"display": ui.keyword("none")})
+        title = text_at(doc, f"banner-t{r}", None, 19.2, WHITE, right=318, baseline=51, extra={"display": ui.keyword("none")})
         title["properties"]["text"] = ui.text(ROUND_TITLES[r - 1])
-        name = text_at(doc, f"banner-n{r}", None, 19.2, rgb("#FF8000"), x=422, baseline=51, extra={"display": ui.keyword("none")})
+        name = text_at(doc, f"banner-n{r}", None, 19.2, rgb("#FF8000"), x=322, baseline=51, extra={"display": ui.keyword("none")})
         name["properties"]["text"] = ui.text(ROUND_NAMES[r - 1])
         doc.show(title["id"], op("==", S("round"), r))
         doc.show(name["id"], op("==", S("round"), r))
         banner_titles += [title, name]
-    banner = ui.group("banner", {**ui.absolute(left=u(-100), top=u(-62), width=u(840), height=u(62)), "display": ui.keyword("block"),
+    banner = ui.group("banner", {**ui.absolute(left=0, top=u(-62), width=u(640), height=u(62)), "display": ui.keyword("block"),
                                  "transform": ui.transform()},
-                      [ui.group("banner-fill", {**ui.FULL, "display": ui.keyword("block"), "background-color": ui.colour([0, 0, 0, 1])}),
-                       ui.group("banner-text", {**ui.absolute(left=u(100), top=0, width=u(640), height=u(62)), "display": ui.keyword("block")},
+                      [ui.group("banner-fill", {**ui.FULL, "display": ui.keyword("block"), "background-color": ui.colour([0, 0, 0, 0.6])}),
+                       ui.group("banner-text", {**ui.absolute(left=0, top=0, width=u(640), height=u(62)), "display": ui.keyword("block")},
                                 banner_titles)])
     doc.timeline("banner-run", 3500, [tr("banner", "transform", [(0, transform_value(0, 0)), (500, transform_value(0, u(34))),
                                                                  (3000, transform_value(0, u(34))), (3500, transform_value(0, 0))])],
-                 essential=True)
+                 essential=False)
     warm_title = text_at(doc, "warmbar-text", None, 19.2, WHITE, center=320, baseline=51, width=640)
     warm_title["properties"]["text"] = ui.text("#str_200953")
-    warm = ui.group("warmbar", {**ui.absolute(left=u(-200), top=u(-62), width=u(1040), height=u(62)), "display": ui.keyword("block"),
+    warm = ui.group("warmbar", {**ui.absolute(left=0, top=u(-62), width=u(640), height=u(62)), "display": ui.keyword("block"),
                                 "transform": ui.transform()},
-                    [ui.group("warmbar-fill", {**ui.FULL, "display": ui.keyword("block"), "background-color": ui.colour([0, 0, 0, 1])}),
-                     ui.group("warmbar-c", {**ui.absolute(left=u(200), top=0, width=u(640), height=u(62)), "display": ui.keyword("block")},
+                    [ui.group("warmbar-fill", {**ui.FULL, "display": ui.keyword("block"), "background-color": ui.colour([0, 0, 0, 0.6])}),
+                     ui.group("warmbar-c", {**ui.absolute(left=0, top=0, width=u(640), height=u(62)), "display": ui.keyword("block")},
                               [warm_title])])
     doc.timeline("warmbar-in", 500, [tr("warmbar", "transform", [(0, transform_value(0, 0)), (500, transform_value(0, u(34)))])],
-                 essential=True)
+                 essential=False)
     doc.timeline("warmbar-out", 500, [tr("warmbar", "transform", [(0, transform_value(0, u(34))), (500, transform_value(0, 0))])],
-                 essential=True)
+                 essential=False)
     doc.on("roundTransitionIn", play("banner-run"))
     doc.on("warmupTransitionIn", play("warmbar-in"))
     doc.on("warmupTransitionOut", play("warmbar-out"))

@@ -33,6 +33,7 @@ If you have questions concerning this license or the applicable additional terms
 #include "Window.h"
 #include "LegacyGuiImport.h"
 #include "UserInterfaceLocal.h"
+#include "RetainedHud.h"
 #include "AudioGraph.h"
 #include "../framework/Session.h"
 #include "EditWindow.h"
@@ -2063,7 +2064,8 @@ void idWindow::CalcClientRect(float xofs, float yofs) {
 
 	const bool applyScreenAlignX = ( parent == NULL ) || ( ( parent->GetFlags() & WIN_DESKTOP ) != 0 ) || ( parent->GetScreenAlignX() == SCREEN_ALIGN_X_MIDDLE );
 	const bool applyScreenAlignY = ( parent == NULL ) || ( ( parent->GetFlags() & WIN_DESKTOP ) != 0 ) || ( parent->GetScreenAlignY() == SCREEN_ALIGN_Y_MIDDLE );
-	if ( dc != NULL && ( applyScreenAlignX || applyScreenAlignY ) ) {
+	if ( dc != NULL && ( applyScreenAlignX || applyScreenAlignY ) &&
+			!( gui != NULL && idRetainedHud::UsesClassicCanvas( gui->GetSourceFile() ) ) ) {
 		float xExpand = 0.0f;
 		float yExpand = 0.0f;
 		dc->GetVirtualScreenExpansion( forceAspectWidth, forceAspectHeight, xExpand, yExpand );

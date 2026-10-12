@@ -60,6 +60,45 @@ static const int NAVNODE_HAZARD			= BIT( 0 );
 // it is never a place to stop.
 static const int NAVNODE_TRANSPORT		= BIT( 1 );
 
+// Places one jump pad can put a player down: its natural landing and the
+// floors beside its arc that air control reaches.
+static const int NAV_MAX_TRANSPORT_LANDINGS	= 4;
+
+//----------------------------------------------------------------
+// How a player in flight brings it down on a landing with air control: steer
+// for the horizontal velocity that arrives over the landing as the arc comes
+// down to its height, not at the landing itself.  Full air control toward the
+// spot overshoots and swings past it and back - over a pad's shaft, the
+// difference between the ledge beside it and the bottom of the shaft.  The bot
+// in flight and the navmesh's pad simulation both steer with this, so a
+// landing the graph links is the one the bot makes.  Returns false when the
+// velocity is already right, which means coast.
+//----------------------------------------------------------------
+static const float NAV_AIR_STEER_DEADBAND	= 12.0f;	// velocity error, units/sec, worth correcting
+
+ID_INLINE bool NavAirSteer( const idVec3 &origin, const idVec3 &velocity, const idVec3 &landing,
+							float gravity, idVec3 &wishDir ) {
+	if ( gravity <= 1.0f ) {
+		return false;
+	}
+	const float above = origin.z - landing.z;
+	const float discriminant = velocity.z * velocity.z + 2.0f * gravity * above;
+	float time = ( discriminant >= 0.0f ) ? ( velocity.z + idMath::Sqrt( discriminant ) ) / gravity :
+											velocity.z / gravity;	// out of reach: steer by the apex
+	if ( time < 0.1f ) {
+		time = 0.1f;
+	}
+
+	idVec3 error( ( landing.x - origin.x ) / time - velocity.x,
+				  ( landing.y - origin.y ) / time - velocity.y, 0.0f );
+	if ( error.LengthSqr() < NAV_AIR_STEER_DEADBAND * NAV_AIR_STEER_DEADBAND ) {
+		return false;
+	}
+	error.Normalize();
+	wishDir = error;
+	return true;
+}
+
 //----------------------------------------------------------------
 // A goal a cost field is asked to price.  When a field is given weights it
 // ranks targets by weight / ( route cost + extra ) - extra being whatever the
@@ -202,7 +241,13 @@ public:
 	// A* from start to goal.  Both ends are snapped onto the mesh first.  The
 	// returned path is string-pulled and ends at the exact goal, except that an
 	// airborne endpoint may conservatively end at its projected landing floor.
-	bool					FindPath( const idVec3 &start, const idVec3 &goal, rvNavPath &path ) const;
+	// nearGoal is for pursuit: a player standing where no node is proven
+	// walkable - a tight diagonal corridor, the lip of a ledge - is routed to
+	// the nearest node on the same floor instead of refused.
+	// A finite maxImpactDelta excludes locally repaired edges whose predicted
+	// landing would exceed the caller's currently survivable fall-damage tier.
+	bool					FindPath( const idVec3 &start, const idVec3 &goal, rvNavPath &path,
+									  bool nearGoal = false, float maxImpactDelta = idMath::INFINITY ) const;
 
 	// Directed "is there any route at all" test.  Answered from the component
 	// condensation first; only a reachable pair pays for the route proof.
@@ -211,7 +256,7 @@ public:
 	// Random node with a directed route from origin, for roaming.  When
 	// pathOut is supplied, the successful search is returned for immediate use.
 	bool					RandomReachablePoint( const idVec3 &origin, idVec3 &result,
-												 rvNavPath *pathOut = NULL ) const;
+												 rvNavPath *pathOut = NULL, float maxImpactDelta = idMath::INFINITY ) const;
 
 	// One bounded single-source search from origin that prices every node a
 	// goal choice might want, instead of one A* per candidate.  When targets
@@ -245,6 +290,28 @@ public:
 	// bounds touch, or -1.  Touching one carries the player away.
 	int						TransportAt( const idBounds &absBounds ) const;
 
+	// Is this landing of the pad one only air control reaches - not where the
+	// pad's own arc comes down?  A bot rides a natural landing and steers for
+	// a steered one.
+	bool					IsSteeredPadLanding( int padEntityNum, const idVec3 &landing ) const;
+	// The proven landing reached without air input. Used after an unexpected
+	// touch of a pad, when steering for the old walking route would brake it.
+	bool					NaturalPadLanding( int padEntityNum, idVec3 &landing ) const;
+	bool					LandingSurvivable( const idVec3 &from, const navCorner_t &corner, float maxImpactDelta ) const;
+	bool					LandingContinuationClear( const idVec3 &origin, const idVec3 &next ) const;
+	// A grounded hull can overhang a rim even though its center is unsupported.
+	// Only recovery uses this short, continuously supported path back inland.
+	bool					RecoveryStepClear( const idVec3 &origin, const idVec3 &target ) const;
+	// Recheck a routed jump at its actual takeoff, including lateral momentum
+	// and the corner acceptance offset that the graph's central proof omits.
+	bool					JumpTakeoffClear( const idVec3 &origin, const idVec3 &velocity,
+										 const idVec3 &landing, float gravity, float wishSpeed,
+										 const idVec3 *firstWish = NULL, float firstWishSpeed = 0.0f ) const;
+	// A discretionary combat/recovery hop must prove touchdown as well as the
+	// short walking lookahead. Deliberate route jumps keep their own proof.
+	bool					DodgeJumpClear( const idVec3 &origin, const idVec3 &velocity,
+										const idVec3 &direction, float gravity, float effectiveWishSpeed = 0.0f ) const;
+
 	const navStats_t &		GetStats( void ) const { return stats; }
 	void					ResetStats( void ) const;
 	int						NumComponents( void ) const { return numComponents; }
@@ -271,13 +338,15 @@ private:
 	} navEntitySnap_t;
 
 	// A jump pad or teleporter whose link was built: the volume that carries
-	// whoever touches it, and where it carries them.
+	// whoever touches it, and where it can put them down.
 	typedef struct navTransport_s {
 		idBounds				bounds;
 		int						entityNum;
 		int						travelType;
-		int						destination;	// landing node
-		float					cost;
+		int						destinations[NAV_MAX_TRANSPORT_LANDINGS];	// landing nodes
+		float					costs[NAV_MAX_TRANSPORT_LANDINGS];			// and what reaching each costs
+		int						numDestinations;
+		bool					naturalFirst;	// destinations[0] is where the pad's own arc comes down
 	} navTransport_t;
 
 	// -- generation --
@@ -287,9 +356,15 @@ private:
 	void					FloodFill( const idList<idVec3> &seeds );
 	void					AddGapJumpLinks( void );
 	bool					GapJumpClear( const idVec3 &start, const idVec3 &end, float runSpeed,
-										  float jumpSpeed, float gravity ) const;
+										  float jumpSpeed, float gravity, bool stepHop = false,
+										  const idVec3 *actualVelocity = NULL, float actualWishSpeed = 0.0f,
+										  const idVec3 *firstWish = NULL, float firstWishSpeed = 0.0f ) const;
 	int						LevelNodeInCell( int gx, int gy, float z, float tolerance ) const;
 	void					AddOffMeshLinks( void );
+	bool					PadLanding( idEntity *pad, const idVec3 &launch, const idVec3 *steerTo,
+										idVec3 &landing, float *flightSeconds = NULL, float *impactDelta = NULL ) const;
+	bool					PadLandings( idEntity *pad, int from, const idBounds &entryBounds, int targetNode,
+										 idList<int> &landings, idList<float> &costs ) const;
 	void					SealTransportVolumes( void );
 	void					CompactLinks( void );
 	bool					LineEntersTransport( const idVec3 &from, const idVec3 &to ) const;
@@ -297,11 +372,17 @@ private:
 	void					BuildComponents( void );
 	void					BuildLandmarks( void );
 	void					Dijkstra( int source, bool reverse, float *distances ) const;
+	void					RankedSettle( int startNode, float maxCost, float startLeg,
+										  const navFieldTarget_t *targets, const int *remaining,
+										  int numRemaining, bool ranked, int keepBest, float *best,
+										  int &numBest, idList<int> &pricedNode,
+										  idList<float> &pricedCost ) const;
 	float					Heuristic( int node, int goal ) const;
 
 	bool					SampleFloor( const idVec3 &start, float maxDrop, idVec3 &floorOut ) const;
 	bool					GroundUnder( const idVec3 &point, idVec3 &ground ) const;
 	bool					TryStep( const idVec3 &fromFloor, const idVec3 &toCentre, idVec3 &toFloor, int &travelType ) const;
+	bool					RunningDropClear( const idVec3 &from, const idVec3 &to ) const;
 
 	int						AddNode( int gx, int gy, const idVec3 &origin );
 	int						FindNode( int gx, int gy, float z ) const;
@@ -315,11 +396,13 @@ private:
 	void					CellCoords( const idVec3 &origin, int &gx, int &gy ) const;
 
 	// -- routing --
-	bool					FindPathInternal( const idVec3 &start, const idVec3 &goal, rvNavPath &path ) const;
+	bool					FindPathInternal( const idVec3 &start, const idVec3 &goal, rvNavPath &path,
+											  bool nearGoal, float maxImpactDelta ) const;
 	// failure, when given, names the first test a refused line failed.
 	bool					WalkableLine( const idVec3 &from, const idVec3 &to,
 										  const char **failure = NULL ) const;
 	bool					IsLethalFloor( const idVec3 &floor ) const;
+	bool					LegTouchesGoal( const idVec3 &from, const idVec3 &goal, idVec3 &touch ) const;
 	bool					LinkTraversable( int fromNode, int linkIndex ) const;
 	int						FindLink( int fromNode, int toNode ) const;
 	void					StringPull( const idList<int> &nodePath, const idVec3 &goal, rvNavPath &path ) const;

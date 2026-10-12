@@ -2474,9 +2474,9 @@ void idActor::Damage( idEntity *inflictor, idEntity *attacker, const idVec3 &dir
 		return;
 	}
 
-	float scale = damageScale * damageTakenScale;
+	float scale = damageScale * GetDamageTakenScale();
 	if ( attacker->IsType( idActor::GetClassType() ) ) {
-		scale *= static_cast<idActor *>( attacker )->damageDealtScale;
+		scale *= static_cast<idActor *>( attacker )->GetDamageDealtScale();
 	}
 	int	damage = damageDef->GetInt( "damage" ) * scale;
 	damage = GetDamageForLocation( damage, location );
@@ -2576,18 +2576,21 @@ void idActor::Damage( idEntity *inflictor, idEntity *attacker, const idVec3 &dir
 	}
 // RAVEN END
 
-	// freezing damage that would kill an AI turns it to ice instead; it shatters later (idAI::UpdateFreeze)
-	if ( damage > 0 && health >= 1 && health - damage <= 1 && damageDef->GetBool( "filter_freeze" ) && IsType( idAI::GetClassType() ) ) {
-		if ( health > 1 ) {
-			static_cast<idAI *>( this )->FreezeSolid( location );
-		}
-		health = 1;
-		return;
-	}
-
 	if ( damage > 0 ) {
 		int oldHealth = health;
 		AdjustHealthByDamage ( damage );
+		// Honor the actor's damage gate before converting an accepted lethal hit
+		// to ice. A living one-HP AI still needs to enter the frozen state.
+		if ( oldHealth > 0 && health < oldHealth && health <= 1 &&
+			 damageDef->GetBool( "filter_freeze" ) && IsType( idAI::GetClassType() ) &&
+			 !g_perfTest_aiUndying.GetBool() ) {
+			idAI *ai = static_cast<idAI *>( this );
+			health = 1;
+			if ( !ai->IsFrozenSolid() ) {
+				ai->FreezeSolid( location );
+			}
+			return;
+		}
 		if ( health <= 0 ) {
 
 			//allow for quick burning

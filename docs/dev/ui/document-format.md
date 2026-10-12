@@ -68,6 +68,14 @@ The current node types are `group`, `text` and `vector`. Each has an `id`, `type
 nodes; text nodes cannot own children. The root is a normal node inside a
 viewport-filling retained document.
 
+A migration text node may set `legacyText` to `"window"` or `"simple"`. The
+engine host then supplies legacy TTF quads using the font, font size, alignment
+and text rectangle, with the original two-unit inset. `window` clips glyphs
+to the rectangle; `simple` preserves stock simple-window overflow. Quads use
+640x480 source units (1.5 canvas dp each); font size is 72 dp per legacy
+textscale unit. Parent transforms, colors and opacity still apply. This is
+used for the on-foot status readouts, not general UI typography.
+
 The property registry in `Document.cpp` currently supports:
 
 - Left/right/top/bottom anchors; width/height and their min/max constraints;
@@ -116,9 +124,24 @@ Negative anchors, margins and letter spacing are supported; sizes, padding,
 gaps and border widths cannot be negative. Percentages are not accepted for
 font metrics, borders or transform translations. `auto` is supported for
 anchors, dimensions and margins. Additional layout constraints, components,
-and material/image nodes remain to be implemented. Native vector nodes
+and full legacy multi-stage materials remain to be implemented. Native vector nodes
 now have a `paths` array; their [source/compiler contract](vector-paths.md)
 records supported curves, strokes, paints and remaining quality gates.
+
+An `image` node names a relative installed VFS image in its explicit `image`
+property. The default fit is `fill`; ordinary pictures also support `contain`,
+`cover`, `scale-none` and `scale-down`. `image-color` tints the picture and
+`image-blend: additive` adds premultiplied light without opaque rectangle
+coverage. Approved HUD bitmap exceptions reference installed art; no retail
+image is copied into the repository.
+
+Declaring any of `image-offset-x`, `image-offset-y`, `image-scale-x` or
+`image-scale-y` enables repeating normalized UVs on a stationary image quad.
+Offsets are numbers, defaulting to zero; scales are positive numbers,
+defaulting to one. For each axis, UVs span `0.5 + offset - scale/2` through
+`0.5 + offset + scale/2`. These images require `fill` sizing. UV properties
+can bind and animate with explicit base values, without invalidating layout.
+This reproduces the legacy instrument material's scroll and centred scaling.
 
 Every node type can have an alpha `mask` object with `paths` and optional
 `extensions`. These paths use the same schema as vector artwork and their own

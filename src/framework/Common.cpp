@@ -46,6 +46,8 @@ If you have questions concerning this license or the applicable additional terms
 #include "DurableFile.h"
 #include "SettingsPersistence.h"
 #include "PerformancePreset.h"
+#include "InitializationPresentation.h"
+#include <chrono>
 #include "FileSystemPathValidation.h"
 #include "../sys/NetworkEndpoint.h"
 
@@ -151,7 +153,7 @@ idCVar com_updateLoadSize( "com_updateLoadSize", "0", CVAR_BOOL | CVAR_SYSTEM | 
 idCVar com_videoRam( "com_videoRam", "64", CVAR_INTEGER | CVAR_SYSTEM | CVAR_NOCHEAT | CVAR_ARCHIVE, "holds the last amount of detected video ram" );
 idCVar com_activeGameModule( "com_activeGameModule", "", CVAR_SYSTEM | CVAR_NOCHEAT, "active game module (game_sp/game_mp)" );
 idCVar com_nextGameModule( "com_nextGameModule", "", CVAR_SYSTEM | CVAR_NOCHEAT, "internal one-shot game module override for reloadEngine" );
-idCVar com_platformProfile( "com_platformProfile", "default", CVAR_SYSTEM | CVAR_INIT, "startup platform profile (default or steamdeck)" );
+idCVar com_platformProfile( "com_platformProfile", "default", CVAR_SYSTEM | CVAR_INIT, "startup platform profile (default, steamdeck or couch)" );
 
 static bool openQ4_IsValidGameModuleName( const char *moduleName );
 
@@ -731,6 +733,27 @@ static bool Common_HasSteamDeckHostSignal( void ) {
 	return false;
 }
 
+// openQ4: Steam's Big Picture mode (SteamTenfoot) means a television across the
+// room, the Couch viewing profile of ui-visual-design.md section 13.2.
+// OPENQ4_COUCH forces the answer either way.
+static bool Common_HasCouchHostSignal( void ) {
+	const char *explicitSignals[] = {
+		"OPENQ4_COUCH",
+		"OPENQ4_AUTODETECT_COUCH",
+		"SteamTenfoot"
+	};
+	for ( int i = 0; i < static_cast<int>( sizeof( explicitSignals ) / sizeof( explicitSignals[0] ) ); ++i ) {
+		const char *value = Common_GetNonEmptyEnv( explicitSignals[i] );
+		if ( Common_IsEnvFlagFalse( value ) ) {
+			return false;
+		}
+		if ( Common_IsEnvFlagTrue( value ) ) {
+			return true;
+		}
+	}
+	return false;
+}
+
 static bool Common_HasRaspberryPiHostSignal( void ) {
 	const char *explicitSignals[] = {
 		"OPENQ4_RASPBERRYPI",
@@ -888,7 +911,7 @@ static idStr Common_BuildPlatformProfileConfigName( const char *profileName ) {
 	if ( sanitized.Length() == 0 || sanitized.Icmp( "default" ) == 0 ) {
 		return "";
 	}
-	if ( sanitized.Icmp( "steamdeck" ) != 0 ) {
+	if ( sanitized.Icmp( "steamdeck" ) != 0 && sanitized.Icmp( "couch" ) != 0 ) {
 		return "";
 	}
 
@@ -5823,13 +5846,82 @@ static void Common_DrawScaledSmallString( float x, float y, float charWidth, flo
 	renderSystem->SetColor( idVec4( 1.0f, 1.0f, 1.0f, 1.0f ) );
 }
 
+namespace {
+thread_local bool initializationActive = false;
+bool initializationDrawing = false;
+idStr initializationMessage;
+openq4::InitializationPresentation initializationPacing;
+int initializationFrames = 0;
+double initializationLastFrame = 0, initializationMaxGap = 0, initializationDrawMsec = 0;
+double InitializationMilliseconds() {
+	return std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+struct InitializationScope {
+	InitializationScope() {
+		initializationMessage.Clear();
+		initializationPacing = {};
+		initializationFrames = 0;
+		initializationLastFrame = initializationMaxGap = initializationDrawMsec = 0;
+		initializationActive = true;
+	}
+	void Finish() {
+		if ( !initializationActive ) return;
+		initializationActive = false;
+		initializationMessage.Clear();
+		RetainedUI_EndInitialization();
+		if ( cvarSystem->GetCVarBool( "ui_retainedTrace" ) ) {
+			common->Printf( "INITIALIZATION_PRESENTATION frames=%d drawMsec=%.3f maxGapMsec=%.3f\n",
+				initializationFrames, initializationDrawMsec, initializationMaxGap );
+		}
+	}
+	~InitializationScope() { Finish(); }
+};
+}
+
+bool openQ4_UpdateInitialization( void ) {
+	// Thread-local ownership is checked before touching shared renderer/UI state.
+	if ( !initializationActive ) return false;
+	if ( initializationDrawing || initializationMessage.IsEmpty() ||
+		!initializationPacing.Due( InitializationMilliseconds(), openQ4_GetRequestedPresentationCap() ) ||
+		!RetainedUI_CanUpdateInitialization() ) return true;
+	commonLocal.PrintLoadingMessage( initializationMessage.c_str() );
+	if ( cvarSystem->GetCVarBool( "ui_retainedTrace" ) ) {
+		common->Printf( "INITIALIZATION_UPDATE frame=%d\n", initializationFrames );
+	}
+	return true;
+}
+
 void idCommonLocal::PrintLoadingMessage( const char *msg ) {
 	if ( !( msg && *msg ) || !renderSystem || !renderSystem->IsOpenGLRunning() ) {
 		return;
 	}
+	if ( initializationDrawing ) return;
+	struct DrawingScope {
+		double start = InitializationMilliseconds();
+		DrawingScope() { initializationDrawing = true; }
+		~DrawingScope() {
+			initializationDrawing = false;
+			if ( initializationActive ) {
+				const double end = InitializationMilliseconds();
+				initializationPacing.Presented( start, end );
+				if ( initializationFrames++ ) initializationMaxGap = Max( initializationMaxGap, end - initializationLastFrame );
+				initializationLastFrame = end;
+				initializationDrawMsec += end - start;
+			}
+		}
+	} drawingScope;
+	if ( initializationActive && msg != initializationMessage.c_str() ) initializationMessage = msg;
 
 	UI_SettingsRenderFrame settingsFrame;
 	renderSystem->BeginFrame( renderSystem->GetScreenWidth(), renderSystem->GetScreenHeight() );
+	if ( RetainedUI_DrawInitialization( msg ) ) {
+		settingsFrame.Submitting();
+		renderSystem->EndFrame( NULL, NULL );
+		settingsFrame.Presented();
+		RetainedUI_FrameSubmitted();
+		UI_SettingsFrame( false );
+		return;
+	}
 
 	const float virtualWidth = static_cast<float>( SCREEN_WIDTH );
 	const float virtualHeight = static_cast<float>( SCREEN_HEIGHT );
@@ -6631,15 +6723,17 @@ void idCommonLocal::ApplyAutomaticPlatformProfile( void ) {
 	if ( Common_IsEnvFlagTrue( Common_GetNonEmptyEnv( "OPENQ4_DISABLE_STEAMDECK_AUTODETECT" ) ) ||
 		 Common_IsEnvFlagTrue( Common_GetNonEmptyEnv( "OPENQ4_NO_STEAMDECK_AUTODETECT" ) ) ) {
 		Printf( "Steam Deck platform profile auto-detection disabled by environment.\n" );
+	} else if ( Common_HasSteamDeckHostSignal() ) {
+		Printf( "Auto-selecting steamdeck platform profile from host environment.\n" );
+		com_platformProfile.SetString( "steamdeck" );
 		return;
 	}
 
-	if ( !Common_HasSteamDeckHostSignal() ) {
-		return;
+	// openQ4: a television (Big Picture) takes the Couch profile.
+	if ( Common_HasCouchHostSignal() ) {
+		Printf( "Auto-selecting couch platform profile from host environment.\n" );
+		com_platformProfile.SetString( "couch" );
 	}
-
-	Printf( "Auto-selecting steamdeck platform profile from host environment.\n" );
-	com_platformProfile.SetString( "steamdeck" );
 }
 
 static double Common_AdjustMachineSpecGHz( double ghz, cpuid_t cpu ) {
@@ -7201,6 +7295,7 @@ void idCommonLocal::InitGame( void ) {
 	}
 #endif
 
+	InitializationScope initializationScope;
 	PrintLoadingMessage( common->GetLanguageDict()->GetString( "#str_104349" ) );
 
 	// initialize the user interfaces
@@ -7223,6 +7318,7 @@ void idCommonLocal::InitGame( void ) {
 
 	// init the session
 	session->Init();
+	initializationScope.Finish();
 
 	// have to do this twice.. first one sets the correct r_mode for the renderer init
 	// this time around the backend is all setup correct.. a bit fugly but do not want

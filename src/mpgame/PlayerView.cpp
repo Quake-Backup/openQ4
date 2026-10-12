@@ -778,6 +778,12 @@ flashes the player view with the given color
 void idPlayerView::Flash(idVec4 color, int time ) {
 	Fade(idVec4(0, 0, 0, 0), time);
 	fadeFromColor = colorWhite;
+// openQ4 BEGIN
+	// Reduced flashing (ui_reducedFlashing) starts the white-out at 0.40.
+	if ( cvarSystem->GetCVarBool( "ui_reducedFlashing" ) ) {
+		fadeFromColor[ 3 ] = 0.4f;
+	}
+// openQ4 END
 }
 
 /*

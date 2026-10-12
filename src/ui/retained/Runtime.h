@@ -2,6 +2,7 @@
 #pragma once
 
 #include <cstdint>
+#include <chrono>
 #include <memory>
 #include <string>
 #include <vector>
@@ -76,8 +77,15 @@ struct Glyph {
 // CPU submission measurements, not GPU timings. Counts reset for each Frame;
 // resident geometry counts track resource lifetime, including hidden elements.
 struct RuntimeStatistics {
+	bool timingsEnabled = true;
+	std::chrono::steady_clock::time_point Now() const {
+		return timingsEnabled ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
+	}
 	double frameMilliseconds = 0, updateMilliseconds = 0, renderMilliseconds = 0;
 	double vectorCompileMilliseconds = 0, vectorUploadMilliseconds = 0;
+	double presentationMilliseconds = 0, layoutMilliseconds = 0;
+	double sourceMilliseconds = 0, motionMilliseconds = 0, applyMilliseconds = 0, hostDrawMilliseconds = 0;
+	std::uint64_t layoutUpdates = 0;
 	std::uint64_t vectorElements = 0, vectorPathsCompiled = 0, vectorCacheHits = 0, vectorUploads = 0;
 	std::uint64_t vectorHitPathsCompiled = 0, vectorHitCacheHits = 0;
 	std::uint64_t geometryCompiles = 0, drawCalls = 0, submittedVertices = 0, submittedIndices = 0;
@@ -88,6 +96,9 @@ struct RuntimeStatistics {
 	// are dropped before any target is drawn.
 	std::uint64_t layerPushes = 0, layerComposites = 0, peakLayerDepth = 0;
 	std::uint64_t layerElisions = 0;
+	std::uint64_t layerCacheHits = 0;
+	std::uint64_t frameReplays = 0, liveTextRuns = 0;
+	std::uint64_t directMaskDraws = 0;
 	std::uint64_t maskSnapshots = 0, maskApplications = 0, peakLayerTargets = 0;
 	std::uint64_t multiplyFallbacks = 0; // Multiply paths drawn as luminance darkening.
 	// Soft-focus backdrops drawn by the host, and those it could not draw.
@@ -130,6 +141,16 @@ public:
 	// leases (including immutable mask snapshots); zero is the caller's output.
 	// BeginLayer clears a reused slot. EndLayer only changes the active target.
 	virtual bool BeginLayer(std::uint32_t id, int width, int height) = 0;
+	// Optional pressure relief for an unleased target from an older host frame.
+	// Discard its pixels/storage without changing the current drawing target.
+	virtual bool TrimLayer(std::uint32_t id) { return false; }
+	// Opt in only when layer pixels survive submission frames until BeginLayer
+	// clears/reallocates that slot or the runtime is destroyed for device reset.
+	virtual bool CanCacheLayers() const { return false; }
+	virtual bool CanReplayFrames() const { return true; }
+	// Counts remain available without clock queries around every draw. Tools
+	// default to measuring; game hosts can enable timings only while profiling.
+	virtual bool CollectTimings() const { return true; }
 	virtual void CompositeLayer(std::uint32_t source, std::uint32_t destination, float opacity, const Bounds& clip) = 0;
 	// Multiply destination RGBA by the mask alpha, including zero outside its
 	// paths. Source and destination are distinct; neither is the base surface.
@@ -137,6 +158,11 @@ public:
 	virtual void EndLayer(std::uint32_t restore) = 0;
 	virtual FontMetrics GetFontMetrics(const std::string& family, int pixelSize) = 0;
 	virtual Glyph GetGlyph(const std::string& family, int pixelSize, std::uint32_t codepoint) = 0;
+	// Optional migration text layout. Quads are local source units, before the
+	// node transform; 1 source unit is 1.5 canvas dp. The engine uses the same
+	// atlas selection, line height, advances, clipping and padding as stock GUIs.
+	virtual bool LayoutLegacyText(const std::string& text, const std::string& family, float scale,
+		float width, float height, int align, bool clip, std::vector<HudPrimitive>& output) { return false; }
 	// Untextured material that multiplies the destination by each vertex colour
 	// (straight RGB; white leaves it unchanged). Zero means unsupported: the
 	// runtime then darkens by the colour's luminance with ordinary composition.
@@ -249,7 +275,9 @@ public:
 	void CancelTimeline(const std::string& id, CancelPolicy policy, double monotonicSeconds);
 	void SetReducedMotion(bool enabled, double monotonicSeconds);
 	void CloseDocument();
-	void Frame(const Viewport& viewport, double monotonicSeconds);
+	// False when layout or composition cannot present; callers can draw their
+	// fallback in the same frame instead of accepting a partial HUD.
+	bool Frame(const Viewport& viewport, double monotonicSeconds);
 	// Device adapters provide events; these calls never query/control a device.
 	// Pointer coordinates are window units, converted once using the last frame.
 	void PointerMove(float windowX, float windowY, double monotonicSeconds);

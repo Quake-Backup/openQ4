@@ -31,10 +31,12 @@ public:
 	CLASS_PROTOTYPE( riMonsterRetch );
 
 							riMonsterRetch( void );
+	virtual					~riMonsterRetch( void );
 
 	void					Spawn( void );
 	void					Save( idSaveGame *savefile ) const;
 	void					Restore( idRestoreGame *savefile );
+	virtual void			Think( void );
 
 protected:
 	virtual bool			CheckActions( void );
@@ -43,7 +45,8 @@ protected:
 
 private:
 	bool					FindBuffTarget( void );
-	void					ApplyBuff( idAI *ally );
+	bool					ApplyBuff( idAI *ally );
+	void					Event_RestoreBuff( void );
 	void					ClearBuff( void );
 	void					UpdateBuffBeam( void );
 	void					StopBuffBeam( void );
@@ -62,7 +65,10 @@ private:
 	CLASS_STATES_PROTOTYPE( riMonsterRetch );
 };
 
+const idEventDef EV_RetchRestoreBuff( "<retchRestoreBuff>", NULL );
+
 CLASS_DECLARATION( idAI, riMonsterRetch )
+	EVENT( EV_RetchRestoreBuff, riMonsterRetch::Event_RestoreBuff )
 END_CLASS
 
 CLASS_STATES_DECLARATION( riMonsterRetch )
@@ -84,6 +90,10 @@ riMonsterRetch::riMonsterRetch
 */
 riMonsterRetch::riMonsterRetch( void ) {
 	defenseBuff = false;
+}
+
+riMonsterRetch::~riMonsterRetch( void ) {
+	ClearBuff();
 }
 
 /*
@@ -133,7 +143,8 @@ void riMonsterRetch::Save( idSaveGame *savefile ) const {
 ================
 riMonsterRetch::Restore
 
-Damage scales and overlays are not saved with the ally; put them back.
+Rebuild effects after the whole object graph has restored. v3 also needs its
+buff ownership and scales reconstructed; v4 already persisted them on the ally.
 ================
 */
 void riMonsterRetch::Restore( idRestoreGame *savefile ) {
@@ -143,9 +154,22 @@ void riMonsterRetch::Restore( idRestoreGame *savefile ) {
 
 	UseFallbackAAS();
 
-	if ( buffTarget.GetEntity() != NULL ) {
-		ApplyBuff( buffTarget.GetEntity() );
+	PostEventMS( &EV_RetchRestoreBuff, 0 );
+}
+
+void riMonsterRetch::Event_RestoreBuff( void ) {
+	idAI *ally = buffTarget.GetEntity();
+	if ( aifl.dead || ally == NULL || ally->aifl.dead || !ApplyBuff( ally ) ) {
+		ClearBuff();
 	}
+}
+
+void riMonsterRetch::Think( void ) {
+	idAI *ally = buffTarget.GetEntity();
+	if ( GetRetchBuffOwner() == this && ( ally == NULL || ally->aifl.dead ) ) {
+		ClearBuff();
+	}
+	idAI::Think();
 }
 
 /*
@@ -153,26 +177,29 @@ void riMonsterRetch::Restore( idRestoreGame *savefile ) {
 riMonsterRetch::ApplyBuff
 ================
 */
-void riMonsterRetch::ApplyBuff( idAI *ally ) {
+bool riMonsterRetch::ApplyBuff( idAI *ally ) {
+	const idMaterial *overlay = declManager->FindMaterial( defenseBuff ? RETCH_DEFENSE_OVERLAY : RETCH_DAMAGE_OVERLAY );
+	const float dealt = defenseBuff ? 1.0f : spawnArgs.GetFloat( "damageBoostMult", "1" );
+	const float taken = defenseBuff ? spawnArgs.GetFloat( "defenseBoostMult", "1" ) : 1.0f;
+	// A v4 restore already owns its saved modifiers. Recreate its effects
+	// without recalculating an active buff from possibly changed spawn args.
+	if ( ally->GetRetchBuffOwner() != this && !ally->ApplyRetchBuff( this, dealt, taken, overlay ) ) {
+		return false;
+	}
+	if ( GetRetchBuffOwner() != this ) {
+		ApplyRetchBuff( this, 1.0f, 1.0f, overlay );
+	}
 	if ( DebugActions() ) {
 		gameLocal.Printf( "%d %s: buffs %s (%s)\n", gameLocal.time, name.c_str(), ally->GetName(), defenseBuff ? "defense" : "damage" );
 	}
-	const idMaterial *overlay;
 	if ( defenseBuff ) {
-		ally->SetDamageScales( ally->GetDamageDealtScale(), spawnArgs.GetFloat( "defenseBoostMult", "0" ) );
-		overlay = declManager->FindMaterial( RETCH_DEFENSE_OVERLAY );
 		ally->PlayEffect( "fx_defenseBoost", ally->GetAnimator()->GetJointHandle( "origin" ), true );
 		PlayEffect( "fx_defenseBoost", animator.GetJointHandle( "origin" ), true );
 	} else {
-		ally->SetDamageScales( spawnArgs.GetFloat( "damageBoostMult", "0" ), ally->GetDamageTakenScale() );
-		overlay = declManager->FindMaterial( RETCH_DAMAGE_OVERLAY );
 		ally->PlayEffect( "fx_damageBoost", ally->GetAnimator()->GetJointHandle( "origin" ), true );
 		PlayEffect( "fx_damageBoost", animator.GetJointHandle( "origin" ), true );
 	}
-	ally->GetRenderEntity()->overlayShader = overlay;
-	ally->UpdateVisuals();
-	renderEntity.overlayShader = overlay;
-	UpdateVisuals();
+	return true;
 }
 
 /*
@@ -183,15 +210,12 @@ riMonsterRetch::ClearBuff
 void riMonsterRetch::ClearBuff( void ) {
 	idAI *ally = buffTarget.GetEntity();
 	const char *effect = defenseBuff ? "fx_defenseBoost" : "fx_damageBoost";
-	if ( ally != NULL ) {
-		ally->SetDamageScales( 1.0f, 1.0f );
-		ally->GetRenderEntity()->overlayShader = NULL;
+	if ( ally != NULL && ally->GetRetchBuffOwner() == this ) {
+		ally->ClearRetchBuff( this );
 		ally->StopEffect( effect );
-		ally->UpdateVisuals();
 	}
 	StopEffect( effect );
-	renderEntity.overlayShader = NULL;
-	UpdateVisuals();
+	ClearRetchBuff( this );
 	buffTarget = NULL;
 	StopBuffBeam();
 }
@@ -207,14 +231,15 @@ bool riMonsterRetch::FindBuffTarget( void ) {
 			continue;
 		}
 		idAI *ally = static_cast<idAI *>( actor );
-		// an overlay means another retch (or a powerup) already has it
-		if ( ally->aifl.dead || ally->GetRenderEntity()->overlayShader != NULL ) {
+		if ( ally->aifl.dead || ally->IsFrozenSolid() || ally->GetRetchBuffOwner() != NULL ) {
 			continue;
 		}
 
 		defenseBuff = ( gameLocal.random.RandomInt( 2 ) == 0 );
+		if ( !ApplyBuff( ally ) ) {
+			continue;
+		}
 		buffTarget = ally;
-		ApplyBuff( ally );
 		TurnToward( ally->GetPhysics()->GetOrigin() );
 		return true;
 	}

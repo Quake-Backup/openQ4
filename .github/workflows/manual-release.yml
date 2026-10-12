@@ -49,6 +49,11 @@ on:
         required: false
         default: false
         type: boolean
+      prerelease:
+        description: Publish as a prerelease without replacing the latest stable release
+        required: false
+        default: false
+        type: boolean
 
 concurrency:
   group: openq4-manual-releases
@@ -2257,6 +2262,7 @@ jobs:
           OPENQ4_SOURCE_SHA: ${{ needs.metadata.outputs.openq4_source_sha }}
           RELEASE_ASSET_MANIFEST: ${{ steps.release_assets.outputs.asset_manifest }}
           RELEASE_DRAFT: ${{ inputs.draft }}
+          RELEASE_PRERELEASE: ${{ inputs.prerelease }}
         shell: bash
         run: |
           set -euo pipefail
@@ -2264,6 +2270,14 @@ jobs:
           if [ "${RELEASE_DRAFT}" != "true" ] && [ "${RELEASE_DRAFT}" != "false" ]; then
             echo "Invalid draft selector: ${RELEASE_DRAFT@Q}"
             exit 1
+          fi
+          if [ "${RELEASE_PRERELEASE}" != "true" ] && [ "${RELEASE_PRERELEASE}" != "false" ]; then
+            echo "Invalid prerelease selector: ${RELEASE_PRERELEASE@Q}"
+            exit 1
+          fi
+          latest_policy=legacy
+          if [ "${RELEASE_PRERELEASE}" = "true" ]; then
+            latest_policy=false
           fi
 
           tag="${{ needs.metadata.outputs.release_tag }}"
@@ -2368,7 +2382,7 @@ jobs:
             )
             # Keep new downloads unpublished until their stored bytes have
             # been compared with the archives that passed validation.
-            create_args+=(--draft)
+            create_args+=(--draft --prerelease="${RELEASE_PRERELEASE}")
             gh release create "${tag}" "${assets[@]}" "${create_args[@]}"
           fi
 
@@ -2430,7 +2444,7 @@ jobs:
             gh release edit "${tag}" \
               --repo "${GITHUB_REPOSITORY}" \
               --draft \
-              --prerelease=false
+              --prerelease="${RELEASE_PRERELEASE}"
             draft_state="$(
               gh release view "${tag}" \
                 --repo "${GITHUB_REPOSITORY}" \
@@ -2462,8 +2476,15 @@ jobs:
           gh api \
             --method PATCH \
             "repos/${GITHUB_REPOSITORY}/releases/${release_id}" \
-            -F prerelease=false \
+            -F prerelease="${RELEASE_PRERELEASE}" \
+            -f make_latest="${latest_policy}" \
             -F draft=false >/dev/null
+
+          published_state="$(gh api "repos/${GITHUB_REPOSITORY}/releases/${release_id}" --jq '[.draft, .prerelease] | map(tostring) | join(" ")')"
+          if [ "${published_state}" != "false ${RELEASE_PRERELEASE}" ]; then
+            echo "Published release ${tag} has unexpected draft/prerelease state: ${published_state}"
+            exit 1
+          fi
 
           git fetch --force origin "refs/tags/${tag}:refs/tags/${tag}"
           published_tag_sha="$(git rev-parse --verify "refs/tags/${tag}^{commit}")"

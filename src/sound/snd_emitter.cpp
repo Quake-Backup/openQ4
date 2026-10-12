@@ -48,6 +48,7 @@ extern idCVar s_frequencyShift;
 extern idCVar s_useEAXOcclusion;
 
 static const int SOUND_SHADER_SHAKE_RATE_HZ = 30;
+static const float SOUND_SHADER_SCREEN_SHAKE_SCALE = 600.0f;
 static const float SOUND_SHADER_MATERIAL_SHAKE_SCALE = 2800.0f;
 static const float SOUND_SHADER_SHAKE_NORMALIZE = 1.0f / 32768.0f;
 static const float SOUND_WORLD_VOLUME_EPSILON = 1.0f / 1024.0f;
@@ -512,7 +513,6 @@ void idSoundChannel::Reset()
 
 	volumeDB = DB_SILENCE;
 	currentAmplitude = 0.0f;
-	shakeScale = 0.0f;
 	lastFrequencyShift = 1.0f;
 	elapsedFrequencyShiftTime = 0.0f;
 }
@@ -606,7 +606,6 @@ void idSoundChannel::UpdateVolume( int currentTime )
 
 	volumeDB = DB_SILENCE;
 	currentAmplitude = 0.0f;
-	shakeScale = 0.0f;
 
 	if( leadinSample == NULL )
 	{
@@ -699,9 +698,6 @@ void idSoundChannel::UpdateVolume( int currentTime )
 	}
 
 	volumeScale = SoundSanitizeGainScale( volumeScale, 0.0f );
-	// Retail took a sound's shake strength from its own volume and falloff, never the
-	// player's volume setting, so the master volume goes on after this.
-	shakeScale = volumeScale;
 	volumeScale = SoundSanitizeGainScale( volumeScale * SoundSanitizeGainScale( s_volume.GetFloat(), 0.0f ), 0.0f );
 
 	// store the new volume on the channel
@@ -1786,6 +1782,59 @@ float idSoundEmitterLocal::CurrentAmplitude()
 		return idMath::ATan( high * SOUND_SHADER_SHAKE_NORMALIZE, 1.0f ) / DEG2RAD( 45.0f );
 	}
 	return sampleAmplitude;
+}
+
+/*
+========================
+idSoundEmitterLocal::ShakeAmplitudeForPosition
+
+Camera shake has its own authored scale and direct distance in Quake 4 map
+units. Light flicker and the audio mix use different gains. Apply the volume
+and shakes before the angle conversion, taking the strongest channel on each
+emitter (retail Quake4.exe 1.4.2, FindAmplitude at 0x10173eb0).
+========================
+*/
+float idSoundEmitterLocal::ShakeAmplitudeForPosition( const int currentTime, const idVec3& listenerPosition )
+{
+	const float distance = ( listenerPosition - origin ).Length();
+	float high = 0.0f;
+	for( int i = 0; i < channels.Num(); ++i )
+	{
+		idSoundChannel* chan = channels[i];
+		if( chan == NULL || chan->soundShader == NULL || chan->parms.shakes <= 0.0f ||
+			currentTime < chan->startTime || SoundChannelHasCompleted( chan, currentTime ) )
+		{
+			continue;
+		}
+		float volume = chan->parms.volume * chan->parms.shakes;
+		if( ( chan->parms.soundShaderFlags & SSF_GLOBAL ) == 0 )
+		{
+			SoundWorldApplyDistanceFalloff( volume, distance, chan->parms.minDistance, chan->parms.maxDistance );
+		}
+		if( FLOAT_IS_NAN( volume ) || volume <= 0.0f )
+		{
+			continue;
+		}
+		// No PCM fallback or no_flicker override: only authored shakeData moves
+		// the camera. In particular, a silent tail must stay still.
+		const char* shakeData = chan->soundShader->GetShakeData( chan->choice );
+		if( shakeData == NULL || shakeData[0] == '\0' )
+		{
+			continue;
+		}
+		const int length = idStr::Length( shakeData );
+		const int relativeTime = idMath::FtoiFast( SoundChannelPlaybackTimeMsec( chan, currentTime ) );
+		int64 index = static_cast<int64>( relativeTime ) * SOUND_SHADER_SHAKE_RATE_HZ / 1000;
+		if( chan->IsLooping() )
+		{
+			index %= length;
+		}
+		if( index >= 0 && index < length )
+		{
+			high = Max( high, Max( 0, shakeData[index] - 'a' ) * SOUND_SHADER_SCREEN_SHAKE_SCALE * volume );
+		}
+	}
+	return idMath::ATan( high / 32767.0f, 1.0f ) / DEG2RAD( 45.0f );
 }
 
 /*

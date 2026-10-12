@@ -917,6 +917,7 @@ public:
 	virtual void			GetRenderTextureSize(idRenderTexture* renderTexture, int& renderTextureWidth, int& renderTextureHeight);
 	virtual void			SetRenderTextureDebugName(idRenderTexture* renderTexture, const char* label);
 	virtual void			BindRenderTexture(idRenderTexture* renderTexture, idRenderTexture* feedbackRenderTexture);
+	virtual void BeginGuiRoot();
 	virtual void			ResolveMSAA(idRenderTexture* msaaRenderTexture, idRenderTexture* destRenderTexture, bool resolveDepth = false);
 	virtual void			ClearRenderTarget(bool clearColor, bool clearDepth, float depthValue, float red, float green, float blue, float alpha = 1.0f);
 	virtual void			SetPostProcessSourceSize(int width, int height);

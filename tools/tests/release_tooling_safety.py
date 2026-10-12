@@ -853,7 +853,7 @@ def validate_draft_releases_never_announce() -> None:
     for token in (
         "RELEASE_DRAFT: ${{ inputs.draft }}",
         'if [ "${RELEASE_DRAFT}" != "true" ] && [ "${RELEASE_DRAFT}" != "false" ]; then',
-        "create_args+=(--draft)",
+        'create_args+=(--draft --prerelease="${RELEASE_PRERELEASE}")',
         '--json isDraft,targetCommitish',
         "was requested as a draft but reports isDraft=",
         "Draft release ${tag} records target",
@@ -873,8 +873,18 @@ def validate_draft_releases_never_announce() -> None:
         raise AssertionError("draft promotion must resolve the release ID through the draft-aware gh view")
     if 'releases/tags/${tag}' in promotion:
         raise AssertionError("draft promotion must not require a published release-by-tag lookup")
-    if '-F prerelease=false' not in promotion:
+    if '-F prerelease="${RELEASE_PRERELEASE}"' not in promotion:
         raise AssertionError("release publication must send typed boolean state to GitHub")
+    for token in (
+        '      prerelease:\n        description:',
+        'RELEASE_PRERELEASE: ${{ inputs.prerelease }}',
+        'if [ "${RELEASE_PRERELEASE}" != "true" ] && [ "${RELEASE_PRERELEASE}" != "false" ]; then',
+        'if [ "${RELEASE_PRERELEASE}" = "true" ]; then\n            latest_policy=false',
+        '-f make_latest="${latest_policy}"',
+        'if [ "${published_state}" != "false ${RELEASE_PRERELEASE}" ]; then',
+    ):
+        if token not in workflow:
+            raise AssertionError(f"prerelease publication is missing its state guard: {token}")
 
     if "if (release.draft) {" not in announcer:
         raise AssertionError("Discord release announcer must refuse to announce a draft")

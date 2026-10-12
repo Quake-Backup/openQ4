@@ -257,6 +257,8 @@ public:
 
 	virtual void		Think( void );
 	bool				GetForceFieldBounds( idBounds &bounds ) const;
+	// The brush the field evaluates contacts against, NULL before Spawn.
+	const idClipModel *	GetForceFieldClipModel( void ) const { return forceField.GetClipModel(); }
 
 // RAVEN BEGIN
 // kfuller: idDamagable may want to change some things on the fly

@@ -36,6 +36,8 @@ typedef struct rendererBenchmarkFrameSample_s {
 	unsigned long long waitPhaseMicroseconds[RENDERER_WAIT_CPU_PHASE_COUNT];
 	unsigned long long uploadRetireMicroseconds;
 	unsigned long long cpuFrameMicroseconds;
+	unsigned long long frameBuildMicroseconds;
+	unsigned long long frameSubmitMicroseconds;
 	int				gpuMsec;
 	bool			gpuFrameTimingValid;
 	renderGpuTimingBackend_t gpuFrameBackend;

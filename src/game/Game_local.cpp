@@ -6801,6 +6801,8 @@ Parses textual entity definitions out of an entstring and spawns gentities.
 */
 // RAVEN BEGIN
 // ddynerman: multiple game instances
+#include "awakening/M01Cinematic.inl"
+
 void idGameLocal::SpawnMapEntities( int instance, unsigned short* entityNumIn, unsigned short* entityNumOut, int* startSpawnCount ) {
 // RAVEN END
 	int			i;
@@ -6891,6 +6893,7 @@ void idGameLocal::SpawnMapEntities( int instance, unsigned short* entityNumIn, u
 	}
 
 	// capture spawn count of start of map entities (after we've spawned in the physics ents)
+	const bool directAwakeningM01 = Awakening_PrepareM01Cinematic( mapFile );
 	if ( startSpawnCount ) {
 		(*startSpawnCount) = spawnCount;
 	}
@@ -6902,6 +6905,9 @@ void idGameLocal::SpawnMapEntities( int instance, unsigned short* entityNumIn, u
 		}
 		mapEnt = mapFile->GetEntity( i );
 		args = mapEnt->epairs;
+		if ( directAwakeningM01 ) {
+			Awakening_DirectM01Relay( args );
+		}
 		if ( profileMapSpawn ) {
 			mapCopyTimer.Stop();
 			mapDefLookupTimer.Start();

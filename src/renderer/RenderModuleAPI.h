@@ -81,7 +81,9 @@
 // 23 - Append-only idFileSystem slots GeneratedCacheReadsEnabled and
 //      GeneratedCacheWritesEnabled: model and world loads skip building a
 //      generated-cache payload the level-load coordinator would discard.
-#define RENDER_API_VERSION			23
+// 24 - Append-only idRenderSystem BeginGuiRoot preserves compatible HUD
+//      batches without weakening explicit render-target flush barriers.
+#define RENDER_API_VERSION			24
 #define RENDER_API_ENTRY_POINT		"GetRenderAPI"
 
 class idSys;
