@@ -10,7 +10,7 @@ Team, Players, Vote, Settings, Voice, Server and Match pages are built on it,
 the Match page with all six of Match Control's sections; Admin still hands off
 to its stock page, so the Escape card stays opt-in. The Welcome card covers
 the connect-time join offer with its Join, Server, Players and Settings pages,
-all built, so it presents by default. The loading screen hands a join over to
+all built, so it presents when `ui_retained 1` is selected. The loading screen hands a join over to
 the Welcome card (B8). Admin waits for text fields, as does the Match page's
 referee sign-in, which opens the stock page for its credential; the Admin
 page's password check now works (B7).
@@ -23,7 +23,8 @@ lists the pages that still do in `RETAINED_MP_ESCAPE_MISSING_PAGES`, today
 Admin, and `RETAINED_MP_WELCOME_MISSING_PAGES`, now empty, and
 `tools/tests/ui_retained_gate.py` keeps each list equal to its document's
 hand-off pages (its `stock_<page>` programs). The Welcome card therefore
-presents with `ui_retained` alone, which is on by default; `ui_retained 0`
+presents with `ui_retained` alone, which defaults to 0 while its gameplay
+performance overhead remains too high; `ui_retained 0`
 keeps the classic join panel. A page that is built may still hand off what it
 cannot edit yet (`classic_<page>`: the Settings page's name and clan, the
 Match page's referee credential and its lists' rows past the card's) without

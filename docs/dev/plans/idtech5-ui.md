@@ -158,7 +158,8 @@ partial.
 The [retained screen increment](../ui/retained-screens.md) builds the title
 screen, the single-player pause menu and the stock loading screens from
 visual specification 1.7 and the design atlas, behind one `ui_retained` gate
-(on by default since 1 October; `ui_retainedSystem` opts into the SYSTEM page,
+(off by default again from 12 October because gameplay overhead remains too
+high; `ui_retainedSystem` opts into the SYSTEM page,
 which joins the gate once every stock setting works there). It adds image
 nodes, additive and multiply path blends, a view-height canvas, typed session
 menu requests and exact overflow clipping under translation and scale. The
@@ -678,6 +679,11 @@ and Arena remain part of the wider retained-screen migration. This completes cam
 it does not claim the complete UI/editor/migration programme is finished.
 
 ## Retained screens on by default (1 October 2026)
+
+Historical milestone: the 12 October prerelease restores `ui_retained 0` as
+the shipping default because performance overhead is still not negligible.
+Archived preferences remain intact; this section records the earlier gate
+and fallback work rather than the current default.
 
 `ui_retained` now defaults to 1 and is archived. The SYSTEM page joins it only
 once it has a control for every setting of the stock page; it still lacks the

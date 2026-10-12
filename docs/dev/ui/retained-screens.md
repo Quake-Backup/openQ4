@@ -224,8 +224,10 @@ characters; this revision preserves those descriptions as the register requires.
 
 ## One gate (session screens)
 
-`ui_retained` is the only switch for these screens. It is on by default and
-archived, so a player who sets it to 0 keeps the stock screens. While it is 0
+`ui_retained` is the only switch for these screens. It defaults to 0 because
+retained gameplay overhead is still not negligible. It remains archived, so
+an existing player preference is preserved; `seta ui_retained 0` returns an
+opted-in profile to the stock screens. While it is 0
 no menu, pause or loading route creates a retained view, and the stock GUIs
 present every screen exactly as before. Developer commands that name a
 document explicitly (`testGUI`, `ui_retainedPreview`) remain the runtime's
