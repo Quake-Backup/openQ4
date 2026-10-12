@@ -55,6 +55,10 @@ public:
     float viewportX=0,viewportY=0;
     int captureWidth=0,captureHeight=0;
     bool softFocus=false;
+    bool timingRequested=false;
+    int begins=0,ends=0;
+    void BeginRoot(){++begins;Record("root-begin");}
+    void EndRoot(){++ends;Record("root-end");}
     std::uint64_t frame=1;
     std::uint64_t RenderFrame() const { return frame; }
     void Reset();
@@ -68,7 +72,7 @@ public:
     void RetireCanvasOwner() {}
     EngineHost& host;
     const int id=++nextId;
-    bool loaded=false,failSave=false,failLoad=false,failRestore=false;
+    bool loaded=false,failSave=false,failLoad=false,failRestore=false,failFrame=false;
     int state=0,releases=0;
     Runtime(EngineHost& owner):host(owner) { runtimes.push_back(this); }
     ~Runtime() { Shutdown(); runtimes.erase(std::find(runtimes.begin(),runtimes.end(),this)); Record("destroy",id); }
@@ -93,12 +97,13 @@ public:
     void Shutdown() { loaded=false; state=-1; Record("shutdown",id); }
     void SetReducedMotion(bool,double) { assert(loaded); }
     RuntimeStatistics Statistics() const { return {}; }
-    void Frame(const Viewport& viewport,double now) {
+    bool Frame(const Viewport& viewport,double now) {
         assert(loaded && viewport.width==host.viewportWidth && viewport.height==host.viewportHeight);
         // Soft focus reads the view's place in the window and the window's size.
         assert(host.viewportX==viewport.originX && host.viewportY==viewport.originY);
         assert(host.captureWidth==2080 && host.captureHeight==1160 && host.softFocus);
         Record("frame",id,now);
+        return !failFrame;
     }
 };
 }
@@ -139,13 +144,14 @@ static int LangDict_GetCodePageGeneration() { return codePageGeneration; }
 '''
 
 HELPERS = r'''
+void RetainedUI_EndInitialization() { Record("end-initialization"); }
 void SetApplicationOpen(bool value) { applicationOpen.store(value); }
 void CancelInput(bool=false,bool=true) { Record("cancel-preview"); }
 bool WindowFocused() { return true; }
 static int softFocusUpdates=0;
 bool UpdateSoftFocus() { ++softFocusUpdates; return true; }
 static int rootProfileRecords=0;
-void RecordRootProfile(std::uint64_t,std::chrono::steady_clock::time_point,double,const openq4::ui::RuntimeStatistics&) { ++rootProfileRecords; }
+void RecordRootProfile(std::uint64_t,std::chrono::steady_clock::time_point,double,const openq4::ui::RuntimeStatistics&,const std::string&) { ++rootProfileRecords; }
 struct Owner {
     openq4::ui::Runtime* runtime=nullptr;
     int before=0,restored=0,failed=0;
@@ -255,9 +261,16 @@ int main() {
     assert(host.viewportWidth==777 && host.viewportHeight==333 && host.viewportX==7 && host.viewportY==3 && !renderer.uiViewport);
     assert(softFocusUpdates==2); // Each drawn view refreshes the soft-focus capability first.
     assert(rootProfileRecords==0); // Root views are profiled only on request.
+    assert(!host.timingRequested && host.begins==2 && host.ends==2);
     rootProfileFrames=1;
     assert(RetainedUI_DrawViewRoot(a,viewport) && rootProfileRecords==1);
+    assert(host.timingRequested);
     rootProfileFrames=0;
+    left.runtime->failFrame=true;
+    assert(!RetainedUI_DrawViewRoot(a,viewport));
+    assert(host.begins==4 && host.ends==4 && !host.timingRequested);
+    assert(host.viewportWidth==777 && host.viewportHeight==333 && host.viewportX==7 && host.viewportY==3 && !renderer.uiViewport);
+    left.runtime->failFrame=false;
 
     // A dirty resource generation cannot invalidate geometry already queued
     // for this front-end frame. Unchanged-generation peers still prepare.
@@ -282,6 +295,7 @@ int main() {
     assert(RetainedUI_PrepareView(a) && RetainedUI_PrepareView(b));
     events.clear();
     RetainedUI_Shutdown();
+    assert(Count("end-initialization")==1 && First("end-initialization")<First("shutdown"));
     assert(Last("shutdown")<First("reset") && Last("before")<First("shutdown"));
     assert(Last("reset")<First("failed"));
     assert(!left.runtime->IsLoaded() && !right.runtime->IsLoaded() && a->failed && b->failed);

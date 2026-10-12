@@ -466,10 +466,22 @@ def build():
               'imageAliases':{'gfx/guis/mainmenu/e3_0_add':'q4-add/gfx/guis/mainmenu/e3_0', **dict(sorted(image_aliases.items()))}}
     return {'artwork.q4ui':document,'coverage.json':registry}
 
+def canonical_numbers(value):
+    """Discard platform libm roundoff far below the renderer's float precision."""
+    if isinstance(value, float):
+        result = round(value, 12)
+        return 0.0 if result == 0 else result
+    if isinstance(value, dict):
+        return {key: canonical_numbers(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [canonical_numbers(item) for item in value]
+    return value
+
+
 def main():
     parser=argparse.ArgumentParser(description=__doc__);parser.add_argument('--check',action='store_true');args=parser.parse_args()
     for name,data in build().items():
-        text=json.dumps(data,indent=2,ensure_ascii=False)+'\n';target=OUT/name
+        text=json.dumps(canonical_numbers(data),indent=2,ensure_ascii=False)+'\n';target=OUT/name
         if args.check:
             assert target.read_text(encoding='utf8')==text,str(target)+' is stale'
         else:target.write_text(text,encoding='utf8')
