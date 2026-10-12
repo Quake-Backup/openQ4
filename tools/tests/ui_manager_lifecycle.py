@@ -31,6 +31,7 @@ SUPPORT = r'''
 #include <string>
 #include <vector>
 static unsigned nativePublicationInvalidations=0;
+bool openQ4_UpdateInitialization(){return false;}
 namespace openq4 { void NativeInputBeforeUiChange(std::uint64_t,std::uint64_t) noexcept {++nativePublicationInvalidations;} }
 using ID_TIME_T = long long;
 struct idStr : std::string {

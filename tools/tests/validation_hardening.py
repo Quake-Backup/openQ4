@@ -739,6 +739,10 @@ def validate_validation_wiring() -> None:
         # Campaign runtime checks require user-supplied retail/expansion assets.
         "campaign_runtime.py",
         "campaign_selection_runtime.py",
+        "awakening_m01_cinematic.py",
+        "awakening_status_runtime.py",
+        "monster_hit_materials.py",
+        "mp_bot_audit.py",
         "renderer_milestone_d_acceptance.py",
         "renderer_milestone_d_fixture.py",
         # Radio graph evidence plays decoded audio through a staged client on

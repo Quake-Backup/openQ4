@@ -55,6 +55,7 @@ const char* va(const char* format,unsigned value){static char text[128];std::snp
 struct Host {
     struct Layer {idRenderTexture* target=nullptr;const idMaterial* material=nullptr;const idMaterial* maskMaterial=nullptr;int width=0,height=0;};
     std::vector<Layer> layers;
+    idRenderTexture* boundTarget=nullptr;
     int viewportWidth=1280,viewportHeight=720;
     std::vector<openq4::ui::Vertex> drawn;std::uintptr_t drawnMaterial=0;
     void Draw(const std::vector<openq4::ui::Vertex>& vertices,const std::vector<int>& indices,std::uintptr_t material){
@@ -109,6 +110,7 @@ int main(){
 
 DRAW_SUPPORT = r'''
 #include <algorithm>
+#include <array>
 #include <cassert>
 #include <cstdint>
 #include <cstdio>
@@ -142,8 +144,16 @@ struct Renderer {
 Renderer* renderSystem=&renderer;
 struct Declarations {idMaterial solid{"_retainedSolid"}; const idMaterial* FindMaterial(const char*){return &solid;}} declarations;
 Declarations* declManager=&declarations;
+// This fixture qualifies indexed mesh submission with atlas caching disabled.
+// Rasterization itself is covered by the retained runtime and capture suites.
+struct {bool GetBool()const{return false;}} ui_retainedAtlas;
 struct Host {
     int viewportWidth=1280,viewportHeight=720;
+    struct AtlasPage {bool dirty=false;const idMaterial* material=nullptr;std::uint64_t lastFrame=0;int references=0;};
+    std::vector<AtlasPage> atlasPages;
+    unsigned rasterDraws=0,rasterSavedVertices=0;
+    std::uint64_t RenderFrame()const{return 1;}
+    template<class... T>void CacheRaster(T&&...){assert(false && "atlas disabled in indexed mesh fixture");}
 '''
 DRAW_MAIN = r'''
 };
@@ -216,7 +226,7 @@ struct idDrawVert {idVec3 xyz; idVec2 st; idVec3 normal; idVec3 tangents[2]; byt
 template<class T> T Min(T a,T b){return a<b?a:b;}
 template<class T> T Max(T a,T b){return a>b?a:b;}
 struct idImageOpts {int width=0,height=0,format=0,numLevels=0;bool isPersistant=false;};
-enum {FMT_RGBA8,TF_LINEAR=3,DS_DEFAULTED=9};
+enum {FMT_RGBA8,TF_NEAREST,TF_LINEAR=3,DS_DEFAULTED=9};
 struct idImage {std::string name;int width=0,height=0,filter=0;};
 struct idMaterial {std::string name;int state=1;int GetState() const {return state;}};
 struct idRenderTexture {idImage* image=nullptr;bool destroyed=false;};
@@ -257,9 +267,12 @@ struct Declarations {
     }
 } declarations;
 Declarations* declManager=&declarations;
+const char* va(const char* format,unsigned value){static char text[128];std::snprintf(text,sizeof text,format,value);return text;}
 struct Host {
     struct Layer {idRenderTexture* target=nullptr;int width=0,height=0;};
     std::vector<Layer> layers;
+    idRenderTexture* boundTarget=nullptr;
+    std::vector<int> atlasPages;
     int viewportWidth=1600,viewportHeight=900;
     float viewportX=160,viewportY=90;
     int captureWidth=1920,captureHeight=1080;
@@ -391,7 +404,7 @@ def main():
     source=(ROOT/'src/ui/RetainedUI.cpp').read_text()
     source_text=source
     bodies=[function_body(source,signature).replace(' override','') for signature in (
-        'bool BeginLayer(','void CompositeLayer(','void MaskLayer(','void DrawLayer(')]
+        'void BindTarget(','bool BeginLayer(','void CompositeLayer(','void MaskLayer(','void DrawLayer(')]
     # The Vulkan executor's side of the row-order contract the composites rely on.
     executor=(ROOT/'src/renderer/Vulkan/vk_GuiExecutor.cpp').read_text(encoding='utf-8')
     assert 'vkExec.activePipelineTarget.lowerOrigin = true;' in function_body(executor,'bool VK_Exec_SetRenderTarget('),\
@@ -413,13 +426,13 @@ def main():
         draw=Path(temp)/'draw.cpp';drawBinary=Path(temp)/'draw.exe'
         draw_bodies=[function_body(source_text,'struct HostMesh {')+';','HostMesh scratchMesh;','std::unordered_map<std::uint64_t,HostMesh> meshes;']+[
             function_body(source_text,signature).replace(' override','') for signature in (
-                'void Draw(','void DrawMesh(','void ReleaseMesh(','const idMaterial* Material(','void Convert(','void Submit(const HostMesh&')]
+                'void Draw(','void DrawMesh(','void ReleaseMesh(','void DropRaster(','const idMaterial* Material(','void Convert(','void Submit(const HostMesh&')]
         draw.write_text(DRAW_SUPPORT+'\n'.join(draw_bodies)+DRAW_MAIN,encoding='utf-8')
         subprocess.run([compiler,'-std=c++17',str(draw),'-o',str(drawBinary)],check=True)
         subprocess.run([str(drawBinary)],check=True)
         soft=Path(temp)/'soft.cpp';softBinary=Path(temp)/'soft.exe'
         soft_bodies=[function_body(source_text,signature).replace(' override','') for signature in (
-            'bool SoftenBackdrop(','bool StreakBackdrop(','bool EnsureBlurTargets(','void DrawBlurPass(','void ClearLayers(','void Reset(')]
+            'void BindTarget(','bool SoftenBackdrop(','bool StreakBackdrop(','bool EnsureBlurTargets(','void DrawBlurPass(','void ClearLayers(','void Reset(')]
         soft.write_text(SOFT_SUPPORT+'\n'.join(soft_bodies)+SOFT_MAIN,encoding='utf-8')
         subprocess.run([compiler,'-std=c++17',str(soft),'-o',str(softBinary)],check=True)
         subprocess.run([str(softBinary)],check=True)
