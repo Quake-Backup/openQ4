@@ -1,4 +1,4 @@
-# Android/GLES — unreleased branch notes
+# Android/GLES — integration and release notes
 
 ## Highlights
 
@@ -12,7 +12,7 @@
 
 ## Upgrade notes
 
-- Android is currently a source-build target with a standalone SDLActivity APK host. Build matching engine, renderer, game modules and runtime packs together, then assemble the APK using the included Gradle project. Players must supply original Quake 4 assets. The standalone app supports ordinary SDL/gamepad input; the external SigmaTouch host library is not included.
+- Manual Releases includes an experimental release-signed ARM64 APK from the standalone SDLActivity host, with matching engine, renderer, game modules and runtime packs. The included Gradle project also supports source builds. Players must supply original Quake 4 assets. The standalone app supports ordinary SDL/gamepad input; the external SigmaTouch host library is not included.
 - The initial debug APK contains the complete current runtime packs and is approximately 660 MB, with additional private storage needed to extract those packs. Physical Android device and SigmaTouch host qualification remains open.
 - GLES remains experimental and does not yet provide every advanced effect from the desktop renderers. Desktop OpenGL remains the default; GLES must be selected explicitly on desktop.
 - Generated image caches rebuild once to apply corrected compression padding and cube-map mip headers. The first map load can take longer; saves are unaffected.

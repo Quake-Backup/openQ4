@@ -6,7 +6,7 @@
 
 This guide covers everything required to compile openQ4 from source on Windows, Linux, and macOS.
 
-Experimental Android native builds, SigmaTouch host integration and the optional desktop GLES renderer are covered in the [Android/GLES build guide](docs/dev/android-build.md). These are source-build targets; existing desktop release packages remain unchanged.
+The experimental Android ARM64 APK, native builds, SigmaTouch host integration and optional desktop GLES renderer are covered in the [Android/GLES build guide](docs/dev/android-build.md). Manual Releases includes a signed standalone APK; SigmaTouch remains a separately licensed external host.
 
 > [!NOTE]
 > **Regular players do not need to build from source.** Download the latest release from the [Releases page](https://github.com/themuffinator/openQ4/releases) and follow the [Getting Started instructions](README.md#getting-started) instead.

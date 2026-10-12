@@ -1683,10 +1683,12 @@ def validate_release_asset_set_helper_contracts() -> None:
         "openq4-1.2.3-linux-arm64.tar.xz",
         "openq4-1.2.3-windows-x64.zip",
         "openq4-1.2.3-macos-arm64-metal-unsigned.tar.gz",
+        "openq4-1.2.3-android-arm64-experimental.apk",
+        "openq4-1.2.3-android-dependency-sources.tar.xz",
     ]
     def write_archive(path: Path) -> None:
         payload = b"verified runtime fixture\n"
-        if path.suffix == ".zip":
+        if path.suffix in {".zip", ".apk"}:
             with ZipFile(path, "w") as archive:
                 archive.writestr("runtime.txt", payload)
         else:
