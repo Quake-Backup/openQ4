@@ -39,6 +39,10 @@ Set `ANDROID_HOME` to an installed Android SDK, or set `sdk.dir` in the ignored
 `builddir/android-apk/app/outputs/apk/debug/`. Native compilation stays in Meson;
 Gradle only packages staged libraries and openQ4-owned overlays. Android currently targets `arm64-v8a` and API 24 or later.
 
+Gradle uses a 4 GiB heap and at most two workers. PK4 assets are already
+compressed archives and are stored directly in the APK to avoid redundant
+compression and intermittent heap exhaustion during release packaging.
+
 Meson installation writes `android-build.json` beside `lib/`; the host requires
 that metadata and uses its native API as the APK's minimum Android version.
 The supplied SDL Java source version must match the staged native SDL library.

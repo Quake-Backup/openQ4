@@ -59,6 +59,9 @@ def verify_payload(apk: Path, stage: Path, version: str) -> None:
         assets = {name for name in names if name.startswith('assets/') and not name.endswith('/')}
         if assets != {name for name in expected if name.startswith('assets/')} | {'assets/openq4-package-version.txt'}:
             raise ValueError('APK asset set differs from the staged openQ4 overlays and notices')
+        for name in ('assets/baseoq4/pak0.pk4', 'assets/baseoq4/pak1.pk4'):
+            if archive.getinfo(name).compress_type != zipfile.ZIP_STORED:
+                raise ValueError('PK4 archives must be stored without redundant APK compression')
         for name, path in expected.items():
             with archive.open(name) as packaged, path.open('rb') as staged:
                 if digest(packaged) != digest(staged):

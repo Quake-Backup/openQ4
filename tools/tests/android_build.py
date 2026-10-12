@@ -94,6 +94,11 @@ class AndroidBuildTests(unittest.TestCase):
             package(entries)
             with self.assertRaisesRegex(ValueError, 'versions do not match'):
                 verify_android_apk.verify_payload(apk, stage, '0.15.000')
+            with zipfile.ZipFile(apk, 'w', compression=zipfile.ZIP_DEFLATED) as archive:
+                for name, data in entries.items():
+                    archive.writestr(name, data)
+            with self.assertRaisesRegex(ValueError, 'without redundant APK compression'):
+                verify_android_apk.verify_payload(apk, stage, '0.14.000')
 
     def test_release_apk_manifest_and_signer_gates(self) -> None:
         certificate = ROOT / 'mobile/android/release-signing-cert.pem'

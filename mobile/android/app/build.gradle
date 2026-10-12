@@ -149,6 +149,11 @@ android {
         // so APK verification can compare every DSO with the validated stage.
         jniLibs.keepDebugSymbols += ['**/*.so']
     }
+    androidResources {
+        // PK4s are already compressed ZIP archives. Recompressing hundreds of
+        // MB in parallel can exhaust the Gradle heap and saves little space.
+        noCompress += ['pk4']
+    }
     buildTypes {
         release { minifyEnabled false }
     }
