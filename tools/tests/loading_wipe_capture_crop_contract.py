@@ -26,6 +26,7 @@ ROOT = Path(__file__).resolve().parents[2]
 HARNESS = r'''
 #include <algorithm>
 #include <cmath>
+#include <cctype>
 #include <cstdio>
 #include <cstdlib>
 #include <stdexcept>
@@ -39,6 +40,19 @@ struct idMath {
 static void Check(bool ok,const char *what){if(!ok){std::printf("FAIL: %s\n",what);std::exit(2);}}
 int clockMsec=100000;
 int Sys_Milliseconds(){return clockMsec;}
+bool retainedEnabled=false,reducedMotion=false,initializationActive=false;
+bool openQ4_UpdateInitialization(){return initializationActive;}
+struct idStr {
+    static int Icmp(const char *a,const char *b){
+        while(*a && std::tolower(static_cast<unsigned char>(*a))==std::tolower(static_cast<unsigned char>(*b))){++a;++b;}
+        return std::tolower(static_cast<unsigned char>(*a))-std::tolower(static_cast<unsigned char>(*b));
+    }
+};
+struct {
+    bool GetCVarBool(const char *name)const{
+        return idStr::Icmp(name,"ui_retained")==0 ? retainedEnabled : reducedMotion;
+    }
+} cvarSystemValue,*cvarSystem=&cvarSystemValue;
 void Sys_GenerateEvents(){}
 float Session_GetBlockingLoadFrameIntervalMsec(){return 16.0f;}
 constexpr float SESSION_PACIFIER_DRAW_BUDGET_RATIO=4.0f;
@@ -94,6 +108,8 @@ struct idSessionLocal {
     const idMaterial *wipeMaterial=nullptr;
     int wipeStartTic=0,wipeStopTic=0;
     bool wipeHold=false,drawThrows=false;
+    bool wipeToBlack=false;
+    int wipeFadeStarted=0,wipeFadeDuration=0;
     int drawsInsideCrop=0;
     void PublishRetainedLoadingCount(){}
     void PublishRetainedLoadingTip(bool){}
@@ -128,6 +144,7 @@ void idSessionLocal::Draw(){
 static void Reset(){
     session=idSessionLocal();session.guiLoading=&session.gui;
     rendererValue=Renderer();refreshOnPrint=false;prints=0;clockMsec=100000;
+    retainedEnabled=false;reducedMotion=false;initializationActive=false;
 }
 static bool Wipe(const char *material,bool hold=false){
     try{session.StartWipe(material,hold);}
@@ -168,6 +185,18 @@ int main() {
     Reset();session.insideUpdateScreen=true;
     if(!Wipe("gfx/wipes/fade_blend"))return 1;
     Check(session.insideUpdateScreen && rendererValue.frames==0 && rendererValue.crops==0,"a nested capture keeps the outer update's flag");
+
+    // The optional retained fade avoids a capture entirely, but load-end
+    // fade_blend still needs the guarded crop with either interface.
+    for(bool reduced : {false,true}){
+        Reset();retainedEnabled=true;reducedMotion=reduced;
+        if(!Wipe("gfx/wipes/fade",true))return 1;
+        Check(session.wipeToBlack && session.wipeHold,"retained transition holds its fade");
+        Check(session.wipeFadeStarted==clockMsec && session.wipeFadeDuration==(reduced?80:240),"retained fade respects reduced motion");
+        Check(prints==0 && rendererValue.capturedAtCrop==-1 && rendererValue.crops==0,"retained fade never captures a crop");
+        if(!Wipe("gfx/wipes/fade_blend"))return 1;
+        Check(!session.wipeToBlack && rendererValue.capturedAtCrop==1 && rendererValue.crops==0,"retained load-end wipe retains the guarded capture");
+    }
 
     puts("load-end wipe capture keeps its crop through loading redraws: PASS");
     return 0;
