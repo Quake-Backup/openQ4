@@ -1850,6 +1850,9 @@ endif
 
 if build_engine
   client_deps += openq4_retained_dep
+  # RetainedHud parses the coverage catalog directly, including on platforms
+  # where the optional OpenXR loader does not supply JsonCpp transitively.
+  client_deps += jsoncpp_project.get_variable('jsoncpp_dep')
   if host_system == 'windows'
     client_deps += openq4_windows_text_store_dep
   endif

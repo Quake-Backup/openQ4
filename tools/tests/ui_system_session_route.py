@@ -392,7 +392,7 @@ def main():
     stock = gui[gui.index('onNamedEvent fromMp_toSystemStock {'):]
     assert stock[:stock.index('}')].count('set "desktop::dest" "22" ;') == 1
     assert 'ui_retainedSystem( "ui_retainedSystem", "0", CVAR_GUI | CVAR_BOOL' in menu
-    assert 'ui_retained( "ui_retained", "1", CVAR_GUI | CVAR_BOOL | CVAR_ARCHIVE,' in menu
+    assert 'ui_retained( "ui_retained", "0", CVAR_GUI | CVAR_BOOL | CVAR_ARCHIVE,' in menu
     assert ('return ui_retainedSystem.GetBool() || ( Session_RetainedScreensEnabled() &&\n'
             '\t\tRETAINED_SYSTEM_MISSING_SETTINGS[0] == NULL && RETAINED_SYSTEM_INCOMPLETE_SETTINGS[0] == NULL );') in menu
     assert 'ReturnSystemSettings();' in function_body(menu, 'void idSessionLocal::StartMenu(')
