@@ -284,6 +284,10 @@ int main() {
 
 def adapter_source():
     support = adapter.DICTIONARY_SUPPORT[:adapter.DICTIONARY_SUPPORT.index('struct idFile {')]
+    support = support.replace('bool IsEmpty() const { return empty(); }',
+                              'bool IsEmpty() const { return empty(); } void ToLower() { for(char& c:*this)c=static_cast<char>(std::tolower(static_cast<unsigned char>(c))); }')
+    support = support.replace('struct idVec4 { void Zero() {} }',
+                              'struct idVec4 { void Zero() {} const char* ToString() const { return "0 0 0 0"; } }')
     support = support.replace('int evType=0,evValue=0,evValue2=0;', 'int evType=0,evValue=0,evValue2=0,evPtrLength=0; void* evPtr=nullptr;')
     support = support.replace('static int Icmpn(const char* a,const char* b,int length) { return Icmp(std::string(a,length).c_str(),std::string(b,length).c_str()); }', '''static int Icmpn(const char* a,const char* b,int length) {
         for(int i=0;i<length;++i) {
