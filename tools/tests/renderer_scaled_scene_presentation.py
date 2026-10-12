@@ -17,6 +17,7 @@ bite. The remaining call sites are pinned as source tokens.
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 import shutil
 import subprocess
@@ -316,8 +317,11 @@ def check_sources(game: str, render_h: str, render_system: str, tr_backend: str,
             < final.index("if ( !openQ4_PresentScaledScene( presentation, scaledSceneSource ) ) {\n\t\topenQ4_DrawFullScreenMaterial( finalMaterial );")):
         raise AssertionError("final presentation: scene-extent pass, back-buffer depth clear, then the scaled present or the material")
     tail = render_h[render_h.index("virtual void\t\t\tGetVRFrameResult("):render_h.index("extern idRenderSystem *")]
-    require(tail, "virtual bool\t\t\tPresentScaledScene( idRenderTexture *sceneColorTarget ) = 0;\n};",
-            "PresentScaledScene is the last idRenderSystem slot")
+    require(tail, "virtual bool\t\t\tPresentScaledScene( idRenderTexture *sceneColorTarget ) = 0;",
+            "PresentScaledScene keeps its existing idRenderSystem slot")
+    slots = re.findall(r"\bvirtual\b[^(]*?\b(\w+)\s*\(", tail)
+    if slots != ["GetVRFrameResult", "PresentScaledScene", "BeginGuiRoot"]:
+        raise AssertionError(f"renderer extensions must follow the existing scaled-presentation slot: {slots}")
     front = function_body(render_system, "bool idRenderSystemLocal::PresentScaledScene( idRenderTexture *sceneColorTarget )")
     if "#if" in front or "OPENQ4_RENDERER_VK_MODULE" in front:
         raise AssertionError("the front end must not decline a backend at compile time")
