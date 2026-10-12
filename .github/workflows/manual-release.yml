@@ -1846,8 +1846,6 @@ jobs:
           fi
           check_macos_install_name "${sp_module}" "@loader_path/game-sp_${{ matrix.binary_arch }}.dylib"
           check_macos_install_name "${mp_module}" "@loader_path/game-mp_${{ matrix.binary_arch }}.dylib"
-          check_macos_install_name "${layer_sp_module}" "@loader_path/game-sp_${{ matrix.binary_arch }}.dylib"
-          check_macos_install_name "${layer_mp_module}" "@loader_path/game-mp_${{ matrix.binary_arch }}.dylib"
           check_macos_install_name "${renderer_module}" "@loader_path/renderer-vk_${{ matrix.binary_arch }}.dylib"
           check_macos_install_name "${openal_runtime}" "@rpath/libopenal.1.dylib"
           check_plist_value() {

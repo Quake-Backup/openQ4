@@ -10,9 +10,14 @@ def main():
                  "linux-arm64-cross.yml", "macos-debug.yml", "macos-sanitizer.yml", "macos-universal2-candidate.yml"):
         source = (workflows / name).read_text(encoding="utf-8")
         for obsolete in ("openQ4-game.git", "openQ4-game-awakening.git", "OPENQ4_AWAKENING_SHA",
-                         "OPENQ4_GAMELIBS_SHA", "inputs.openq4_game_ref", "--require-game-layer q4xbase"):
+                         "OPENQ4_GAMELIBS_SHA", "inputs.openq4_game_ref", "--require-game-layer q4xbase",
+                         "layer_sp_module", "layer_mp_module"):
             assert obsolete not in source, f"{name} depends on retired sources: {obsolete}"
         assert "meson_setup" in source
+    release = (workflows / "manual-release.yml").read_text(encoding="utf-8")
+    for mode in ("sp", "mp"):
+        assert f'{mode}_module="${{module_dir}}/game-{mode}_${{{{ matrix.binary_arch }}}}.dylib"' in release
+        assert f'check_macos_install_name "${{{mode}_module}}" "@loader_path/game-{mode}_${{{{ matrix.binary_arch }}}}.dylib"' in release
     meson = (ROOT / "meson.build").read_text(encoding="utf-8")
     assert "game_libs_repo_root = meson.project_source_root()" in meson
     assert "game_source_inventory.py" in meson
