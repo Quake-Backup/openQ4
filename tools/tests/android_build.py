@@ -47,7 +47,8 @@ class AndroidBuildTests(unittest.TestCase):
                 'android-build.json': b'{"abi":"arm64-v8a","androidApi":24}',
                 'baseoq4/mod.json': b'{"version":"0.14.000","requiredopenQ4Version":"0.14.000"}',
                 'baseoq4/pak0.pk4': b'first pack', 'baseoq4/pak1.pk4': b'second pack',
-                'LICENSE': b'engine license', 'CONTRIBUTORS.md': b'credits',
+                'LICENSE': b'engine license', 'LICENSING.md': b'component licenses', 'CONTRIBUTORS.md': b'credits',
+                'licenses/QUAKE-4-SDK-EULA.rtf': b'SDK EULA',
                 'licenses/sdl3/LICENSE.txt': b'SDL', 'licenses/openal-soft/COPYING': b'OpenAL',
                 'licenses/android-ndk/NOTICE.toolchain': b'NDK',
             })
@@ -77,6 +78,7 @@ class AndroidBuildTests(unittest.TestCase):
                 ('lib/arm64-v8a/libgame-sp_arm64.so', None, 'seven matching'),
                 ('assets/baseoq4/pak0.pk4', b'old data', 'differs from validated stage'),
                 ('assets/licenses/openal-soft/COPYING', None, 'asset set differs'),
+                ('assets/licenses/QUAKE-4-SDK-EULA.rtf', None, 'asset set differs'),
                 ('assets/q4base/pak001.pk4', b'retail data', 'asset set differs'),
                 ('assets/openq4-package-version.txt', b'wrong revision', 'extraction revision'),
             ):
