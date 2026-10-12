@@ -5,6 +5,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import json
+import hashlib
 import os
 import shutil
 import struct
@@ -12,6 +13,8 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import ssl
+import zipfile
 from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -19,6 +22,7 @@ sys.path.insert(0, str(ROOT / "tools/build"))
 import android_cross
 import prepare_android_deps
 import android_elf
+import verify_android_apk
 
 
 def android_library(api: int = 24, alignment: int = 16384, machine: int = 183) -> bytes:
@@ -35,6 +39,90 @@ def android_library(api: int = 24, alignment: int = 16384, machine: int = 183) -
 
 
 class AndroidBuildTests(unittest.TestCase):
+    def test_release_apk_payload_rejects_mixed_or_incomplete_packages(self) -> None:
+        with tempfile.TemporaryDirectory(prefix='android-apk-', dir=ROOT / '.tmp') as temporary:
+            stage = Path(temporary) / 'stage'
+            files = {'lib/' + name: android_library() for name in verify_android_apk.LIBRARIES}
+            files.update({
+                'android-build.json': b'{"abi":"arm64-v8a","androidApi":24}',
+                'baseoq4/mod.json': b'{"version":"0.14.000","requiredopenQ4Version":"0.14.000"}',
+                'baseoq4/pak0.pk4': b'first pack', 'baseoq4/pak1.pk4': b'second pack',
+                'LICENSE': b'engine license', 'CONTRIBUTORS.md': b'credits',
+                'licenses/sdl3/LICENSE.txt': b'SDL', 'licenses/openal-soft/COPYING': b'OpenAL',
+                'licenses/android-ndk/NOTICE.toolchain': b'NDK',
+            })
+            entries = {}
+            revision = hashlib.sha256()
+            for name, data in sorted(files.items()):
+                path = stage / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(data)
+                entries['lib/arm64-v8a/' + name[4:] if name.startswith('lib/') else 'assets/' + name] = data
+                if name.startswith('baseoq4/'):
+                    revision.update(name[len('baseoq4/'):].encode())
+                    revision.update(data)
+            entries['assets/openq4-package-version.txt'] = revision.hexdigest().encode()
+            apk = Path(temporary) / 'release.apk'
+
+            def package(payload):
+                with zipfile.ZipFile(apk, 'w') as archive:
+                    for name, data in payload.items():
+                        archive.writestr(name, data)
+                    archive.writestr('AndroidManifest.xml', b'manifest checked by aapt')
+
+            package(entries)
+            verify_android_apk.verify_payload(apk, stage, '0.14.000')
+            for name, replacement, message in (
+                ('lib/arm64-v8a/libquake4.so', b'old binary', 'differs from validated stage'),
+                ('lib/arm64-v8a/libgame-sp_arm64.so', None, 'seven matching'),
+                ('assets/baseoq4/pak0.pk4', b'old data', 'differs from validated stage'),
+                ('assets/licenses/openal-soft/COPYING', None, 'asset set differs'),
+                ('assets/q4base/pak001.pk4', b'retail data', 'asset set differs'),
+                ('assets/openq4-package-version.txt', b'wrong revision', 'extraction revision'),
+            ):
+                with self.subTest(name=name):
+                    changed = dict(entries)
+                    if replacement is None:
+                        changed.pop(name)
+                    else:
+                        changed[name] = replacement
+                    package(changed)
+                    with self.assertRaisesRegex(ValueError, message):
+                        verify_android_apk.verify_payload(apk, stage, '0.14.000')
+            package(entries)
+            with self.assertRaisesRegex(ValueError, 'versions do not match'):
+                verify_android_apk.verify_payload(apk, stage, '0.15.000')
+
+    def test_release_apk_manifest_and_signer_gates(self) -> None:
+        certificate = ROOT / 'mobile/android/release-signing-cert.pem'
+        cert_digest = hashlib.sha256(ssl.PEM_cert_to_DER_cert(certificate.read_text())).hexdigest()
+        good = [
+            f'Verified using v2 scheme (APK Signature Scheme v2): true\nSigner #1 certificate SHA-256 digest: {cert_digest}\n',
+            '',
+            "package: name='com.darkmatter.openq4' versionCode='14000' versionName='0.14.000'\nsdkVersion:'24'\ntargetSdkVersion:'35'\nnative-code: 'arm64-v8a'\n",
+            'A: android:extractNativeLibs(0x010104ea)=(type 0x12)0xffffffff',
+        ]
+        for index, replacement, message in (
+            (-1, '', ''),
+            (0, good[0].replace(cert_digest, '0' * 64), 'pinned release certificate'),
+            (0, good[0].replace(': true', ': false'), 'valid v2 signature'),
+            (2, good[2].replace("sdkVersion:'24'", "sdkVersion:'28'"), 'manifest mismatch'),
+            (2, good[2].replace("versionCode='14000'", "versionCode='13001'"), 'manifest mismatch'),
+            (2, good[2] + 'application-debuggable', 'not be debuggable'),
+            (3, good[3].replace('0xffffffff', '0x0'), 'extract native libraries'),
+        ):
+            outputs = good.copy()
+            if index >= 0:
+                outputs[index] = replacement
+            with mock.patch.object(verify_android_apk.subprocess, 'run', side_effect=[
+                subprocess.CompletedProcess([], 0, stdout=text) for text in outputs
+            ]):
+                if message:
+                    with self.assertRaisesRegex(ValueError, message):
+                        verify_android_apk.verify_tools(Path('release.apk'), Path('tools'), certificate, '0.14.000')
+                else:
+                    verify_android_apk.verify_tools(Path('release.apk'), Path('tools'), certificate, '0.14.000')
+
     def test_library_validation_checks_loadability(self) -> None:
         (ROOT / ".tmp").mkdir(exist_ok=True)
         with tempfile.TemporaryDirectory(prefix="android-elf-test-", dir=ROOT / ".tmp") as temporary:

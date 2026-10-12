@@ -178,7 +178,7 @@ Please use the [issue tracker](https://github.com/themuffinator/openQ4/issues) a
 
 Bug reports, compatibility reports, testing feedback, and code contributions are all welcome. To build openQ4 yourself, start with [BUILDING.md](BUILDING.md); for project conventions, see [CONTRIBUTING.md](.github/CONTRIBUTING.md).
 
-Developers can also find advanced configuration and file layout in [TECHNICAL.md](TECHNICAL.md), experimental Android builds in [Android, GLES and SigmaTouch](docs/dev/android-build.md), and the current implemented/experimental/missing status of every subsystem in the [engine capability matrix](docs/dev/engine-capability-matrix.md).
+Developers can also find advanced configuration and file layout in [TECHNICAL.md](TECHNICAL.md), the experimental ARM64 APK and source builds in [Android, GLES and SigmaTouch](docs/dev/android-build.md), and the current implemented/experimental/missing status of every subsystem in the [engine capability matrix](docs/dev/engine-capability-matrix.md).
 
 ---
 

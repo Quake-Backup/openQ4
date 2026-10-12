@@ -81,7 +81,7 @@ def validate_expected_names(expected_names: list[str]) -> tuple[str, ...]:
 def verify_archive_integrity(path: Path) -> None:
     """Read the entire payload, including compression trailers, before upload."""
     try:
-        if path.name.endswith(".zip"):
+        if path.name.endswith((".zip", ".apk")):
             with ZipFile(path) as archive:
                 members = archive.infolist()
                 if len(members) > MAX_ARCHIVE_MEMBERS or sum(

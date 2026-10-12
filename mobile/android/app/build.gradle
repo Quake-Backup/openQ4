@@ -145,6 +145,9 @@ android {
     packaging {
         // Engine/game renderer modules are dlopen'ed from nativeLibraryDir.
         jniLibs.useLegacyPackaging = true
+        // Meson/NDK already strips release libraries. Keep those exact bytes
+        // so APK verification can compare every DSO with the validated stage.
+        jniLibs.keepDebugSymbols += ['**/*.so']
     }
     buildTypes {
         release { minifyEnabled false }

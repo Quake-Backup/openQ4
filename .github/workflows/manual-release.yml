@@ -2030,10 +2030,19 @@ jobs:
           path: ${{ steps.windows_installer.outputs.installer_path }}
           if-no-files-found: error
 
+  android:
+    name: Android APK
+    needs: metadata
+    if: inputs.generate_linux_arm64_evidence_candidate == false
+    uses: ./.github/workflows/android-build.yml
+    with:
+      version: ${{ needs.metadata.outputs.version_tag }}
+    secrets: inherit
+
   release:
     name: Publish Release
-    needs: [metadata, builds]
-    if: ${{ needs.builds.result == 'success' && inputs.generate_linux_arm64_evidence_candidate == false }}
+    needs: [metadata, builds, android]
+    if: ${{ needs.builds.result == 'success' && inputs.generate_linux_arm64_evidence_candidate == false && needs.android.result == 'success' }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -2106,6 +2115,8 @@ jobs:
           fi
 
           expected=(
+            "openq4-${{ needs.metadata.outputs.version_tag }}-android-arm64-experimental.apk"
+            "openq4-${{ needs.metadata.outputs.version_tag }}-android-dependency-sources.tar.xz"
             "openq4-${{ needs.metadata.outputs.version_tag }}-windows-x64.zip"
             "openq4-${{ needs.metadata.outputs.version_tag }}-windows-x64-setup.exe"
             "openq4-${{ needs.metadata.outputs.version_tag }}-windows-arm64.zip"

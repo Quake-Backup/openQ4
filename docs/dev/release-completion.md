@@ -1,17 +1,21 @@
 # openQ4 Release Completion List
 
-## 0.14.000 prerelease candidate
+## 0.14.000 release candidate
 
 - [x] Restore the shipping `ui_retained 0` default because retained gameplay
   overhead is still not negligible. Preserve archived player preferences and
   document `seta ui_retained 0` for existing profiles that opted in.
-- [x] Include the pending workspace changes in a prerelease, with curated
+- [x] Include the pending workspace changes in the release, with curated
   [player-facing notes](releases/v0.14.000.md) that explicitly state the UI
   performance limitation and save/module upgrade requirements.
 - [x] Add a manual release workflow prerelease selector. Keep the stable latest
   release unchanged when publishing a prerelease, retain asset verification
   before publication, and verify the resulting draft/prerelease state.
-- [ ] Publish and verify the manual Actions prerelease and its complete assets.
+- [x] Add an experimental Android ARM64 APK job with persistent release signing,
+  matching pinned dependencies, corresponding source downloads and signature,
+  manifest, native-library and overlay verification. Keep Android's device
+  qualification limits explicit even when the overall release is stable.
+- [ ] Publish and verify the manual Actions stable release and its complete assets.
 
 ## 0.13.2 release candidate
 

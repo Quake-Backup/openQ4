@@ -4,18 +4,32 @@ This SDL3 Activity hosts Emile Belanger's Android/GLES port without SigmaTouch.
 It supports the engine's SDL gamepad, mouse, keyboard and menu touch input; the
 configurable SigmaTouch overlay remains an optional, separately licensed host.
 
+## Release download
+
+The manual release workflow includes an experimental, release-signed
+`openq4-<version>-android-arm64-experimental.apk`. Install it on an ARM64 device
+with Android 7.0/API 24 or later and OpenGL ES 3.0, then provide your retail
+assets as described below. Physical-device gameplay has not been qualified.
+The APK has legacy UI enabled by default, just like desktop packages.
+
+Published APKs use the same persistent certificate for updates. A local debug
+APK uses a different certificate; back up its private saves before uninstalling
+it to switch to the release APK. Do not clear app data to update a release APK.
+
+## Build locally
+
 Build the native Android targets and run Meson install first, following
 [the Android build guide](../../docs/dev/android-build.md). The staging directory
 must contain `lib/libquake4.so`, `lib/libSDL3.so`, the renderer/game modules and
 their shared dependencies, plus `baseoq4/pak0.pk4` and the remaining staged packs.
 
 Use Java 17 or 21, Gradle 8.12, and Android SDK platform 35. Supply the same SDL3
-source tree used for the native library (currently SDL 3.4.10):
+source tree used for the native library (currently SDL 3.4.16):
 
 ```sh
 gradle -p mobile/android \
   --project-cache-dir=/absolute/path/to/openQ4/.tmp/android-gradle-project \
-  -Psdl3SourceRoot=/path/to/SDL3-3.4.10 \
+  -Psdl3SourceRoot=/path/to/SDL3-3.4.16 \
   -Popenq4Stage=/path/to/openQ4/.install/android/arm64-v8a \
   assembleDebug
 ```
@@ -83,6 +97,40 @@ they retain [SDL's zlib license](https://github.com/libsdl-org/SDL/blob/release-
 The SDL Activity contract and Gradle versions follow
 [SDL 3.4.10's Android project](https://github.com/libsdl-org/SDL/tree/release-3.4.10/android-project).
 No SDL template source is copied into this repository.
+
+## Release automation and signing
+
+`.github/workflows/android-build.yml` can build the APK independently and is
+also required by Manual Releases. It uses NDK r27d, Java 17, Gradle 8.12 and SDK
+35. SDL comes from the repository's checksum-pinned wrap with its patches;
+OpenAL Soft 1.25.2 matches the desktop release. The dependency source download
+contains the actual patched SDL tree, the exact OpenAL archive and build
+recipes. [SDL](https://github.com/libsdl-org/SDL) retains its zlib license and
+[OpenAL Soft](https://github.com/kcat/openal-soft) its LGPL terms. Both libraries
+are dynamically linked; rebuild with replacement libraries and sign your own
+APK when modifying them.
+
+The workflow requires four repository Actions secrets:
+`ANDROID_RELEASE_KEYSTORE_BASE64`, `ANDROID_RELEASE_STORE_PASSWORD`,
+`ANDROID_RELEASE_KEY_PASSWORD` and `ANDROID_RELEASE_KEY_ALIAS`. It builds an
+unsigned release APK, aligns it, signs it using `apksigner`, then checks the
+signature against the public certificate in `release-signing-cert.pem`.
+Private keys and passwords never belong in Git or downloadable artifacts.
+Preserve a secure independent backup of the signing key: future in-place
+updates must retain the same signing identity. See Android's
+[app signing guidance](https://developer.android.com/studio/publish/app-signing).
+
+For this repository's initial release key, the persistent local backup is
+under ignored `.private/android-signing/`, restricted to the creating Windows
+user. Its password backup is protected by Windows DPAPI and requires that user
+and machine. Move an independent secure backup before replacing that account or
+machine; GitHub secrets cannot be downloaded as a key backup.
+
+`verify_android_apk.py` also checks the application ID, version/API, non-debug
+manifest, native-library extraction, 16 KiB alignment, all seven libraries,
+overlay bytes and license notices. APK publication is blocked if any check or
+any desktop build fails. This packaging validation does not replace device
+installation and gameplay testing.
 
 ## Validation
 

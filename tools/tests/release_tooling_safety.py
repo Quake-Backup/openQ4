@@ -1311,6 +1311,9 @@ def validate_manual_release_companion_checkout() -> None:
     release_job_offset = workflow.index("  release:")
     release_steps_offset = workflow.index("    steps:", release_job_offset)
     release_header = workflow[release_job_offset:release_steps_offset]
+    for token in ('needs: [metadata, builds, android]', "needs.android.result == 'success'"):
+        if token not in release_header:
+            raise AssertionError('Android APK validation must gate release publication: ' + token)
     if (
         "needs.builds.result == 'success'"
         " && inputs.generate_linux_arm64_evidence_candidate == false"
@@ -1343,6 +1346,9 @@ def validate_manual_release_companion_checkout() -> None:
         )
 
     asset_gate = workflow[release_asset_gate_offset:release_hash_gate_offset]
+    for suffix in ('-android-arm64-experimental.apk', '-android-dependency-sources.tar.xz'):
+        if suffix not in asset_gate:
+            raise AssertionError('Missing mandatory Android release artifact: ' + suffix)
     for token in (
         "tools/build/verify_release_asset_set.py",
         'expected_args+=(--expected "${package_file}")',

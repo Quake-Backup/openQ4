@@ -64,3 +64,6 @@ _tmp_*
 InstallationLog.txt
 logs/
 /.home-listen-server
+
+# Persistent local release credentials; never include these in packages or Git.
+/.private/
