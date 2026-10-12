@@ -58,8 +58,8 @@ Use an absolute `--project-cache-dir` path: Gradle resolves a relative path
 against `mobile/android`, which can otherwise place generated cache files in
 the source tree. Compiler and APK intermediates remain under `builddir/`.
 
-The debug APK is approximately 660 MB because it retains the full official
-openQ4 overlay packs. First launch also copies those packs into private storage;
+The APK retains the full official openQ4 overlay packs. First launch also
+copies those packs into private storage;
 allow room for both the APK and extracted content, plus the retail installation
 and saves.
 

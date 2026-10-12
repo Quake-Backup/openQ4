@@ -1,6 +1,6 @@
 # openQ4 Release Completion List
 
-## 0.14.000 release candidate
+## 0.14.000 release
 
 - [x] Restore the shipping `ui_retained 0` default because retained gameplay
   overhead is still not negligible. Preserve archived player preferences and
@@ -15,7 +15,11 @@
   matching pinned dependencies, corresponding source downloads and signature,
   manifest, native-library and overlay verification. Keep Android's device
   qualification limits explicit even when the overall release is stable.
-- [ ] Publish and verify the manual Actions stable release and its complete assets.
+- [x] Publish and verify [0.14.000](https://github.com/themuffinator/openQ4/releases/tag/v0.14.000)
+  as the latest stable release through [Manual Releases](https://github.com/themuffinator/openQ4/actions/runs/38297252865).
+  All seven platform jobs and publication passed. All 16 download assets are
+  present with verified stored hashes, including the signed Android APK and
+  corresponding dependency sources. Legacy UI remains the shipping default.
 
 ## 0.13.2 release candidate
 
